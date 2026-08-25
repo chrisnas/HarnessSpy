@@ -1,0 +1,21 @@
+[
+  { "hook_event_name": "SessionStart", "session_id": "s1", "cwd": "C:\\Repo", "source": "startup" },
+  { "hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "prompt": "Inspect this repo" },
+  { "hook_event_name": "PreToolUse", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "tool_name": "Read", "tool_input": { "file_path": "C:\\Repo\\README.md" }, "tool_use_id": "t1" },
+  { "hook_event_name": "PermissionRequest", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "tool_name": "Bash", "tool_input": { "command": "dotnet test" } },
+  { "hook_event_name": "PermissionDenied", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "tool_name": "Bash", "tool_input": { "command": "dotnet test" }, "tool_use_id": "t2", "reason": "denied" },
+  { "hook_event_name": "PostToolUse", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "tool_name": "Read", "tool_input": { "file_path": "C:\\Repo\\README.md" }, "tool_response": { "content": "ok" }, "tool_use_id": "t1", "duration_ms": 12 },
+  { "hook_event_name": "PostToolUseFailure", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "tool_name": "Bash", "tool_input": { "command": "false" }, "tool_use_id": "t3", "error": "exit 1" },
+  { "hook_event_name": "PostToolBatch", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "tool_calls": [] },
+  { "hook_event_name": "SubagentStart", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "agent_id": "a1", "agent_type": "Explore" },
+  { "hook_event_name": "SubagentStop", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "agent_id": "a1", "agent_type": "Explore", "last_assistant_message": "Found it" },
+  { "hook_event_name": "Stop", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "last_assistant_message": "Done" },
+  { "hook_event_name": "StopFailure", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "error": "rate limited" },
+  { "hook_event_name": "PreCompact", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "trigger": "auto", "custom_instructions": "" },
+  { "hook_event_name": "PostCompact", "session_id": "s1", "prompt_id": "p1", "cwd": "C:\\Repo", "trigger": "auto", "compact_summary": "summary" },
+  { "hook_event_name": "InstructionsLoaded", "session_id": "s1", "cwd": "C:\\Repo", "file_path": "C:\\Repo\\CLAUDE.md", "memory_type": "Project", "load_reason": "session_start" },
+  { "hook_event_name": "ConfigChange", "session_id": "s1", "cwd": "C:\\Repo", "source": "project_settings", "file_path": "C:\\Repo\\.claude\\settings.json" },
+  { "hook_event_name": "CwdChanged", "session_id": "s1", "cwd": "C:\\Repo\\src", "old_cwd": "C:\\Repo", "new_cwd": "C:\\Repo\\src" },
+  { "hook_event_name": "DirectoryAdded", "session_id": "s1", "cwd": "C:\\Repo", "directory": "C:\\Other", "source": "slash_command" },
+  { "hook_event_name": "SessionEnd", "session_id": "s1", "cwd": "C:\\Repo", "reason": "other" }
+]

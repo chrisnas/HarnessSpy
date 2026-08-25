@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnessspy.local/contracts/agent-host/v1",
+  "title": "HarnessSpy AgentHost v1",
+  "type": "object",
+  "required": ["version", "messageType", "messageId", "provider", "payload"],
+  "properties": {
+    "version": { "const": 1 },
+    "messageType": {
+      "enum": ["hello", "capabilities", "command", "reply", "event", "ack", "heartbeat", "error"]
+    },
+    "messageId": { "type": "string", "minLength": 1 },
+    "correlationId": { "type": ["string", "null"] },
+    "provider": {
+      "enum": ["cursor", "claude-code", "github-copilot", "unknown"]
+    },
+    "sequence": { "type": ["integer", "null"], "minimum": 0 },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": true
+}

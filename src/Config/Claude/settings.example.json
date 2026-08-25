@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "HARNESS_SPY_HOST": "claude-code"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "SessionStart",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "UserPromptSubmit",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PreToolUse",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PermissionRequest",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PermissionDenied",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostToolUse",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostToolUseFailure",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostToolBatch",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "SubagentStart",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "SubagentStop",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "Stop",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "StopFailure",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PreCompact",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostCompact",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "InstructionsLoaded",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "ConfigChange",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "CwdChanged",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "DirectoryAdded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "DirectoryAdded",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Debug\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "SessionEnd",
+              "--source",
+              "claude-template"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

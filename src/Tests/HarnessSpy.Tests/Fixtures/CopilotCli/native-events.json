@@ -1,0 +1,16 @@
+[
+  { "event": "sessionStart", "payload": { "sessionId": "c1", "timestamp": 1787414400000, "cwd": "C:\\Repo", "source": "new" } },
+  { "event": "sessionEnd", "payload": { "sessionId": "c1", "timestamp": 1787414400001, "cwd": "C:\\Repo", "reason": "complete" } },
+  { "event": "userPromptSubmitted", "payload": { "sessionId": "c1", "timestamp": 1787414400002, "cwd": "C:\\Repo", "prompt": "Inspect" } },
+  { "event": "userPromptTransformed", "payload": { "sessionId": "c1", "timestamp": 1787414400003, "cwd": "C:\\Repo", "prompt": "Inspect", "transformedPrompt": "Inspect carefully" } },
+  { "event": "preToolUse", "payload": { "sessionId": "c1", "timestamp": 1787414400004, "cwd": "C:\\Repo", "toolName": "view", "toolArgs": { "path": "README.md" } } },
+  { "event": "postToolUse", "payload": { "sessionId": "c1", "timestamp": 1787414400005, "cwd": "C:\\Repo", "toolName": "view", "toolArgs": { "path": "README.md" }, "toolResult": { "resultType": "success", "textResultForLlm": "ok" } } },
+  { "event": "postToolUseFailure", "payload": { "sessionId": "c1", "timestamp": 1787414400006, "cwd": "C:\\Repo", "toolName": "powershell", "toolArgs": { "command": "false" }, "error": "exit 1" } },
+  { "event": "permissionRequest", "payload": { "sessionId": "c1", "timestamp": 1787414400007, "cwd": "C:\\Repo", "toolName": "powershell", "toolArgs": { "command": "dotnet test" } } },
+  { "event": "notification", "payload": { "sessionId": "c1", "timestamp": 1787414400008, "cwd": "C:\\Repo", "message": "complete", "notification_type": "shell_completed" } },
+  { "event": "agentStop", "payload": { "sessionId": "c1", "timestamp": 1787414400009, "cwd": "C:\\Repo", "transcriptPath": "C:\\Logs\\c1.jsonl", "stopReason": "end_turn", "stop_hook_active": false } },
+  { "event": "subagentStart", "payload": { "sessionId": "c1", "timestamp": 1787414400010, "cwd": "C:\\Repo", "agentName": "explore" } },
+  { "event": "subagentStop", "payload": { "sessionId": "c1", "timestamp": 1787414400011, "cwd": "C:\\Repo", "agentId": "a1", "agentType": "explore", "agentName": "explore", "response": "found", "stopReason": "end_turn" } },
+  { "event": "errorOccurred", "payload": { "sessionId": "c1", "timestamp": 1787414400012, "cwd": "C:\\Repo", "error": { "name": "Error", "message": "failed" }, "errorContext": "tool_execution", "recoverable": true } },
+  { "event": "preCompact", "payload": { "sessionId": "c1", "timestamp": 1787414400013, "cwd": "C:\\Repo", "transcriptPath": "C:\\Logs\\c1.jsonl", "trigger": "auto", "customInstructions": "" } }
+]

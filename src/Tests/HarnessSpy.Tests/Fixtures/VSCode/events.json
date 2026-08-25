@@ -1,0 +1,10 @@
+[
+  { "timestamp": "2026-08-22T14:00:00Z", "cwd": "C:\\Repo", "session_id": "v1", "hook_event_name": "SessionStart", "source": "new" },
+  { "timestamp": "2026-08-22T14:00:01Z", "cwd": "C:\\Repo", "session_id": "v1", "hook_event_name": "UserPromptSubmit", "prompt": "Inspect" },
+  { "timestamp": "2026-08-22T14:00:02Z", "cwd": "C:\\Repo", "session_id": "v1", "hook_event_name": "PreToolUse", "tool_name": "editFiles", "tool_input": { "files": ["src/App.cs"] }, "tool_use_id": "t1" },
+  { "timestamp": "2026-08-22T14:00:03Z", "cwd": "C:\\Repo", "session_id": "v1", "hook_event_name": "PostToolUse", "tool_name": "editFiles", "tool_input": { "files": ["src/App.cs"] }, "tool_response": "done", "tool_use_id": "t1" },
+  { "timestamp": "2026-08-22T14:00:04Z", "cwd": "C:\\Repo", "session_id": "v1", "hook_event_name": "PreCompact", "trigger": "auto" },
+  { "timestamp": "2026-08-22T14:00:05Z", "cwd": "C:\\Repo", "session_id": "v1", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Plan" },
+  { "timestamp": "2026-08-22T14:00:06Z", "cwd": "C:\\Repo", "session_id": "v1", "hook_event_name": "SubagentStop", "agent_id": "a1", "agent_type": "Plan", "stop_hook_active": false },
+  { "timestamp": "2026-08-22T14:00:07Z", "cwd": "C:\\Repo", "session_id": "v1", "hook_event_name": "Stop", "stop_hook_active": false }
+]

@@ -1,0 +1,696 @@
+﻿<Window x:Class="CursorSpy.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:CursorSpy.App"
+        xmlns:viewModels="clr-namespace:CursorSpy.App.ViewModels"
+        xmlns:converters="clr-namespace:CursorSpy.App.Converters"
+        mc:Ignorable="d"
+        Title="Cursor Hook Spy POC"
+        Icon="CursorSpy.png"
+        Height="720"
+        Width="1100"
+        MinHeight="500"
+        MinWidth="760"
+        WindowStartupLocation="CenterScreen"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+        <converters:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter" />
+
+        <DataTemplate x:Key="KpiChipTemplate" DataType="{x:Type viewModels:KpiItem}">
+            <Border MinWidth="88"
+                    Margin="0,0,8,8"
+                    Padding="10,6"
+                    CornerRadius="4"
+                    BorderThickness="1">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="#F6F8FA" />
+                        <Setter Property="BorderBrush" Value="#D0D7DE" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                <Setter Property="Background" Value="#FFEBE9" />
+                                <Setter Property="BorderBrush" Value="#CF222E" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel>
+                    <TextBlock FontSize="11"
+                               Foreground="#57606A"
+                               Text="{Binding Label}" />
+                    <TextBlock FontSize="15"
+                               FontWeight="SemiBold"
+                               TextWrapping="Wrap"
+                               Text="{Binding Value}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                        <Setter Property="Foreground" Value="#CF222E" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <Style x:Key="SummarySectionHeader" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+
+        <DataTemplate x:Key="CountedDurationRowTemplate" DataType="{x:Type viewModels:CountedDurationRow}">
+            <Grid Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="44" />
+                    <ColumnDefinition Width="108" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding Name}" />
+                <TextBlock Grid.Column="1"
+                           Margin="8,0,8,0"
+                           Foreground="#57606A"
+                           Text="{Binding CountText}"
+                           TextAlignment="Right" />
+                <TextBlock Grid.Column="2"
+                           Foreground="#57606A"
+                           Text="{Binding DurationText}"
+                           TextAlignment="Right" />
+            </Grid>
+        </DataTemplate>
+
+        <Style x:Key="SummaryRowsItemsControl" TargetType="ItemsControl">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="ItemTemplate" Value="{StaticResource CountedDurationRowTemplate}" />
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="ContentPresenter">
+                        <Setter Property="HorizontalAlignment" Value="Stretch" />
+                    </Style>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SummaryDataGrid" TargetType="DataGrid">
+            <Setter Property="AutoGenerateColumns" Value="False" />
+            <Setter Property="BorderBrush" Value="#D0D7DE" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CanUserAddRows" Value="False" />
+            <Setter Property="CanUserDeleteRows" Value="False" />
+            <Setter Property="CanUserReorderColumns" Value="False" />
+            <Setter Property="CanUserResizeRows" Value="False" />
+            <Setter Property="AlternatingRowBackground" Value="#F6F8FA" />
+            <Setter Property="RowBackground" Value="White" />
+            <Setter Property="GridLinesVisibility" Value="None" />
+            <Setter Property="HeadersVisibility" Value="Column" />
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="RowHeaderWidth" Value="0" />
+            <Setter Property="SelectionMode" Value="Single" />
+            <Setter Property="MaxHeight" Value="220" />
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+        </Style>
+
+        <HierarchicalDataTemplate DataType="{x:Type viewModels:TreeNodeViewModel}"
+                                  ItemsSource="{Binding Children}">
+            <StackPanel Orientation="Horizontal"
+                        ToolTipService.InitialShowDelay="300"
+                        ToolTipService.IsEnabled="{Binding HasDashboardHover}"
+                        ToolTipService.ShowDuration="60000">
+                <StackPanel.ToolTip>
+                    <ToolTip MaxWidth="480">
+                        <ScrollViewer MinWidth="360"
+                                      MaxHeight="580"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <ItemsControl ItemTemplate="{StaticResource KpiChipTemplate}"
+                                              ItemsSource="{Binding NodeSummary.Kpis}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl>
+
+                                <StackPanel Margin="0,4,0,0"
+                                            Visibility="{Binding NodeSummary.HasSkills, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Skills" />
+                                    <ItemsControl ItemsSource="{Binding NodeSummary.Skills}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,6,4"
+                                                        Padding="8,2"
+                                                        Background="#EEF2FF"
+                                                        BorderBrush="#C7D2FE"
+                                                        BorderThickness="1"
+                                                        CornerRadius="10">
+                                                    <TextBlock FontSize="12"
+                                                               Foreground="#3730A3"
+                                                               Text="{Binding}" />
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasThoughts, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Agent thoughts" />
+                                    <ItemsControl Style="{StaticResource SummaryRowsItemsControl}"
+                                                  ItemsSource="{Binding NodeSummary.Thoughts}" />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasMcp, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="MCP" />
+                                    <ItemsControl Style="{StaticResource SummaryRowsItemsControl}"
+                                                  ItemsSource="{Binding NodeSummary.McpCalls}" />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasTools, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tools" />
+                                    <ItemsControl Style="{StaticResource SummaryRowsItemsControl}"
+                                                  ItemsSource="{Binding NodeSummary.Tools}" />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasTokens, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tokens" />
+                                    <TextBlock Text="{Binding NodeSummary.TokenLine}" />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasWrittenFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Files" />
+                                    <ItemsControl ItemsSource="{Binding NodeSummary.WrittenFiles}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasSubagents, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Subagents" />
+                                    <ItemsControl ItemsSource="{Binding NodeSummary.Subagents}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type viewModels:SubagentSummary}">
+                                                <StackPanel Margin="0,0,0,6">
+                                                    <TextBlock FontWeight="SemiBold" Text="{Binding Header}" />
+                                                    <TextBlock Foreground="#57606A"
+                                                               Text="{Binding TaskPreview}"
+                                                               TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </ToolTip>
+                </StackPanel.ToolTip>
+                <Ellipse Width="9"
+                         Height="9"
+                         Margin="0,0,6,0"
+                         VerticalAlignment="Center">
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsSession}" Value="True" />
+                                        <Condition Binding="{Binding Status}" Value="Active" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Setter Property="Fill" Value="#2ECC71" />
+                                </MultiDataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsSession}" Value="True" />
+                                        <Condition Binding="{Binding Status}" Value="Stopped" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Setter Property="Fill" Value="#E67E22" />
+                                </MultiDataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+
+                <TextBlock Text="{Binding HeaderPrefix}"
+                           VerticalAlignment="Top"
+                           Margin="0,0,4,0"
+                           FontWeight="Bold">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HeaderPrefix}" Value="">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding UsesLightForegroundWhenSelected}" Value="True" />
+                                        <Condition Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Foreground" Value="White" />
+                                </MultiDataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsMcpExecution}" Value="True" />
+                                        <Condition Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Foreground" Value="#A8F5CF" />
+                                </MultiDataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+
+                <TextBlock Text="{Binding Header}"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center"
+                           ToolTipService.IsEnabled="{Binding HasHoverText}"
+                           ToolTipService.ShowDuration="60000"
+                           ToolTipService.InitialShowDelay="300">
+                    <TextBlock.ToolTip>
+                        <TextBlock Text="{Binding HoverText}"
+                                   MaxWidth="560"
+                                   TextWrapping="Wrap" />
+                    </TextBlock.ToolTip>
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsGeneration}" Value="True">
+                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsParallelWave}" Value="True">
+                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                    <Setter Property="Foreground" Value="#8250DF" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsAgentThought}" Value="True">
+                                    <Setter Property="Foreground" Value="#1F6FEB" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsAgentResponse}" Value="True">
+                                    <Setter Property="FontWeight" Value="Bold" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsStop}" Value="True">
+                                    <Setter Property="Foreground" Value="#E67E22" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsAbortedStop}" Value="True">
+                                    <Setter Property="Foreground" Value="#CF222E" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsPreCompact}" Value="True">
+                                    <Setter Property="Foreground" Value="#CF222E" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsFailure}" Value="True">
+                                    <Setter Property="Foreground" Value="#F08080" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsMcpExecution}" Value="True">
+                                    <Setter Property="Foreground" Value="#2ECC71" />
+                                </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding UsesLightForegroundWhenSelected}" Value="True" />
+                                        <Condition Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Foreground" Value="White" />
+                                </MultiDataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsMcpExecution}" Value="True" />
+                                        <Condition Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Foreground" Value="#A8F5CF" />
+                                </MultiDataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+
+                <TextBlock Text="{Binding Summary}"
+                           VerticalAlignment="Center"
+                           Margin="8,0,0,0"
+                           Foreground="#57606A"
+                           FontStyle="Italic">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Summary}" Value="">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </StackPanel>
+        </HierarchicalDataTemplate>
+
+        <Style TargetType="{x:Type TreeViewItem}">
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="320" MinWidth="220" />
+            <ColumnDefinition Width="5" />
+            <ColumnDefinition Width="*" MinWidth="360" />
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0"
+                BorderBrush="#D0D7DE"
+                BorderThickness="1"
+                CornerRadius="4">
+            <DockPanel>
+                <Grid DockPanel.Dock="Top" Margin="10,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               VerticalAlignment="Center"
+                               FontWeight="SemiBold"
+                               Text="Captured workspaces and sessions" />
+                    <Button Grid.Column="1"
+                            MinWidth="96"
+                            Margin="8,0,0,0"
+                            Click="OpenFolder_Click"
+                            Content="Open folder..."
+                            IsEnabled="{Binding CanBrowseReplayFolders}" />
+                </Grid>
+                <StackPanel DockPanel.Dock="Bottom" Margin="10,6,10,8">
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   Text="Find" />
+                        <TextBox x:Name="SearchTextBox"
+                                 Grid.Column="1"
+                                 Margin="0,0,8,0"
+                                 VerticalContentAlignment="Center"
+                                 KeyDown="SearchTextBox_KeyDown"
+                                 Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Grid.Column="2"
+                                Margin="0,0,6,0"
+                                MinWidth="78"
+                                Click="FindPrevious_Click"
+                                Content="Previous" />
+                        <Button Grid.Column="3"
+                                MinWidth="58"
+                                Click="FindNext_Click"
+                                Content="Next" />
+                    </Grid>
+                    <ProgressBar Height="4"
+                                 Margin="0,0,0,6"
+                                 IsIndeterminate="True"
+                                 Visibility="{Binding IsLoadingReplay, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    <TextBlock Foreground="#57606A"
+                               Text="{Binding StatusText}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+                <TreeView x:Name="ObservationTreeView"
+                          ItemsSource="{Binding Roots}"
+                          SelectedItemChanged="TreeView_SelectedItemChanged"
+                          ContextMenuOpening="TreeView_ContextMenuOpening"
+                          BorderThickness="0"
+                          Padding="4">
+                    <TreeView.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem x:Name="DeleteSessionFilesMenuItem"
+                                      Header="Delete session files..."
+                                      Click="DeleteSessionFiles_Click" />
+                        </ContextMenu>
+                    </TreeView.ContextMenu>
+                </TreeView>
+            </DockPanel>
+        </Border>
+
+        <GridSplitter Grid.Column="1"
+                      Width="5"
+                      HorizontalAlignment="Stretch"
+                      Background="#EEF1F4" />
+
+        <Grid Grid.Column="2">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto"
+                          Visibility="{Binding HasSelectedDashboard, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <StackPanel Margin="0,0,8,8">
+                    <TextBlock Margin="0,0,0,8" FontWeight="SemiBold">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="Turn summary" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SelectedNode.IsSession}" Value="True">
+                                        <Setter Property="Text" Value="Session summary" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <ItemsControl ItemTemplate="{StaticResource KpiChipTemplate}"
+                                  ItemsSource="{Binding SelectedNode.NodeSummary.Kpis}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+
+                    <StackPanel Margin="0,8,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasSkills, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Skills" />
+                        <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.Skills}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="0,0,8,8"
+                                            Padding="10,4"
+                                            Background="#EEF2FF"
+                                            BorderBrush="#C7D2FE"
+                                            BorderThickness="1"
+                                            CornerRadius="12">
+                                        <TextBlock Foreground="#3730A3" Text="{Binding}" />
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasThoughts, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Agent thoughts" />
+                        <ItemsControl Style="{StaticResource SummaryRowsItemsControl}"
+                                      ItemsSource="{Binding SelectedNode.NodeSummary.Thoughts}" />
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasMcp, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="MCP" />
+                        <DataGrid Style="{StaticResource SummaryDataGrid}"
+                                  ItemsSource="{Binding SelectedNode.NodeSummary.McpCalls}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Name"
+                                                    Binding="{Binding Name}"
+                                                    Width="*" />
+                                <DataGridTextColumn Header=""
+                                                    Binding="{Binding CountText}"
+                                                    Width="48" />
+                                <DataGridTextColumn Header="Time"
+                                                    Binding="{Binding DurationText}"
+                                                    Width="100" />
+                                <DataGridTemplateColumn Header="" Width="140">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate DataType="{x:Type viewModels:CountedDurationRow}">
+                                            <ProgressBar Height="8"
+                                                         Margin="4,0"
+                                                         Maximum="100"
+                                                         Minimum="0"
+                                                         Value="{Binding Share}"
+                                                         Foreground="#2ECC71"
+                                                         Background="#EEF1F4" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasTools, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tools" />
+                        <DataGrid Style="{StaticResource SummaryDataGrid}"
+                                  ItemsSource="{Binding SelectedNode.NodeSummary.Tools}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Name"
+                                                    Binding="{Binding Name}"
+                                                    Width="*" />
+                                <DataGridTextColumn Header=""
+                                                    Binding="{Binding CountText}"
+                                                    Width="48" />
+                                <DataGridTextColumn Header="Time"
+                                                    Binding="{Binding DurationText}"
+                                                    Width="100" />
+                                <DataGridTemplateColumn Header="" Width="140">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate DataType="{x:Type viewModels:CountedDurationRow}">
+                                            <ProgressBar Height="8"
+                                                         Margin="4,0"
+                                                         Maximum="100"
+                                                         Minimum="0"
+                                                         Value="{Binding Share}"
+                                                         Foreground="#1F6FEB"
+                                                         Background="#EEF1F4" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,8,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasTokens, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tokens" />
+                        <TextBlock FontSize="14" Text="{Binding SelectedNode.NodeSummary.TokenLine}" />
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasWrittenFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Files" />
+                        <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.WrittenFiles}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock FontSize="13" Text="{Binding}" TextTrimming="CharacterEllipsis" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasSubagents, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Subagents" />
+                        <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.Subagents}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type viewModels:SubagentSummary}">
+                                    <Border Margin="0,0,0,8"
+                                            Padding="10,8"
+                                            Background="#F6F8FA"
+                                            BorderBrush="#D0D7DE"
+                                            BorderThickness="1"
+                                            CornerRadius="4">
+                                        <StackPanel>
+                                            <TextBlock FontWeight="SemiBold" Text="{Binding Header}" />
+                                            <TextBlock Margin="0,4,0,0"
+                                                       Foreground="#57606A"
+                                                       Text="{Binding TaskPreview}"
+                                                       TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+
+            <Grid Visibility="{Binding HasSelectedDashboard, Converter={StaticResource InverseBooleanToVisibilityConverter}}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" MinHeight="120" />
+                    <RowDefinition Height="5" />
+                    <RowDefinition Height="*" MinHeight="80" />
+                </Grid.RowDefinitions>
+
+                <DockPanel Grid.Row="0"
+                           Visibility="{Binding HasSelectedFields, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock DockPanel.Dock="Top"
+                               Margin="0,0,0,4"
+                               FontWeight="SemiBold"
+                               Text="Fields" />
+                    <DataGrid x:Name="FieldsDataGrid"
+                              ItemsSource="{Binding SelectedFields}"
+                              AutoGenerateColumns="False"
+                              BorderBrush="#D0D7DE"
+                              BorderThickness="1"
+                              CanUserAddRows="False"
+                              CanUserDeleteRows="False"
+                              CanUserReorderColumns="False"
+                              CanUserResizeRows="False"
+                              AlternatingRowBackground="#F6F8FA"
+                              RowBackground="White"
+                              GridLinesVisibility="None"
+                              HeadersVisibility="Column"
+                              HorizontalScrollBarVisibility="Disabled"
+                              IsReadOnly="True"
+                              RowHeaderWidth="0"
+                              SelectionMode="Single"
+                              VerticalScrollBarVisibility="Auto">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Field"
+                                                Binding="{Binding Name}"
+                                                Width="200" />
+                            <DataGridTemplateColumn Header="Value" Width="*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Margin="4,2"
+                                                   FontFamily="Consolas"
+                                                   Text="{Binding Value}"
+                                                   TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+
+                <GridSplitter Grid.Row="1"
+                              Height="5"
+                              VerticalAlignment="Stretch"
+                              HorizontalAlignment="Stretch"
+                              ResizeDirection="Rows"
+                              ShowsPreview="True"
+                              Background="#EEF1F4"
+                              Visibility="{Binding HasSelectedFields, Converter={StaticResource BooleanToVisibilityConverter}}" />
+
+                <TextBox x:Name="PayloadTextBox"
+                         Grid.Row="2"
+                         AcceptsReturn="True"
+                         AcceptsTab="True"
+                         FontFamily="Consolas"
+                         FontSize="13"
+                         FontWeight="Light"
+                         Foreground="#444C56"
+                         HorizontalScrollBarVisibility="Auto"
+                         IsReadOnly="True"
+                         Text="{Binding SelectedPayloadText, Mode=OneWay}"
+                         TextWrapping="NoWrap"
+                         VerticalScrollBarVisibility="Auto" />
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
