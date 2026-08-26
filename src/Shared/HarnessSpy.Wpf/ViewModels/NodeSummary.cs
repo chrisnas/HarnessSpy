@@ -13,6 +13,7 @@ public sealed class NodeSummary
             McpCalls = [],
             Thoughts = [],
             Skills = [],
+            Commands = [],
             WrittenFiles = [],
             Subagents = [],
             Kpis = []
@@ -55,6 +56,8 @@ public sealed class NodeSummary
 
     public required IReadOnlyList<string> Skills { get; init; }
 
+    public required IReadOnlyList<string> Commands { get; init; }
+
     public required IReadOnlyList<string> WrittenFiles { get; init; }
 
     public required IReadOnlyList<SubagentSummary> Subagents { get; init; }
@@ -72,6 +75,8 @@ public sealed class NodeSummary
     public bool HasThoughts => ThoughtCount > 0;
 
     public bool HasSkills => Skills.Count > 0;
+
+    public bool HasCommands => Commands.Count > 0;
 
     public bool HasWrittenFiles => WrittenFiles.Count > 0;
 

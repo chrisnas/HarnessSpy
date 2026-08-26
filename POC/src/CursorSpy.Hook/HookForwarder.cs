@@ -8,6 +8,9 @@ public interface IHookPayloadSink
     Task ForwardAsync(ReadOnlyMemory<byte> payloadLine, CancellationToken cancellationToken);
 }
 
+internal sealed class NamedPipeUnavailableException(string pipeName, Exception innerException)
+    : IOException($"The named pipe '{pipeName}' is unavailable.", innerException);
+
 public sealed class NamedPipePayloadSink(
     string pipeName = HookForwarder.DefaultPipeName,
     TimeSpan? timeout = null) : IHookPayloadSink
@@ -26,7 +29,18 @@ public sealed class NamedPipePayloadSink(
             PipeDirection.Out,
             PipeOptions.Asynchronous);
 
-        await pipe.ConnectAsync(timeoutSource.Token).ConfigureAwait(false);
+        try
+        {
+            await pipe.ConnectAsync(timeoutSource.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            // The WPF viewer is optional. An unavailable listener is expected
+            // when it is not running, so let the forwarder distinguish this
+            // from a failure after a connection was established.
+            throw new NamedPipeUnavailableException(pipeName, exception);
+        }
+
         await pipe.WriteAsync(payloadLine, timeoutSource.Token).ConfigureAwait(false);
         await pipe.WriteAsync(NewLine, timeoutSource.Token).ConfigureAwait(false);
         await pipe.FlushAsync(timeoutSource.Token).ConfigureAwait(false);
@@ -47,24 +61,31 @@ public sealed class HookForwarder(IHookPayloadSink sink, IHookDiagnostics? diagn
         TextWriter output,
         CancellationToken cancellationToken = default)
     {
-        _ = args;
+        // The host cannot tell us which hook fired once stdin is empty, so the
+        // registered hook name is passed explicitly via --hook and used to label
+        // diagnostics even when the payload never arrives.
+        string? configuredHookName = ReadConfiguredHookName(args);
+        string rawPayload = string.Empty;
+        string hookEventName = configuredHookName ?? "unknownHook";
+        string sessionId = "unknownSession";
+        string? sourceFilePath = null;
 
         try
         {
-            string rawPayload = await input.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+            rawPayload = await input.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
 
             // Defensively drop a leading UTF-8/UTF-16 BOM character; JsonDocument.Parse
             // rejects it as an invalid start-of-value token.
             rawPayload = rawPayload.TrimStart('\uFEFF');
 
-            string hookEventName = ReadHookEventName(rawPayload);
-            string sessionId = ReadStringProperty(rawPayload, "session_id");
+            hookEventName = ReadHookEventName(rawPayload, configuredHookName);
+            sessionId = ReadStringProperty(rawPayload, "session_id");
 
             // Persist the raw payload first so we can confirm the hook was invoked
             // even when parsing or pipe forwarding later fails. The returned path
             // travels with the envelope so the viewer can tie a live observation
             // back to its on-disk file (e.g. to delete a captured session).
-            string? sourceFilePath = await _diagnostics
+            sourceFilePath = await _diagnostics
                 .SavePayloadAsync(sessionId, hookEventName, rawPayload, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -87,6 +108,11 @@ public sealed class HookForwarder(IHookPayloadSink sink, IHookDiagnostics? diagn
             {
                 await sink.ForwardAsync(encodedEnvelope, cancellationToken).ConfigureAwait(false);
             }
+            catch (NamedPipeUnavailableException)
+            {
+                // The viewer is not running. The payload is already persisted
+                // and can be loaded later, so this is not an error.
+            }
             catch (Exception forwardException)
             {
                 await _diagnostics.LogErrorAsync(
@@ -98,7 +124,21 @@ public sealed class HookForwarder(IHookPayloadSink sink, IHookDiagnostics? diagn
         catch (Exception ex)
         {
             // Cursor hooks are observational for this POC; failures must not affect Cursor.
-            await SafeLogAsync("Unexpected failure while processing the hook payload.", ex, cancellationToken)
+            sourceFilePath ??= await SafeSavePayloadAsync(
+                sessionId,
+                hookEventName,
+                rawPayload,
+                cancellationToken).ConfigureAwait(false);
+
+            string payloadDescription = rawPayload.Length == 0
+                ? "Payload length: 0 (empty stdin)."
+                : $"Payload length: {rawPayload.Length}.";
+            string payloadPath = sourceFilePath ?? "(payload could not be saved)";
+            await SafeLogAsync(
+                    $"Unexpected failure while processing the '{hookEventName}' hook payload. " +
+                    $"Failed payload file: {payloadPath}. {payloadDescription}",
+                    ex,
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
@@ -110,10 +150,29 @@ public sealed class HookForwarder(IHookPayloadSink sink, IHookDiagnostics? diagn
         return 0;
     }
 
-    private static string ReadHookEventName(string rawPayload)
+    private static string ReadHookEventName(string rawPayload, string? configuredHookName)
     {
         string value = ReadStringProperty(rawPayload, "hook_event_name");
-        return string.IsNullOrWhiteSpace(value) ? "unknownHook" : value;
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        return configuredHookName ?? "unknownHook";
+    }
+
+    private static string? ReadConfiguredHookName(string[] args)
+    {
+        for (int index = 0; index < args.Length; index++)
+        {
+            if (args[index] == "--hook" && index + 1 < args.Length)
+            {
+                string value = args[index + 1];
+                return string.IsNullOrWhiteSpace(value) ? null : value;
+            }
+        }
+
+        return null;
     }
 
     private static string ReadStringProperty(string rawPayload, string propertyName)
@@ -137,6 +196,24 @@ public sealed class HookForwarder(IHookPayloadSink sink, IHookDiagnostics? diagn
         }
 
         return string.Empty;
+    }
+
+    private async Task<string?> SafeSavePayloadAsync(
+        string sessionId,
+        string hookEventName,
+        string rawPayload,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _diagnostics
+                .SavePayloadAsync(sessionId, hookEventName, rawPayload, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private async Task SafeLogAsync(string context, Exception exception, CancellationToken cancellationToken)

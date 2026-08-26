@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.IO;
 using System.Linq;
 using HarnessSpy.Core.Providers;
@@ -130,6 +131,20 @@ public sealed class HookObservation
         ReadString(Payload, "file_path") ?? ReadToolInputString("file_path") ?? ReadToolInputString("path");
 
     public string? SkillName => TryGetSkillName(TargetFilePath);
+
+    // A "/name" token anywhere in the submitted prompt is an explicit
+    // invocation of a command or a skill (e.g. "/dotnet-memory-analysis look
+    // at ..."). Only populated for beforeSubmitPrompt; empty for every other
+    // hook.
+    public IReadOnlyList<string> SlashCommands => TryGetSlashCommands(PromptText);
+
+    // Skills the agent names in its own reasoning, phrased as "<skill-id>
+    // skill" (e.g. "follow the dotnet-memory-analysis skill"). Mined only from
+    // afterAgentThought text; empty for every other hook.
+    public IReadOnlyList<string> SkillMentions =>
+        StringComparer.Ordinal.Equals(HookEventName, "afterAgentThought")
+            ? TryGetSkillMentions(Text)
+            : [];
 
     public bool HasTokenCounts =>
         InputTokens is not null ||
@@ -523,6 +538,124 @@ public sealed class HookObservation
         string? name = Path.GetFileName(directory);
         return string.IsNullOrWhiteSpace(name) ? null : name;
     }
+
+    // Detects every "/name" invocation in the submitted prompt, wherever it
+    // appears. Cursor sends slash commands and slash-invoked skills verbatim, so
+    // a token like "/dotnet-memory-analysis" identifies the command or skill
+    // regardless of whether its SKILL.md was ever read. Each token must stand on
+    // its own (start of text or after whitespace) and end at whitespace,
+    // end-of-text, or sentence punctuation, which keeps paths and URLs
+    // (C:/foo, http://host, and/or) from being mistaken for commands. Returns
+    // the distinct tokens with their leading slash (e.g. "/dotnet-memory-analysis").
+    public static IReadOnlyList<string> TryGetSlashCommands(string? promptText)
+    {
+        if (string.IsNullOrWhiteSpace(promptText))
+        {
+            return [];
+        }
+
+        string text = ExtractUserQuery(promptText);
+        List<string>? commands = null;
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] != '/')
+            {
+                continue;
+            }
+
+            if (i > 0 && !char.IsWhiteSpace(text[i - 1]))
+            {
+                continue;
+            }
+
+            int nameStart = i + 1;
+            if (nameStart >= text.Length || !IsCommandStart(text[nameStart]))
+            {
+                continue;
+            }
+
+            int end = nameStart;
+            while (end < text.Length && IsCommandChar(text[end]))
+            {
+                end++;
+            }
+
+            if (end < text.Length && !IsCommandTerminator(text[end]))
+            {
+                continue;
+            }
+
+            string command = text[i..end];
+            commands ??= [];
+            if (!commands.Contains(command, StringComparer.OrdinalIgnoreCase))
+            {
+                commands.Add(command);
+            }
+        }
+
+        return commands ?? (IReadOnlyList<string>)[];
+    }
+
+    // Matches "<skill-id> skill" references the agent writes in its reasoning,
+    // e.g. "follow the dotnet-memory-analysis skill". The id must be hyphenated
+    // so generic phrases ("this skill", "analysis skill") are ignored, and any
+    // surrounding markdown emphasis (**id** skill, `id` skill) is tolerated.
+    // Returns the distinct skill ids in lower case.
+    public static IReadOnlyList<string> TryGetSkillMentions(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return [];
+        }
+
+        List<string>? mentions = null;
+        foreach (Match match in SkillMentionRegex.Matches(text))
+        {
+            string name = match.Groups[1].Value.ToLowerInvariant();
+            mentions ??= [];
+            if (!mentions.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                mentions.Add(name);
+            }
+        }
+
+        return mentions ?? (IReadOnlyList<string>)[];
+    }
+
+    private static readonly Regex SkillMentionRegex = new(
+        @"(?<![\w-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)[*`_]*\s+skills?\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    // When the payload carries the fully expanded prompt (skills block, then the
+    // user text wrapped in <user_query>), the invocation lives inside that tag;
+    // otherwise the raw prompt is used as-is.
+    private static string ExtractUserQuery(string text)
+    {
+        const string open = "<user_query>";
+        const string close = "</user_query>";
+
+        int start = text.IndexOf(open, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return text;
+        }
+
+        start += open.Length;
+        int end = text.IndexOf(close, start, StringComparison.Ordinal);
+        return end < 0 ? text[start..] : text[start..end];
+    }
+
+    private static bool IsCommandStart(char c) => char.IsLetterOrDigit(c);
+
+    private static bool IsCommandChar(char c) =>
+        char.IsLetterOrDigit(c) || c is '-' or '_';
+
+    // A slash command is delimited by whitespace, end-of-text, or sentence
+    // punctuation; ':' , '/' and '\' are excluded so path fragments (e.g. the
+    // "/c" in "/c:/Users") are rejected rather than truncated into a command.
+    private static bool IsCommandTerminator(char c) =>
+        char.IsWhiteSpace(c) || c is '.' or ',' or ';' or '!' or '?' or ')' or ']' or '}' or '"' or '\'';
 
     // Builds "{hookEventName} · {detail} · {timing}", omitting either segment
     // when there is nothing relevant to show for that event.

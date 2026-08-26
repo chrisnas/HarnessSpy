@@ -57,16 +57,60 @@ public sealed class HookForwarderTests
     {
         string pipeName = "CursorSpy.Tests.Missing." + Guid.NewGuid().ToString("N");
         string payload = """{"hook_event_name":"stop","conversation_id":"conversation-1","workspace_roots":["C:\\Repo"]}""";
-        StringWriter output = new();
-        HookForwarder forwarder = new(new NamedPipePayloadSink(pipeName, TimeSpan.FromMilliseconds(50)));
+        string folder = Path.Combine(
+            Path.GetTempPath(),
+            "CursorSpyMissingPipeTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
 
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        int exitCode = await forwarder.RunAsync([], new StringReader(payload), output);
-        stopwatch.Stop();
+        try
+        {
+            StringWriter output = new();
+            FileHookDiagnostics diagnostics = new(folder);
+            HookForwarder forwarder = new(
+                new NamedPipePayloadSink(pipeName, TimeSpan.FromMilliseconds(50)),
+                diagnostics);
 
-        Assert.Equal(0, exitCode);
-        Assert.Equal("{}", output.ToString());
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2));
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            int exitCode = await forwarder.RunAsync([], new StringReader(payload), output);
+            stopwatch.Stop();
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("{}", output.ToString());
+            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2));
+            Assert.False(File.Exists(Path.Combine(folder, FileHookDiagnostics.ErrorLogFileName)));
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SinkWriteFailureIsStillLogged()
+    {
+        const string payload =
+            """{"hook_event_name":"stop","conversation_id":"conversation-1","workspace_roots":["C:\\Repo"]}""";
+        string folder = Path.Combine(
+            Path.GetTempPath(),
+            "CursorSpySinkFailureTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+
+        try
+        {
+            FileHookDiagnostics diagnostics = new(folder);
+            HookForwarder forwarder = new(new FailingSink(), diagnostics);
+
+            await forwarder.RunAsync([], new StringReader(payload), new StringWriter());
+
+            string errorLog = await File.ReadAllTextAsync(
+                Path.Combine(folder, FileHookDiagnostics.ErrorLogFileName));
+            Assert.Contains("Failed to forward 'stop'", errorLog, StringComparison.Ordinal);
+            Assert.Contains("Simulated pipe write failure.", errorLog, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
     }
 
     [Fact]
@@ -81,6 +125,45 @@ public sealed class HookForwarderTests
         Assert.Equal(0, exitCode);
         Assert.Equal("{}", output.ToString());
         Assert.Empty(sink.ForwardedLines);
+    }
+
+    [Theory]
+    [InlineData("{", "Payload length: 1.")]
+    [InlineData("", "Payload length: 0 (empty stdin).")]
+    public async Task FailedPayloadIsSavedAndLinkedFromErrorLog(
+        string payload,
+        string expectedPayloadDescription)
+    {
+        string folder = Path.Combine(
+            Path.GetTempPath(),
+            "CursorSpyFailedPayloadTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+
+        try
+        {
+            RecordingSink sink = new();
+            FileHookDiagnostics diagnostics = new(folder);
+            HookForwarder forwarder = new(sink, diagnostics);
+            StringWriter output = new();
+
+            int exitCode = await forwarder.RunAsync([], new StringReader(payload), output);
+
+            string payloadFile = Assert.Single(
+                Directory.EnumerateFiles(Path.Combine(folder, "Payloads"), "*.json"));
+            string errorLog = await File.ReadAllTextAsync(
+                Path.Combine(folder, FileHookDiagnostics.ErrorLogFileName));
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("{}", output.ToString());
+            Assert.Empty(sink.ForwardedLines);
+            Assert.Equal(payload, await File.ReadAllTextAsync(payloadFile));
+            Assert.Contains($"Failed payload file: {payloadFile}.", errorLog, StringComparison.Ordinal);
+            Assert.Contains(expectedPayloadDescription, errorLog, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
     }
 
     [Fact]
@@ -125,6 +208,12 @@ public sealed class HookForwarderTests
             ForwardedLines.Add(Encoding.UTF8.GetString(payloadLine.Span));
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class FailingSink : IHookPayloadSink
+    {
+        public Task ForwardAsync(ReadOnlyMemory<byte> payloadLine, CancellationToken cancellationToken)
+            => Task.FromException(new IOException("Simulated pipe write failure."));
     }
 }
 

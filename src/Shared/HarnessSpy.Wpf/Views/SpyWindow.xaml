@@ -163,6 +163,33 @@
                                     </ItemsControl>
                                 </StackPanel>
 
+                                <StackPanel Margin="0,4,0,0"
+                                            Visibility="{Binding NodeSummary.HasCommands, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Commands" />
+                                    <ItemsControl ItemsSource="{Binding NodeSummary.Commands}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,6,4"
+                                                        Padding="8,2"
+                                                        Background="#ECFDF5"
+                                                        BorderBrush="#A7F3D0"
+                                                        BorderThickness="1"
+                                                        CornerRadius="10">
+                                                    <TextBlock FontSize="12"
+                                                               FontFamily="Consolas"
+                                                               Foreground="#065F46"
+                                                               Text="{Binding}" />
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+
                                 <StackPanel Margin="0,8,0,0"
                                             Visibility="{Binding NodeSummary.HasThoughts, Converter={StaticResource BooleanToVisibilityConverter}}">
                                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Agent thoughts" />
@@ -496,6 +523,30 @@
                                             BorderThickness="1"
                                             CornerRadius="12">
                                         <TextBlock Foreground="#3730A3" Text="{Binding}" />
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasCommands, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Commands" />
+                        <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.Commands}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="0,0,8,8"
+                                            Padding="10,4"
+                                            Background="#ECFDF5"
+                                            BorderBrush="#A7F3D0"
+                                            BorderThickness="1"
+                                            CornerRadius="12">
+                                        <TextBlock FontFamily="Consolas" Foreground="#065F46" Text="{Binding}" />
                                     </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>

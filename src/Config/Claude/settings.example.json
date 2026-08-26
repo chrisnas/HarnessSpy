@@ -14,9 +14,11 @@
               "--event",
               "SessionStart",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "SessionStart"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -31,9 +33,11 @@
               "--event",
               "UserPromptSubmit",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "UserPromptSubmit"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -48,9 +52,11 @@
               "--event",
               "PreToolUse",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "PreToolUse"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -65,9 +71,11 @@
               "--event",
               "PermissionRequest",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "PermissionRequest"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -82,9 +90,11 @@
               "--event",
               "PermissionDenied",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "PermissionDenied"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -99,9 +109,11 @@
               "--event",
               "PostToolUse",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "PostToolUse"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -116,9 +128,11 @@
               "--event",
               "PostToolUseFailure",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "PostToolUseFailure"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -133,9 +147,11 @@
               "--event",
               "PostToolBatch",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "PostToolBatch"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -150,9 +166,11 @@
               "--event",
               "SubagentStart",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "SubagentStart"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -167,9 +185,11 @@
               "--event",
               "SubagentStop",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "SubagentStop"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -184,9 +204,11 @@
               "--event",
               "Stop",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "Stop"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -201,9 +223,11 @@
               "--event",
               "StopFailure",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "StopFailure"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -218,9 +242,11 @@
               "--event",
               "PreCompact",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "PreCompact"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -235,9 +261,11 @@
               "--event",
               "PostCompact",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "PostCompact"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -252,9 +280,11 @@
               "--event",
               "InstructionsLoaded",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "InstructionsLoaded"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -269,9 +299,11 @@
               "--event",
               "ConfigChange",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "ConfigChange"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -286,9 +318,11 @@
               "--event",
               "CwdChanged",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "CwdChanged"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -303,9 +337,11 @@
               "--event",
               "DirectoryAdded",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "DirectoryAdded"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }
@@ -320,9 +356,11 @@
               "--event",
               "SessionEnd",
               "--source",
-              "claude-template"
+              "claude-template",
+              "--hook",
+              "SessionEnd"
             ],
-            "timeout": 2
+            "timeout": 5
           }
         ]
       }

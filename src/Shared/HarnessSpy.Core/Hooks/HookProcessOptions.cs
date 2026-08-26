@@ -44,7 +44,8 @@ public sealed record ProviderProfile(
 public sealed record HookProcessOptions(
     ProviderProfile Profile,
     string? ConfiguredEventName = null,
-    string? SourceConfigurationId = null);
+    string? SourceConfigurationId = null,
+    string? ConfiguredHookName = null);
 
 public static class HookArguments
 {
@@ -52,6 +53,7 @@ public static class HookArguments
     {
         string? eventName = defaults.ConfiguredEventName;
         string? source = defaults.SourceConfigurationId;
+        string? hookName = defaults.ConfiguredHookName;
 
         for (int index = 0; index < args.Length; index++)
         {
@@ -64,12 +66,17 @@ public static class HookArguments
             {
                 source = args[++index];
             }
+            else if (argument == "--hook" && index + 1 < args.Length)
+            {
+                hookName = args[++index];
+            }
         }
 
         return defaults with
         {
             ConfiguredEventName = eventName,
-            SourceConfigurationId = source
+            SourceConfigurationId = source,
+            ConfiguredHookName = hookName
         };
     }
 }

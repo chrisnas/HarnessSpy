@@ -4,9 +4,9 @@
     "sessionStart": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event sessionStart --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event sessionStart --source copilot-template --hook sessionStart",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -15,9 +15,9 @@
     "sessionEnd": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event sessionEnd --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event sessionEnd --source copilot-template --hook sessionEnd",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -26,9 +26,9 @@
     "userPromptSubmitted": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event userPromptSubmitted --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event userPromptSubmitted --source copilot-template --hook userPromptSubmitted",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -37,9 +37,9 @@
     "userPromptTransformed": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event userPromptTransformed --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event userPromptTransformed --source copilot-template --hook userPromptTransformed",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -48,9 +48,9 @@
     "preToolUse": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event preToolUse --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event preToolUse --source copilot-template --hook preToolUse",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -59,9 +59,9 @@
     "postToolUse": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event postToolUse --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event postToolUse --source copilot-template --hook postToolUse",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -70,9 +70,9 @@
     "postToolUseFailure": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event postToolUseFailure --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event postToolUseFailure --source copilot-template --hook postToolUseFailure",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -81,9 +81,9 @@
     "permissionRequest": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event permissionRequest --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event permissionRequest --source copilot-template --hook permissionRequest",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -92,9 +92,9 @@
     "notification": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event notification --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event notification --source copilot-template --hook notification",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -103,9 +103,9 @@
     "agentStop": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event agentStop --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event agentStop --source copilot-template --hook agentStop",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -114,9 +114,9 @@
     "subagentStart": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event subagentStart --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event subagentStart --source copilot-template --hook subagentStart",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -125,9 +125,9 @@
     "subagentStop": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event subagentStop --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event subagentStop --source copilot-template --hook subagentStop",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -136,9 +136,9 @@
     "errorOccurred": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event errorOccurred --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event errorOccurred --source copilot-template --hook errorOccurred",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }
@@ -147,9 +147,9 @@
     "preCompact": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event preCompact --source copilot-template",
+        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event preCompact --source copilot-template --hook preCompact",
         "cwd": ".",
-        "timeoutSec": 2,
+        "timeoutSec": 5,
         "env": {
           "HARNESS_SPY_HOST": "github-copilot"
         }

@@ -222,6 +222,14 @@ public sealed class TreeNodeViewModel : ObservableObject
 
         NodeSummary = NodeSummaryBuilder.Build(Children, isSession: true, turnCount, abortedTurnCount);
         Summary = NodeSummary.Badge;
+
+        // Relabel the session with its opening prompt (like turn nodes) so the
+        // tree reads by intent instead of an opaque conversation id. Falls back
+        // to the id until the first prompt is seen.
+        if (FindPrompt(Children) is string prompt)
+        {
+            Header = BuildPromptPreview(prompt);
+        }
     }
 
     // Returns the chain of nodes from the containing root down to (and

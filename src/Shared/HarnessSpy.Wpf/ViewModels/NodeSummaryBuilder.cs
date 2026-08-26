@@ -17,6 +17,7 @@ internal static class NodeSummaryBuilder
         Dictionary<string, SubagentAccumulator> subagents = new(StringComparer.Ordinal);
         Dictionary<string, TokenSnapshot> tokensByGeneration = new(StringComparer.Ordinal);
         SortedSet<string> skills = new(StringComparer.OrdinalIgnoreCase);
+        SortedSet<string> slashCommands = new(StringComparer.OrdinalIgnoreCase);
         SortedSet<string> writtenFiles = new(StringComparer.OrdinalIgnoreCase);
 
         int edits = 0;
@@ -36,6 +37,7 @@ internal static class NodeSummaryBuilder
             subagents,
             tokensByGeneration,
             skills,
+            slashCommands,
             writtenFiles,
             ref edits,
             ref commands,
@@ -93,6 +95,7 @@ internal static class NodeSummaryBuilder
             McpCalls = mcpRows,
             Thoughts = thoughtRows,
             Skills = skills.ToArray(),
+            Commands = slashCommands.ToArray(),
             WrittenFiles = writtenFiles.ToArray(),
             Subagents = subagentRows,
             Kpis = BuildKpis(
@@ -131,6 +134,7 @@ internal static class NodeSummaryBuilder
         Dictionary<string, SubagentAccumulator> subagents,
         Dictionary<string, TokenSnapshot> tokensByGeneration,
         SortedSet<string> skills,
+        SortedSet<string> slashCommands,
         SortedSet<string> writtenFiles,
         ref int edits,
         ref int commands,
@@ -154,6 +158,7 @@ internal static class NodeSummaryBuilder
                     subagents,
                     tokensByGeneration,
                     skills,
+                    slashCommands,
                     writtenFiles,
                     ref edits,
                     ref commands,
@@ -175,6 +180,7 @@ internal static class NodeSummaryBuilder
                     subagents,
                     tokensByGeneration,
                     skills,
+                    slashCommands,
                     writtenFiles,
                     ref edits,
                     ref commands,
@@ -196,6 +202,7 @@ internal static class NodeSummaryBuilder
         Dictionary<string, SubagentAccumulator> subagents,
         Dictionary<string, TokenSnapshot> tokensByGeneration,
         SortedSet<string> skills,
+        SortedSet<string> slashCommands,
         SortedSet<string> writtenFiles,
         ref int edits,
         ref int commands,
@@ -220,6 +227,16 @@ internal static class NodeSummaryBuilder
         if (observation.SkillName is string skillName)
         {
             skills.Add(skillName);
+        }
+
+        foreach (string mentionedSkill in observation.SkillMentions)
+        {
+            skills.Add(mentionedSkill);
+        }
+
+        foreach (string slashCommand in observation.SlashCommands)
+        {
+            slashCommands.Add(slashCommand);
         }
 
         RecordTokens(observation, tokensByGeneration);

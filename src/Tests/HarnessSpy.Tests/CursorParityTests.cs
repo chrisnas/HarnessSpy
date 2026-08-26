@@ -57,16 +57,60 @@ public sealed class HookForwarderTests
     {
         string pipeName = "CursorSpy.Tests.Missing." + Guid.NewGuid().ToString("N");
         string payload = """{"hook_event_name":"stop","conversation_id":"conversation-1","workspace_roots":["C:\\Repo"]}""";
-        StringWriter output = new();
-        HookForwarder forwarder = new(new NamedPipePayloadSink(pipeName, TimeSpan.FromMilliseconds(50)));
+        string folder = Path.Combine(
+            Path.GetTempPath(),
+            "HarnessSpyMissingPipeTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
 
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        int exitCode = await forwarder.RunAsync([], new StringReader(payload), output);
-        stopwatch.Stop();
+        try
+        {
+            StringWriter output = new();
+            FileHookDiagnostics diagnostics = new(folder);
+            HookForwarder forwarder = new(
+                new NamedPipePayloadSink(pipeName, TimeSpan.FromMilliseconds(50)),
+                diagnostics);
 
-        Assert.Equal(0, exitCode);
-        Assert.Equal("{}", output.ToString());
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2));
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            int exitCode = await forwarder.RunAsync([], new StringReader(payload), output);
+            stopwatch.Stop();
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("{}", output.ToString());
+            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2));
+            Assert.False(File.Exists(Path.Combine(folder, FileHookDiagnostics.ErrorLogFileName)));
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SinkWriteFailureIsStillLogged()
+    {
+        const string payload =
+            """{"hook_event_name":"stop","conversation_id":"conversation-1","workspace_roots":["C:\\Repo"]}""";
+        string folder = Path.Combine(
+            Path.GetTempPath(),
+            "HarnessSpySinkFailureTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+
+        try
+        {
+            FileHookDiagnostics diagnostics = new(folder);
+            HookForwarder forwarder = new(new FailingSink(), diagnostics);
+
+            await forwarder.RunAsync([], new StringReader(payload), new StringWriter());
+
+            string errorLog = await File.ReadAllTextAsync(
+                Path.Combine(folder, FileHookDiagnostics.ErrorLogFileName));
+            Assert.Contains("Failed to forward 'stop'", errorLog, StringComparison.Ordinal);
+            Assert.Contains("Simulated pipe write failure.", errorLog, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
     }
 
     [Fact]
@@ -81,6 +125,45 @@ public sealed class HookForwarderTests
         Assert.Equal(0, exitCode);
         Assert.Equal("{}", output.ToString());
         Assert.Empty(sink.ForwardedLines);
+    }
+
+    [Theory]
+    [InlineData("{", "Payload length: 1.")]
+    [InlineData("", "Payload length: 0 (empty stdin).")]
+    public async Task FailedPayloadIsSavedAndLinkedFromErrorLog(
+        string payload,
+        string expectedPayloadDescription)
+    {
+        string folder = Path.Combine(
+            Path.GetTempPath(),
+            "HarnessSpyFailedPayloadTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+
+        try
+        {
+            RecordingSink sink = new();
+            FileHookDiagnostics diagnostics = new(folder);
+            HookForwarder forwarder = new(sink, diagnostics);
+            StringWriter output = new();
+
+            int exitCode = await forwarder.RunAsync([], new StringReader(payload), output);
+
+            string payloadFile = Assert.Single(
+                Directory.EnumerateFiles(Path.Combine(folder, "Payloads"), "*.json"));
+            string errorLog = await File.ReadAllTextAsync(
+                Path.Combine(folder, FileHookDiagnostics.ErrorLogFileName));
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("{}", output.ToString());
+            Assert.Empty(sink.ForwardedLines);
+            Assert.Equal(payload, await File.ReadAllTextAsync(payloadFile));
+            Assert.Contains($"Failed payload file: {payloadFile}.", errorLog, StringComparison.Ordinal);
+            Assert.Contains(expectedPayloadDescription, errorLog, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
     }
 
     [Fact]
@@ -126,6 +209,12 @@ public sealed class HookForwarderTests
             return Task.CompletedTask;
         }
     }
+
+    private sealed class FailingSink : IHookPayloadSink
+    {
+        public Task ForwardAsync(ReadOnlyMemory<byte> payloadLine, CancellationToken cancellationToken)
+            => Task.FromException(new IOException("Simulated pipe write failure."));
+    }
 }
 
 public sealed class ProjectionTests
@@ -148,7 +237,7 @@ public sealed class ProjectionTests
         TreeNodeViewModel noWorkspace = Assert.Single(viewModel.Roots, root => root.Header == "No workspace");
         TreeNodeViewModel unknownWorkspace = Assert.Single(viewModel.Roots, root => root.Header == "Unknown workspace");
 
-        TreeNodeViewModel sessionOne = Assert.Single(repoWorkspace.Children, child => child.Header == "conversation-1");
+        TreeNodeViewModel sessionOne = Assert.Single(repoWorkspace.Children, child => child.Header == "stay put");
         Assert.Equal(2, sessionOne.Children.Count);
         Assert.Contains(repoWorkspace.Children, child => child.Kind == TreeNodeKind.Observation && child.Header.StartsWith("workspaceOpen", StringComparison.Ordinal));
         Assert.Contains(repoWorkspace.Children, child => child.Header == "Unknown session");
@@ -232,7 +321,7 @@ public sealed class ProjectionTests
         TreeNodeViewModel workspace = Assert.Single(viewModel.Roots);
         TreeNodeViewModel session = Assert.Single(workspace.Children);
 
-        Assert.Equal("conv-1", session.Header);
+        Assert.Equal("add logging to Foo", session.Header);
         Assert.Single(session.Children, child => child.Kind == TreeNodeKind.Observation && child.Header.StartsWith("sessionStart", StringComparison.Ordinal));
         Assert.Single(session.Children, child => child.Kind == TreeNodeKind.Observation && child.Header.StartsWith("sessionEnd", StringComparison.Ordinal));
 
@@ -783,6 +872,37 @@ public sealed class NodeSummaryTests
         Assert.Equal(expected, HookObservation.TryGetSkillName(path));
     }
 
+    [Theory]
+    [InlineData("/dotnet-memory-analysis look at C:\\dump for leaks", "/dotnet-memory-analysis")]
+    [InlineData("  /loop 5m do the thing", "/loop")]
+    [InlineData("/split-to-prs", "/split-to-prs")]
+    [InlineData("<user_query>\n/dotnet-memory-analysis analyze\n</user_query>", "/dotnet-memory-analysis")]
+    [InlineData("please analyze with /dotnet-memory-analysis the dump", "/dotnet-memory-analysis")]
+    [InlineData("please run /loop later.", "/loop")]
+    [InlineData("run /loop and then /split-to-prs now", "/loop,/split-to-prs")]
+    [InlineData("/c:/Users/me/skills/canvas/SKILL.md", "")]
+    [InlineData("use and/or logic and see http://example.com", "")]
+    [InlineData("just a normal prompt", "")]
+    [InlineData("", "")]
+    public void TryGetSlashCommandsDetectsInvocationsAnywhere(string prompt, string expected)
+    {
+        Assert.Equal(expected, string.Join(",", HookObservation.TryGetSlashCommands(prompt)));
+    }
+
+    [Theory]
+    [InlineData("follow the dotnet-memory-analysis skill workflow", "dotnet-memory-analysis")]
+    [InlineData("pivot to **dotnet-threads-analysis** skill", "dotnet-threads-analysis")]
+    [InlineData("use the `windbg-bridge` skill here", "windbg-bridge")]
+    [InlineData("the dotnet-memory-analysis skill then the windbg-bridge skill", "dotnet-memory-analysis,windbg-bridge")]
+    [InlineData("the memory analysis skill is generic", "")]
+    [InlineData("this skill is great", "")]
+    [InlineData("no mention at all", "")]
+    [InlineData("", "")]
+    public void TryGetSkillMentionsFindsHyphenatedSkillReferences(string text, string expected)
+    {
+        Assert.Equal(expected, string.Join(",", HookObservation.TryGetSkillMentions(text)));
+    }
+
     [Fact]
     public void TurnSummaryCapturesToolsMcpSkillsTokensAndSubagents()
     {
@@ -791,7 +911,7 @@ public sealed class NodeSummaryTests
             """{"hook_event_name":"sessionStart","conversation_id":"conv-1","workspace_roots":["C:\\Repo"]}""",
             "2026-08-20T12:00:00Z"));
         viewModel.AddObservation(ParsePayload(
-            """{"hook_event_name":"beforeSubmitPrompt","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"prompt":"analyze the dump"}""",
+            """{"hook_event_name":"beforeSubmitPrompt","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"prompt":"/dotnet-memory-analysis analyze the dump"}""",
             "2026-08-20T12:00:01Z"));
         viewModel.AddObservation(ParsePayload(
             """{"hook_event_name":"afterAgentThought","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"text":"read the skill","duration_ms":1500}""",
@@ -848,6 +968,7 @@ public sealed class NodeSummaryTests
         Assert.Equal("dotnet-dstrings/get_duplicated_strings", Assert.Single(summary.McpCalls).Name);
         Assert.Equal(50, Assert.Single(summary.McpCalls).DurationMs);
         Assert.Equal(["dotnet-threads-analysis"], summary.Skills.ToArray());
+        Assert.Equal(["/dotnet-memory-analysis"], summary.Commands.ToArray());
         Assert.Equal(2, summary.ThoughtCount);
         Assert.Equal(4000, summary.ThoughtDurationMs);
         Assert.Equal(32, summary.ThoughtCharacterCount);

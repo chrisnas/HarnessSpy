@@ -3,128 +3,128 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook sessionStart",
+        "timeout": 5
       }
     ],
     "sessionEnd": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook sessionEnd",
+        "timeout": 5
       }
     ],
     "beforeSubmitPrompt": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeSubmitPrompt",
+        "timeout": 5
       }
     ],
     "afterAgentThought": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterAgentThought",
+        "timeout": 5
       }
     ],
     "afterAgentResponse": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterAgentResponse",
+        "timeout": 5
       }
     ],
     "preToolUse": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook preToolUse",
+        "timeout": 5
       }
     ],
     "postToolUse": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook postToolUse",
+        "timeout": 5
       }
     ],
     "postToolUseFailure": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook postToolUseFailure",
+        "timeout": 5
       }
     ],
     "beforeShellExecution": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeShellExecution",
+        "timeout": 5
       }
     ],
     "afterShellExecution": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterShellExecution",
+        "timeout": 5
       }
     ],
     "beforeMCPExecution": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeMCPExecution",
+        "timeout": 5
       }
     ],
     "afterMCPExecution": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterMCPExecution",
+        "timeout": 5
       }
     ],
     "beforeReadFile": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeReadFile",
+        "timeout": 5
       }
     ],
     "afterFileEdit": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterFileEdit",
+        "timeout": 5
       }
     ],
     "subagentStart": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook subagentStart",
+        "timeout": 5
       }
     ],
     "subagentStop": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook subagentStop",
+        "timeout": 5
       }
     ],
     "preCompact": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook preCompact",
+        "timeout": 5
       }
     ],
     "stop": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook stop",
+        "timeout": 5
       }
     ],
     "workspaceOpen": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook workspaceOpen",
+        "timeout": 5
       }
     ],
     "beforeTabFileRead": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeTabFileRead",
+        "timeout": 5
       }
     ],
     "afterTabFileEdit": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe",
-        "timeout": 2
+        "command": "C:\\dev\\research\\AI\\HarnessSpy\\CursorSpy\\POC\\src\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterTabFileEdit",
+        "timeout": 5
       }
     ]
   }

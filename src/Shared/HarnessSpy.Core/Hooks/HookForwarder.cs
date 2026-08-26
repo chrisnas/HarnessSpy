@@ -9,6 +9,9 @@ public interface IHookPayloadSink
     Task ForwardAsync(ReadOnlyMemory<byte> payloadLine, CancellationToken cancellationToken);
 }
 
+internal sealed class NamedPipeUnavailableException(string pipeName, Exception innerException)
+    : IOException($"The named pipe '{pipeName}' is unavailable.", innerException);
+
 public sealed class NamedPipePayloadSink(
     string pipeName,
     TimeSpan? timeout = null) : IHookPayloadSink
@@ -30,7 +33,18 @@ public sealed class NamedPipePayloadSink(
             PipeDirection.Out,
             PipeOptions.Asynchronous);
 
-        await pipe.ConnectAsync(timeoutSource.Token).ConfigureAwait(false);
+        try
+        {
+            await pipe.ConnectAsync(timeoutSource.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            // The WPF viewer is optional. An unavailable listener is expected
+            // when it is not running, so let the forwarder distinguish this
+            // from a failure after a connection was established.
+            throw new NamedPipeUnavailableException(pipeName, exception);
+        }
+
         await pipe.WriteAsync(payloadLine, timeoutSource.Token).ConfigureAwait(false);
         await pipe.WriteAsync(NewLine, timeoutSource.Token).ConfigureAwait(false);
         await pipe.FlushAsync(timeoutSource.Token).ConfigureAwait(false);
@@ -83,21 +97,25 @@ public sealed class HookForwarder
         CancellationToken cancellationToken = default)
     {
         HookProcessOptions effectiveOptions = HookArguments.Apply(args, _options);
+        string rawPayload = string.Empty;
+        string rawEventName = effectiveOptions.ConfiguredEventName ?? "unknownHook";
+        string sessionId = "unknownSession";
+        string? sourceFilePath = null;
 
         try
         {
-            string rawPayload = await input
+            rawPayload = await input
                 .ReadToEndAsync(cancellationToken)
                 .ConfigureAwait(false);
             rawPayload = rawPayload.TrimStart('\uFEFF');
 
             using JsonDocument source = JsonDocument.Parse(rawPayload);
             JsonElement payload = source.RootElement.Clone();
-            string rawEventName =
+            rawEventName =
                 ReadString(payload, "hook_event_name") ??
                 effectiveOptions.ConfiguredEventName ??
                 "unknownHook";
-            string sessionId =
+            sessionId =
                 ReadString(payload, "conversation_id") ??
                 ReadString(payload, "session_id") ??
                 ReadString(payload, "sessionId") ??
@@ -125,7 +143,7 @@ public sealed class HookForwarder
                     ParseStatus: "valid",
                     Payload: payload);
 
-                string? sourceFilePath = await _diagnostics
+                sourceFilePath = await _diagnostics
                     .SaveObservationAsync(
                         effectiveOptions.Profile.Provider,
                         sessionId,
@@ -144,6 +162,11 @@ public sealed class HookForwarder
                         .ForwardAsync(encodedEnvelope, cancellationToken)
                         .ConfigureAwait(false);
                 }
+                catch (NamedPipeUnavailableException)
+                {
+                    // The viewer is not running. The payload is already
+                    // persisted and can be loaded later, so this is not an error.
+                }
                 catch (Exception forwardException)
                 {
                     await SafeLogAsync(
@@ -155,8 +178,22 @@ public sealed class HookForwarder
         }
         catch (Exception ex)
         {
+            sourceFilePath ??= await SafeSavePayloadAsync(
+                sessionId,
+                rawEventName,
+                rawPayload,
+                cancellationToken).ConfigureAwait(false);
+
+            string payloadDescription = rawPayload.Length == 0
+                ? "Payload length: 0 (empty stdin)."
+                : $"Payload length: {rawPayload.Length}.";
+            string payloadPath = sourceFilePath ?? "(payload could not be saved)";
+            // Prefer the explicitly configured hook name so an empty-stdin failure
+            // still identifies which registered hook produced it.
+            string hookLabel = effectiveOptions.ConfiguredHookName ?? rawEventName;
             await SafeLogAsync(
-                "Unexpected failure while processing a hook payload.",
+                $"Unexpected failure while processing the '{hookLabel}' hook payload. " +
+                $"Failed payload file: {payloadPath}. {payloadDescription}",
                 ex,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -183,6 +220,24 @@ public sealed class HookForwarder
 
         string? text = value.GetString();
         return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    private async Task<string?> SafeSavePayloadAsync(
+        string sessionId,
+        string hookEventName,
+        string rawPayload,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _diagnostics
+                .SavePayloadAsync(sessionId, hookEventName, rawPayload, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private async Task SafeLogAsync(

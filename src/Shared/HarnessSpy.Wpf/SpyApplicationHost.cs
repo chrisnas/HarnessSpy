@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Media.Imaging;
 using HarnessSpy.Agent.Abstractions;
 using HarnessSpy.Core.Hooks;
 using HarnessSpy.Core.Models;
@@ -8,9 +9,13 @@ using HarnessSpy.Wpf.Views;
 
 namespace HarnessSpy.Wpf;
 
+// WindowIconUri lets each app override the main window's title-bar icon (the
+// exe/binary icon is set separately via <ApplicationIcon>); null keeps the
+// WPF default.
 public sealed record SpyAppProfile(
     ProviderProfile Provider,
-    IAgentProvider AgentProvider);
+    IAgentProvider AgentProvider,
+    Uri? WindowIconUri = null);
 
 public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
 {
@@ -43,6 +48,11 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
         {
             DataContext = viewModel
         };
+
+        if (profile.WindowIconUri is Uri windowIconUri)
+        {
+            window.Icon = BitmapFrame.Create(windowIconUri);
+        }
 
         application.MainWindow = window;
         window.Show();

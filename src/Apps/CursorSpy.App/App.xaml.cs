@@ -14,7 +14,8 @@ public partial class App : Application
         base.OnStartup(e);
         _host = new SpyApplicationHost(new SpyAppProfile(
             ProviderProfile.Cursor,
-            new UnavailableAgentProvider(ProviderProfile.Cursor.Provider)));
+            new UnavailableAgentProvider(ProviderProfile.Cursor.Provider),
+            new Uri("pack://application:,,,/CursorSpy.App;component/CursorSpy.png")));
         _host.Start(this);
     }
 
