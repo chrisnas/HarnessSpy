@@ -578,6 +578,54 @@ public sealed class NestingAndParallelWaveTests
     }
 
     [Fact]
+    public void PostToolUseMatchesCanonicalInputWhenPropertyOrderDiffers()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"sessionStart","conversation_id":"conv-1","workspace_roots":["C:\\Repo"]}""",
+            "2026-08-20T12:00:00Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_use_id":"tool-canonical","tool_input":{"path":"C:\\Repo\\a.cs","options":{"case_sensitive":false,"patterns":["x","y"]}}}""",
+            "2026-08-20T12:00:01Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_use_id":"tool-canonical","tool_input":{"options":{"patterns":["x","y"],"case_sensitive":false},"path":"C:\\Repo\\a.cs"},"duration":25}""",
+            "2026-08-20T12:00:01.025Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        TreeNodeViewModel preNode = Assert.Single(generation.Children);
+        Assert.Equal("postToolUse", Assert.Single(preNode.Children).Observation!.HookEventName);
+    }
+
+    [Fact]
+    public void AmbiguousIdenticalToolCallsRemainUncorrelated()
+    {
+        MainWindowViewModel viewModel = new();
+        const string sharedId = "shared-call";
+        const string input = """{"command":"dotnet test"}""";
+
+        viewModel.AddObservation(ParsePayload(
+            $$"""{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"{{sharedId}}","tool_input":{{input}}}""",
+            "2026-08-20T12:00:01Z"));
+        viewModel.AddObservation(ParsePayload(
+            $$"""{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"{{sharedId}}","tool_input":{{input}}}""",
+            "2026-08-20T12:00:01.100Z"));
+        viewModel.AddObservation(ParsePayload(
+            $$"""{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"{{sharedId}}","tool_input":{{input}},"duration":100}""",
+            "2026-08-20T12:00:01.200Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        Assert.Equal(3, generation.Children.Count);
+        Assert.Equal(2, generation.Children.Count(
+            child => child.Observation?.HookEventName == "preToolUse"));
+        Assert.Single(
+            generation.Children,
+            child => child.Observation?.HookEventName == "postToolUse");
+        Assert.All(
+            generation.Children.Where(child => child.Observation?.HookEventName == "preToolUse"),
+            child => Assert.Empty(child.Children));
+    }
+
+    [Fact]
     public void PostToolUseFailureNestsUnderMatchingPreToolUse()
     {
         MainWindowViewModel viewModel = new();
@@ -600,6 +648,100 @@ public sealed class NestingAndParallelWaveTests
         TreeNodeViewModel preNode = Assert.Single(generation.Children);
         TreeNodeViewModel failNode = Assert.Single(preNode.Children);
         Assert.Equal("postToolUseFailure", failNode.Observation!.HookEventName);
+    }
+
+    [Fact]
+    public void PostToolUseFailureMatchesReusedIdByInput()
+    {
+        MainWindowViewModel viewModel = new();
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet test"}}""",
+            "2026-08-20T12:00:01Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet build"}}""",
+            "2026-08-20T12:00:01.100Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUseFailure","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet build"},"failure_type":"error","error_message":"build failed","duration":400}""",
+            "2026-08-20T12:00:01.500Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet test"},"duration":1000}""",
+            "2026-08-20T12:00:02Z"));
+
+        TreeNodeViewModel[] calls = GetToolCallNodes(GetOnlyGeneration(viewModel)).ToArray();
+        TreeNodeViewModel build = Assert.Single(
+            calls,
+            call => call.Observation!.Payload
+                .GetProperty("tool_input")
+                .GetProperty("command")
+                .GetString() == "dotnet build");
+        TreeNodeViewModel test = Assert.Single(
+            calls,
+            call => call.Observation!.Payload
+                .GetProperty("tool_input")
+                .GetProperty("command")
+                .GetString() == "dotnet test");
+
+        Assert.Equal(
+            "postToolUseFailure",
+            Assert.Single(build.Children).Observation!.HookEventName);
+        Assert.Equal(
+            "postToolUse",
+            Assert.Single(test.Children).Observation!.HookEventName);
+    }
+
+    [Fact]
+    public void FailedShellCallDoesNotCaptureRetryCompletion()
+    {
+        MainWindowViewModel viewModel = new();
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet test"}}""",
+            "2026-08-20T12:00:01Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeShellExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"command":"dotnet test"}""",
+            "2026-08-20T12:00:01.100Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUseFailure","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet test"},"failure_type":"timeout","duration":1000}""",
+            "2026-08-20T12:00:02Z"));
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet test"}}""",
+            "2026-08-20T12:00:03Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeShellExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"command":"dotnet test"}""",
+            "2026-08-20T12:00:03.100Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterShellExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"command":"dotnet test","output":"passed","duration":500}""",
+            "2026-08-20T12:00:03.600Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet test"},"duration":600}""",
+            "2026-08-20T12:00:03.700Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        TreeNodeViewModel[] calls = GetToolCallNodes(generation).ToArray();
+        Assert.Equal(2, calls.Length);
+
+        TreeNodeViewModel failed = Assert.Single(
+            calls,
+            call => call.Children.Any(
+                child => child.Observation?.HookEventName == "postToolUseFailure"));
+        TreeNodeViewModel retry = Assert.Single(
+            calls,
+            call => call.Children.Any(
+                child => child.Observation?.HookEventName == "postToolUse"));
+
+        TreeNodeViewModel failedBefore = Assert.Single(
+            failed.Children,
+            child => child.Observation?.HookEventName == "beforeShellExecution");
+        Assert.Empty(failedBefore.Children);
+
+        TreeNodeViewModel retryBefore = Assert.Single(
+            retry.Children,
+            child => child.Observation?.HookEventName == "beforeShellExecution");
+        Assert.Equal(
+            "afterShellExecution",
+            Assert.Single(retryBefore.Children).Observation!.HookEventName);
     }
 
     [Fact]
@@ -647,6 +789,50 @@ public sealed class NestingAndParallelWaveTests
     }
 
     [Fact]
+    public void ConcurrentShellHooksMatchByCommandInsteadOfArrivalOrder()
+    {
+        MainWindowViewModel viewModel = new();
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"dotnet test","working_directory":"C:\\Repo"}}""",
+            "2026-08-20T12:00:01Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"command":"git status","working_directory":"C:\\Repo"}}""",
+            "2026-08-20T12:00:01.100Z"));
+
+        // The specialized starts arrive in the opposite order from the generic
+        // preToolUse nodes. Tool-name-only matching would swap their parents.
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeShellExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"command":"dotnet test","cwd":"C:\\Repo","sandbox":false}""",
+            "2026-08-20T12:00:01.200Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeShellExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"command":"git status","cwd":"C:\\Repo","sandbox":false}""",
+            "2026-08-20T12:00:01.300Z"));
+
+        // Completions are not LIFO: dotnet test completes before git status.
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterShellExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"command":"dotnet test","output":"passed","cwd":"C:\\Repo","sandbox":false,"duration":500}""",
+            "2026-08-20T12:00:01.700Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterShellExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"command":"git status","output":"clean","cwd":"C:\\Repo","sandbox":false,"duration":700}""",
+            "2026-08-20T12:00:02Z"));
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"working_directory":"C:\\Repo","command":"git status"},"duration":900}""",
+            "2026-08-20T12:00:02.100Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_use_id":"shared-shell","tool_input":{"working_directory":"C:\\Repo","command":"dotnet test"},"duration":1200}""",
+            "2026-08-20T12:00:02.200Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        TreeNodeViewModel[] calls = GetToolCallNodes(generation).ToArray();
+        Assert.Equal(2, calls.Length);
+
+        AssertShellCall(calls, "dotnet test", "passed");
+        AssertShellCall(calls, "git status", "clean");
+    }
+
+    [Fact]
     public void McpInnerHooksNestUnderPreToolUse()
     {
         MainWindowViewModel viewModel = new();
@@ -685,6 +871,47 @@ public sealed class NestingAndParallelWaveTests
 
         TreeNodeViewModel afterMcp = Assert.Single(beforeMcp.Children);
         Assert.Equal("afterMCPExecution", afterMcp.Observation!.HookEventName);
+    }
+
+    [Fact]
+    public void ConcurrentMcpHooksMatchByServerToolAndInput()
+    {
+        MainWindowViewModel viewModel = new();
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"MCP:get_duplicated_strings","tool_use_id":"shared-mcp","mcp_server_name":"dotnet-dstrings","tool_input":{"dumpPath":"C:\\a.dmp","countThreshold":10}}""",
+            "2026-08-20T12:00:01Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"MCP:get_duplicated_strings","tool_use_id":"shared-mcp","mcp_server_name":"dotnet-dstrings","tool_input":{"dumpPath":"C:\\b.dmp","countThreshold":20}}""",
+            "2026-08-20T12:00:01.100Z"));
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeMCPExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"mcp_server_name":"dotnet-dstrings","tool_name":"get_duplicated_strings","command":"dotnet-dstrings","tool_input":"{\"countThreshold\":10,\"dumpPath\":\"C:\\\\a.dmp\"}"}""",
+            "2026-08-20T12:00:01.200Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeMCPExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"mcp_server_name":"dotnet-dstrings","tool_name":"get_duplicated_strings","command":"dotnet-dstrings","tool_input":"{\"dumpPath\":\"C:\\\\b.dmp\",\"countThreshold\":20}"}""",
+            "2026-08-20T12:00:01.300Z"));
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterMCPExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"mcp_server_name":"dotnet-dstrings","tool_name":"get_duplicated_strings","tool_input":"{\"dumpPath\":\"C:\\\\a.dmp\",\"countThreshold\":10}","result_json":"{\"target\":\"a\"}","duration":500}""",
+            "2026-08-20T12:00:01.700Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterMCPExecution","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"mcp_server_name":"dotnet-dstrings","tool_name":"get_duplicated_strings","tool_input":"{\"countThreshold\":20,\"dumpPath\":\"C:\\\\b.dmp\"}","result_json":"{\"target\":\"b\"}","duration":700}""",
+            "2026-08-20T12:00:02Z"));
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"MCP:get_duplicated_strings","tool_use_id":"shared-mcp","mcp_server_name":"dotnet-dstrings","tool_input":{"countThreshold":20,"dumpPath":"C:\\b.dmp"},"duration":900}""",
+            "2026-08-20T12:00:02.100Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"MCP:get_duplicated_strings","tool_use_id":"shared-mcp","mcp_server_name":"dotnet-dstrings","tool_input":{"countThreshold":10,"dumpPath":"C:\\a.dmp"},"duration":1200}""",
+            "2026-08-20T12:00:02.200Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        TreeNodeViewModel[] calls = GetToolCallNodes(generation).ToArray();
+        Assert.Equal(2, calls.Length);
+
+        AssertMcpCall(calls, @"C:\a.dmp", "a");
+        AssertMcpCall(calls, @"C:\b.dmp", "b");
     }
 
     [Fact]
@@ -842,6 +1069,75 @@ public sealed class NestingAndParallelWaveTests
         Assert.Contains("Shell\u00d71", generation.Summary);
         Assert.Contains("Write\u00d71", generation.Summary);
         Assert.StartsWith("Turn 1 \u00b7 build and test", generation.Header);
+    }
+
+    private static TreeNodeViewModel GetOnlyGeneration(MainWindowViewModel viewModel)
+    {
+        TreeNodeViewModel workspace = Assert.Single(viewModel.Roots);
+        TreeNodeViewModel session = Assert.Single(workspace.Children);
+        return Assert.Single(
+            session.Children,
+            child => child.Kind == TreeNodeKind.Generation);
+    }
+
+    private static IEnumerable<TreeNodeViewModel> GetToolCallNodes(
+        TreeNodeViewModel generation)
+    {
+        foreach (TreeNodeViewModel child in generation.Children)
+        {
+            if (child.Kind == TreeNodeKind.ParallelWave)
+            {
+                foreach (TreeNodeViewModel call in child.Children)
+                {
+                    yield return call;
+                }
+            }
+            else if (child.Observation?.HookEventName == "preToolUse")
+            {
+                yield return child;
+            }
+        }
+    }
+
+    private static void AssertShellCall(
+        IReadOnlyList<TreeNodeViewModel> calls,
+        string command,
+        string expectedOutput)
+    {
+        TreeNodeViewModel call = Assert.Single(
+            calls,
+            candidate => candidate.Observation!.Payload
+                .GetProperty("tool_input")
+                .GetProperty("command")
+                .GetString() == command);
+        TreeNodeViewModel before = Assert.Single(
+            call.Children,
+            child => child.Observation?.HookEventName == "beforeShellExecution");
+        Assert.Equal(command, before.Observation!.Payload.GetProperty("command").GetString());
+        TreeNodeViewModel after = Assert.Single(before.Children);
+        Assert.Equal(command, after.Observation!.Payload.GetProperty("command").GetString());
+        Assert.Equal(expectedOutput, after.Observation.Payload.GetProperty("output").GetString());
+    }
+
+    private static void AssertMcpCall(
+        IReadOnlyList<TreeNodeViewModel> calls,
+        string dumpPath,
+        string expectedTarget)
+    {
+        TreeNodeViewModel call = Assert.Single(
+            calls,
+            candidate => candidate.Observation!.Payload
+                .GetProperty("tool_input")
+                .GetProperty("dumpPath")
+                .GetString() == dumpPath);
+        TreeNodeViewModel before = Assert.Single(
+            call.Children,
+            child => child.Observation?.HookEventName == "beforeMCPExecution");
+        TreeNodeViewModel after = Assert.Single(before.Children);
+
+        using JsonDocument result = JsonDocument.Parse(
+            after.Observation!.Payload.GetProperty("result_json").GetString()!);
+        Assert.Equal(expectedTarget, result.RootElement.GetProperty("target").GetString());
     }
 
     private static HookObservation ParsePayload(string payloadJson, string observedAtUtc = "2026-08-20T12:00:00Z")
