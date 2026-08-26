@@ -1,8 +1,10 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using HarnessSpy.Core.Services;
 using HarnessSpy.Wpf.ViewModels;
 using Microsoft.Win32;
@@ -17,6 +19,9 @@ public partial class SpyWindow : Window
     private TreeNodeViewModel? _contextMenuSessionNode;
     private bool _startupReplayHandled;
     private bool _isApplyingSearchMatch;
+
+    private readonly DispatcherTimer _dashboardOpenTimer;
+    private Popup? _pendingDashboardPopup;
 
     public SpyWindow()
         : this(new SettingsService(), lastReplayFolder: null, "HarnessSpy")
@@ -34,6 +39,12 @@ public partial class SpyWindow : Window
         InitializeComponent();
         Title = $"{productName} Hook Spy";
         Loaded += SpyWindow_Loaded;
+
+        _dashboardOpenTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(300)
+        };
+        _dashboardOpenTimer.Tick += DashboardOpenTimer_Tick;
     }
 
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
@@ -280,6 +291,124 @@ public partial class SpyWindow : Window
                 _productName,
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
+        }
+    }
+
+    // The node dashboard is shown in an interactive Popup instead of a WPF
+    // ToolTip so that the user can move the pointer onto it and use the inner
+    // ScrollViewer (a ToolTip dismisses on mouse-leave, leaving its scrollbar
+    // unreachable). The row and the popup content share one hover region: any
+    // pending close is cancelled whenever the pointer enters either of them.
+    private void DashboardRow_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is not FrameworkElement row ||
+            row.DataContext is not TreeNodeViewModel node ||
+            !node.HasDashboardHover)
+        {
+            return;
+        }
+
+        Popup? popup = FindDashboardPopup(row);
+        if (popup is null)
+        {
+            return;
+        }
+
+        CancelDashboardPopupClose(popup);
+
+        if (popup.IsOpen)
+        {
+            return;
+        }
+
+        _pendingDashboardPopup = popup;
+        _dashboardOpenTimer.Stop();
+        _dashboardOpenTimer.Start();
+    }
+
+    private void DashboardRow_MouseLeave(object sender, MouseEventArgs e)
+    {
+        Popup? popup = FindDashboardPopup(sender as FrameworkElement);
+        if (popup is not null && ReferenceEquals(popup, _pendingDashboardPopup))
+        {
+            _dashboardOpenTimer.Stop();
+            _pendingDashboardPopup = null;
+        }
+
+        ScheduleDashboardPopupClose(popup);
+    }
+
+    private void DashboardContent_MouseEnter(object sender, MouseEventArgs e)
+    {
+        CancelDashboardPopupClose(GetOwningPopup(sender));
+    }
+
+    private void DashboardContent_MouseLeave(object sender, MouseEventArgs e)
+    {
+        ScheduleDashboardPopupClose(GetOwningPopup(sender));
+    }
+
+    private void DashboardOpenTimer_Tick(object? sender, EventArgs e)
+    {
+        _dashboardOpenTimer.Stop();
+        if (_pendingDashboardPopup is { } popup)
+        {
+            popup.IsOpen = true;
+            _pendingDashboardPopup = null;
+        }
+    }
+
+    private static Popup? FindDashboardPopup(FrameworkElement? row)
+    {
+        if (row?.Parent is Panel panel)
+        {
+            foreach (object child in panel.Children)
+            {
+                if (child is Popup popup)
+                {
+                    return popup;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static Popup? GetOwningPopup(object sender) =>
+        sender is FrameworkElement element
+            ? LogicalTreeHelper.GetParent(element) as Popup
+            : null;
+
+    private static void ScheduleDashboardPopupClose(Popup? popup)
+    {
+        if (popup is null)
+        {
+            return;
+        }
+
+        if (popup.Tag is not DispatcherTimer timer)
+        {
+            timer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(250)
+            };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                popup.IsOpen = false;
+            };
+            popup.Tag = timer;
+        }
+
+        timer.Stop();
+        timer.Start();
+    }
+
+    private static void CancelDashboardPopupClose(Popup? popup)
+    {
+        if (popup?.Tag is DispatcherTimer timer)
+        {
+            timer.Stop();
         }
     }
 

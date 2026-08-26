@@ -117,12 +117,27 @@
 
         <HierarchicalDataTemplate DataType="{x:Type viewModels:TreeNodeViewModel}"
                                   ItemsSource="{Binding Children}">
-            <StackPanel Orientation="Horizontal"
-                        ToolTipService.InitialShowDelay="300"
-                        ToolTipService.IsEnabled="{Binding HasDashboardHover}"
-                        ToolTipService.ShowDuration="60000">
-                <StackPanel.ToolTip>
-                    <ToolTip MaxWidth="480">
+            <Grid Background="Transparent">
+                <Popup Placement="Mouse"
+                       PlacementTarget="{Binding ElementName=DashboardRowPanel}"
+                       AllowsTransparency="True"
+                       PopupAnimation="Fade"
+                       StaysOpen="True">
+                    <Border MaxWidth="480"
+                            Padding="10"
+                            Background="White"
+                            BorderBrush="#D0D7DE"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            SnapsToDevicePixels="True"
+                            MouseEnter="DashboardContent_MouseEnter"
+                            MouseLeave="DashboardContent_MouseLeave">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8"
+                                              Opacity="0.3"
+                                              ShadowDepth="2"
+                                              Color="#000000" />
+                        </Border.Effect>
                         <ScrollViewer MinWidth="360"
                                       MaxHeight="580"
                                       HorizontalScrollBarVisibility="Disabled"
@@ -247,8 +262,13 @@
                                 </StackPanel>
                             </StackPanel>
                         </ScrollViewer>
-                    </ToolTip>
-                </StackPanel.ToolTip>
+                    </Border>
+                </Popup>
+                <StackPanel x:Name="DashboardRowPanel"
+                            Orientation="Horizontal"
+                            Background="Transparent"
+                            MouseEnter="DashboardRow_MouseEnter"
+                            MouseLeave="DashboardRow_MouseLeave">
                 <Ellipse Width="9"
                          Height="9"
                          Margin="0,0,6,0"
@@ -383,7 +403,8 @@
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
-            </StackPanel>
+                </StackPanel>
+            </Grid>
         </HierarchicalDataTemplate>
 
         <Style TargetType="{x:Type TreeViewItem}">
