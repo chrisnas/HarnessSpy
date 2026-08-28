@@ -11,6 +11,10 @@ public sealed class MainWindowViewModel : ObservableObject
     private const string EmptySelectionText = "Select a hook occurrence to inspect its payload.";
     private const string UnknownSession = "Unknown session";
 
+    // Tool names whose preToolUse owns a beforeReadFile / afterFileEdit hook.
+    private static readonly string[] ReadToolNames = ["Read"];
+    private static readonly string[] WriteToolNames = ["Write", "StrReplace", "EditNotebook"];
+
     private readonly ReplayLoader _replayLoader;
     private readonly Dictionary<string, TreeNodeViewModel> _workspaceNodes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TreeNodeViewModel> _sessionNodes = new(StringComparer.Ordinal);
@@ -436,8 +440,20 @@ public sealed class MainWindowViewModel : ObservableObject
 
             case "beforeReadFile":
             {
-                // Nest under the in-flight Read preToolUse if one exists.
-                TreeNodeViewModel? parent = FindInFlightPreByToolName(generationNode, "Read", null);
+                // Several Read calls can be in flight at once, so match on the
+                // file path rather than arrival order. Fall back to tool-name
+                // matching only when a single Read pre is unambiguous, so reads
+                // whose pre lacks a comparable path still nest correctly.
+                TreeNodeViewModel? parent = FindInFlightPreByExecutionEvidence(
+                    generationNode,
+                    ReadToolNames,
+                    observation.HookEventName,
+                    observation,
+                    ToolCorrelationMatcher.ScoreFileTargetExecution)
+                    ?? FindSoleInFlightPreAwaitingInner(
+                        generationNode,
+                        ReadToolNames,
+                        observation.HookEventName);
                 if (parent is not null)
                 {
                     parent.Children.Add(observationNode);
@@ -449,11 +465,21 @@ public sealed class MainWindowViewModel : ObservableObject
 
             case "afterFileEdit":
             {
-                // Nest under an in-flight Write/StrReplace/EditNotebook preToolUse.
-                TreeNodeViewModel? parent =
-                    FindInFlightPreByToolName(generationNode, "Write", null) ??
-                    FindInFlightPreByToolName(generationNode, "StrReplace", null) ??
-                    FindInFlightPreByToolName(generationNode, "EditNotebook", null);
+                // Several Write/StrReplace/EditNotebook calls can be in flight at
+                // once, so match on the file path rather than arrival order. Fall
+                // back to tool-name matching only when a single edit pre is
+                // unambiguous, so edits whose pre lacks a comparable path still
+                // nest correctly.
+                TreeNodeViewModel? parent = FindInFlightPreByExecutionEvidence(
+                    generationNode,
+                    WriteToolNames,
+                    observation.HookEventName,
+                    observation,
+                    ToolCorrelationMatcher.ScoreFileTargetExecution)
+                    ?? FindSoleInFlightPreAwaitingInner(
+                        generationNode,
+                        WriteToolNames,
+                        observation.HookEventName);
                 if (parent is not null)
                 {
                     parent.Children.Add(observationNode);
@@ -543,19 +569,60 @@ public sealed class MainWindowViewModel : ObservableObject
         string innerPreKind,
         HookObservation observation,
         Func<HookObservation, HookObservation, int> score)
+        => FindInFlightPreByExecutionEvidence(
+            generationNode,
+            [toolName],
+            innerPreKind,
+            observation,
+            score);
+
+    private static TreeNodeViewModel? FindInFlightPreByExecutionEvidence(
+        TreeNodeViewModel generationNode,
+        IReadOnlyCollection<string> toolNames,
+        string innerPreKind,
+        HookObservation observation,
+        Func<HookObservation, HookObservation, int> score)
     {
-        List<TreeNodeViewModel> candidates = EnumerateInFlightPreNodes(generationNode)
+        List<TreeNodeViewModel> candidates = CollectInFlightPresAwaitingInner(
+            generationNode,
+            toolNames,
+            innerPreKind);
+
+        return SelectUniqueBest(
+            candidates,
+            child => score(child.Observation!, observation));
+    }
+
+    // Fallback for a file-access hook when paths can't be compared: only attach
+    // when exactly one matching pre is still awaiting its inner hook, so we
+    // never guess between concurrent calls.
+    private static TreeNodeViewModel? FindSoleInFlightPreAwaitingInner(
+        TreeNodeViewModel generationNode,
+        IReadOnlyCollection<string> toolNames,
+        string innerPreKind)
+    {
+        List<TreeNodeViewModel> candidates = CollectInFlightPresAwaitingInner(
+            generationNode,
+            toolNames,
+            innerPreKind);
+
+        return candidates.Count == 1 ? candidates[0] : null;
+    }
+
+    private static List<TreeNodeViewModel> CollectInFlightPresAwaitingInner(
+        TreeNodeViewModel generationNode,
+        IReadOnlyCollection<string> toolNames,
+        string innerPreKind)
+    {
+        return EnumerateInFlightPreNodes(generationNode)
             .Where(child =>
-                StringComparer.Ordinal.Equals(child.Observation!.ToolName, toolName) &&
+                child.Observation!.ToolName is { } toolName &&
+                toolNames.Contains(toolName, StringComparer.Ordinal) &&
                 !child.Children.Any(grandchild =>
                     StringComparer.Ordinal.Equals(
                         grandchild.Observation?.HookEventName,
                         innerPreKind)))
             .ToList();
-
-        return SelectUniqueBest(
-            candidates,
-            child => score(child.Observation!, observation));
     }
 
     private static TreeNodeViewModel? SelectUniqueBest(
@@ -587,48 +654,6 @@ public sealed class MainWindowViewModel : ObservableObject
         }
 
         return tied ? null : best;
-    }
-
-    // Finds the most recent in-flight preToolUse node under generationNode whose
-    // tool_name matches the given name and that hasn't already received its
-    // inner pre of the specified kind.
-    private TreeNodeViewModel? FindInFlightPreByToolName(
-        TreeNodeViewModel generationNode,
-        string toolName,
-        string? innerPreKind)
-    {
-        // Walk generation children in reverse (most recent first).
-        for (int i = generationNode.Children.Count - 1; i >= 0; i--)
-        {
-            TreeNodeViewModel child = generationNode.Children[i];
-            if (child.Observation?.HookEventName != "preToolUse")
-            {
-                continue;
-            }
-
-            if (!StringComparer.Ordinal.Equals(child.Observation.ToolName, toolName))
-            {
-                continue;
-            }
-
-            // Check this pre is still in-flight (has no postToolUse child yet).
-            if (IsCompletedToolCall(child))
-            {
-                continue;
-            }
-
-            // If looking for a specific inner pre, skip if one already exists.
-            if (innerPreKind is not null &&
-                child.Children.Any(c =>
-                    StringComparer.Ordinal.Equals(c.Observation?.HookEventName, innerPreKind)))
-            {
-                continue;
-            }
-
-            return child;
-        }
-
-        return null;
     }
 
     private void TrackInnerPre(

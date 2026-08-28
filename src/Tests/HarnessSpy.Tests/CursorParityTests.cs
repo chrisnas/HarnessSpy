@@ -833,6 +833,130 @@ public sealed class NestingAndParallelWaveTests
     }
 
     [Fact]
+    public void ConcurrentReadHooksMatchByFilePathInsteadOfArrivalOrder()
+    {
+        MainWindowViewModel viewModel = new();
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_use_id":"shared-read","tool_input":{"file_path":"C:\\Repo\\baseline_report.txt"}}""",
+            "2026-08-20T12:00:01Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_use_id":"shared-read","tool_input":{"file_path":"C:\\Repo\\after_report.txt"}}""",
+            "2026-08-20T12:00:01.100Z"));
+
+        // beforeReadFile arrives in the opposite order from the preToolUse nodes.
+        // Tool-name + arrival-order matching would swap their parents.
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeReadFile","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"file_path":"C:\\Repo\\after_report.txt"}""",
+            "2026-08-20T12:00:01.200Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeReadFile","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"file_path":"C:\\Repo\\baseline_report.txt"}""",
+            "2026-08-20T12:00:01.300Z"));
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_use_id":"shared-read","tool_input":{"file_path":"C:\\Repo\\baseline_report.txt"},"duration":10}""",
+            "2026-08-20T12:00:01.400Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_use_id":"shared-read","tool_input":{"file_path":"C:\\Repo\\after_report.txt"},"duration":20}""",
+            "2026-08-20T12:00:01.500Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        TreeNodeViewModel[] calls = GetToolCallNodes(generation).ToArray();
+        Assert.Equal(2, calls.Length);
+
+        AssertReadCall(calls, "C:\\Repo\\baseline_report.txt");
+        AssertReadCall(calls, "C:\\Repo\\after_report.txt");
+    }
+
+    [Fact]
+    public void SoleReadCaptureNestsBeforeReadFileWithoutFilePath()
+    {
+        MainWindowViewModel viewModel = new();
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_use_id":"read-1","tool_input":{"file_path":"C:\\Repo\\only.cs"}}""",
+            "2026-08-20T12:00:01Z"));
+
+        // No file_path on the hook: it should still fall back onto the single
+        // in-flight Read rather than being orphaned.
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeReadFile","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"]}""",
+            "2026-08-20T12:00:01.100Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        TreeNodeViewModel preNode = Assert.Single(generation.Children);
+        Assert.Equal("beforeReadFile", Assert.Single(preNode.Children).Observation!.HookEventName);
+    }
+
+    [Fact]
+    public void ConcurrentEditHooksMatchByFilePathInsteadOfArrivalOrder()
+    {
+        MainWindowViewModel viewModel = new();
+
+        // A Write, a StrReplace (path), and an EditNotebook (target_notebook)
+        // are all in flight at once.
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Write","tool_use_id":"shared-edit","tool_input":{"file_path":"C:\\Repo\\a.cs"}}""",
+            "2026-08-20T12:00:01Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"StrReplace","tool_use_id":"shared-edit","tool_input":{"path":"C:\\Repo\\b.cs"}}""",
+            "2026-08-20T12:00:01.100Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"EditNotebook","tool_use_id":"shared-edit","tool_input":{"target_notebook":"C:\\Repo\\c.ipynb"}}""",
+            "2026-08-20T12:00:01.200Z"));
+
+        // afterFileEdit hooks arrive out of order relative to the pre nodes.
+        // Tool-name + arrival-order matching would swap their parents.
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterFileEdit","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"file_path":"C:\\Repo\\c.ipynb"}""",
+            "2026-08-20T12:00:01.300Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterFileEdit","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"file_path":"C:\\Repo\\a.cs"}""",
+            "2026-08-20T12:00:01.400Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterFileEdit","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"file_path":"C:\\Repo\\b.cs"}""",
+            "2026-08-20T12:00:01.500Z"));
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Write","tool_use_id":"shared-edit","tool_input":{"file_path":"C:\\Repo\\a.cs"},"duration":10}""",
+            "2026-08-20T12:00:01.600Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"StrReplace","tool_use_id":"shared-edit","tool_input":{"path":"C:\\Repo\\b.cs"},"duration":20}""",
+            "2026-08-20T12:00:01.700Z"));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"postToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"EditNotebook","tool_use_id":"shared-edit","tool_input":{"target_notebook":"C:\\Repo\\c.ipynb"},"duration":30}""",
+            "2026-08-20T12:00:01.800Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        TreeNodeViewModel[] calls = GetToolCallNodes(generation).ToArray();
+        Assert.Equal(3, calls.Length);
+
+        AssertFileEditCall(calls, "file_path", "C:\\Repo\\a.cs");
+        AssertFileEditCall(calls, "path", "C:\\Repo\\b.cs");
+        AssertFileEditCall(calls, "target_notebook", "C:\\Repo\\c.ipynb");
+    }
+
+    [Fact]
+    public void SoleEditCaptureNestsAfterFileEditWithoutFilePath()
+    {
+        MainWindowViewModel viewModel = new();
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preToolUse","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"tool_name":"Write","tool_use_id":"write-1","tool_input":{"file_path":"C:\\Repo\\only.cs"}}""",
+            "2026-08-20T12:00:01Z"));
+
+        // No file_path on the hook: it should still fall back onto the single
+        // in-flight edit rather than being orphaned.
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"afterFileEdit","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"]}""",
+            "2026-08-20T12:00:01.100Z"));
+
+        TreeNodeViewModel generation = GetOnlyGeneration(viewModel);
+        TreeNodeViewModel preNode = Assert.Single(generation.Children);
+        Assert.Equal("afterFileEdit", Assert.Single(preNode.Children).Observation!.HookEventName);
+    }
+
+    [Fact]
     public void McpInnerHooksNestUnderPreToolUse()
     {
         MainWindowViewModel viewModel = new();
@@ -1117,6 +1241,39 @@ public sealed class NestingAndParallelWaveTests
         TreeNodeViewModel after = Assert.Single(before.Children);
         Assert.Equal(command, after.Observation!.Payload.GetProperty("command").GetString());
         Assert.Equal(expectedOutput, after.Observation.Payload.GetProperty("output").GetString());
+    }
+
+    private static void AssertReadCall(
+        IReadOnlyList<TreeNodeViewModel> calls,
+        string filePath)
+    {
+        TreeNodeViewModel call = Assert.Single(
+            calls,
+            candidate => candidate.Observation!.Payload
+                .GetProperty("tool_input")
+                .GetProperty("file_path")
+                .GetString() == filePath);
+        TreeNodeViewModel before = Assert.Single(
+            call.Children,
+            child => child.Observation?.HookEventName == "beforeReadFile");
+        Assert.Equal(filePath, before.Observation!.Payload.GetProperty("file_path").GetString());
+    }
+
+    private static void AssertFileEditCall(
+        IReadOnlyList<TreeNodeViewModel> calls,
+        string inputProperty,
+        string filePath)
+    {
+        TreeNodeViewModel call = Assert.Single(
+            calls,
+            candidate => candidate.Observation!.Payload
+                .GetProperty("tool_input")
+                .TryGetProperty(inputProperty, out JsonElement value) &&
+                value.GetString() == filePath);
+        TreeNodeViewModel after = Assert.Single(
+            call.Children,
+            child => child.Observation?.HookEventName == "afterFileEdit");
+        Assert.Equal(filePath, after.Observation!.Payload.GetProperty("file_path").GetString());
     }
 
     private static void AssertMcpCall(

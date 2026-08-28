@@ -50,6 +50,28 @@ internal static class ToolCorrelationMatcher
         return score;
     }
 
+    // Matches a file-access inner hook (beforeReadFile / afterFileEdit) to its
+    // owning preToolUse by the target file path they share.
+    public static int ScoreFileTargetExecution(
+        HookObservation candidate,
+        HookObservation observation)
+    {
+        int score = 0;
+
+        if (!CompareString(
+                ReadTargetFilePath(candidate),
+                ReadTargetFilePath(observation),
+                NormalizePath,
+                StringComparer.OrdinalIgnoreCase,
+                weight: 100,
+                ref score))
+        {
+            return NoMatch;
+        }
+
+        return score;
+    }
+
     public static int ScoreMcpExecution(
         HookObservation candidate,
         HookObservation observation)
@@ -150,6 +172,15 @@ internal static class ToolCorrelationMatcher
         score += weight;
         return true;
     }
+
+    // beforeReadFile/afterFileEdit carry file_path at the payload root; the
+    // owning preToolUse carries it inside tool_input as file_path (Read/Write),
+    // path (StrReplace), or target_notebook (EditNotebook).
+    private static string? ReadTargetFilePath(HookObservation observation) =>
+        ReadString(observation.Payload, "file_path") ??
+        ReadToolInputString(observation.Payload, "file_path") ??
+        ReadToolInputString(observation.Payload, "path") ??
+        ReadToolInputString(observation.Payload, "target_notebook");
 
     private static string? ReadShellCommand(HookObservation observation) =>
         ReadString(observation.Payload, "command") ??
