@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Runtimes;
 using HarnessSpy.Core.Services;
 
 namespace HarnessSpy.Wpf.ViewModels;
@@ -10,10 +11,6 @@ public sealed class MainWindowViewModel : ObservableObject
 {
     private const string EmptySelectionText = "Select a hook occurrence to inspect its payload.";
     private const string UnknownSession = "Unknown session";
-
-    // Tool names whose preToolUse owns a beforeReadFile / afterFileEdit hook.
-    private static readonly string[] ReadToolNames = ["Read"];
-    private static readonly string[] WriteToolNames = ["Write", "StrReplace", "EditNotebook"];
 
     private readonly ReplayLoader _replayLoader;
     private readonly Dictionary<string, TreeNodeViewModel> _workspaceNodes = new(StringComparer.Ordinal);
@@ -207,7 +204,7 @@ public sealed class MainWindowViewModel : ObservableObject
         string? effectiveGenerationId = ResolveGenerationId(observation);
         if (effectiveGenerationId is null || observation.IsSessionLifecycle || observation.IsTabHook)
         {
-            sessionNode.Children.Add(CreateObservationNode(observation));
+            InsertChronologically(sessionNode.Children, CreateObservationNode(observation));
             sessionNode.RecomputeSession();
             return;
         }
@@ -227,8 +224,9 @@ public sealed class MainWindowViewModel : ObservableObject
             return;
         }
 
-        // Not nested: add as a direct child of the generation.
-        generationNode.Children.Add(observationNode);
+        // Not nested: add as a direct child of the generation, at its correct
+        // chronological position.
+        InsertChronologically(generationNode.Children, observationNode);
         generationNode.IsExpanded = true;
 
         // Track new in-flight pre nodes for later pairing.
@@ -238,6 +236,7 @@ public sealed class MainWindowViewModel : ObservableObject
         sessionNode.RecomputeSession();
 
         if (observation.IsStop &&
+            observation.Interpretation.ParticipatesInDerivedTurns &&
             observation.GenerationId is null)
         {
             _activeDerivedTurns.Remove(observation.ProviderScopedSessionId);
@@ -251,14 +250,16 @@ public sealed class MainWindowViewModel : ObservableObject
             return observation.GenerationId;
         }
 
-        if (observation.Provider != HookProvider.GitHubCopilot ||
+        // Surfaces without an exact turn id (Copilot CLI/VS Code) derive turns
+        // from prompt/stop boundaries, declared entirely through traits.
+        if (!observation.Interpretation.ParticipatesInDerivedTurns ||
             observation.IsSessionLifecycle)
         {
             return null;
         }
 
         string sessionKey = observation.ProviderScopedSessionId;
-        if (observation.HookEventName == "beforeSubmitPrompt")
+        if (observation.Interpretation.StartsDerivedTurn)
         {
             int next = _derivedTurnCounters.GetValueOrDefault(sessionKey) + 1;
             _derivedTurnCounters[sessionKey] = next;
@@ -277,46 +278,20 @@ public sealed class MainWindowViewModel : ObservableObject
         TreeNodeViewModel observationNode,
         TreeNodeViewModel generationNode)
     {
-        switch (observation.HookEventName)
+        ObservationInterpretation interpretation = observation.Interpretation;
+        switch (interpretation.Role)
         {
-            case "postToolUse":
-            {
-                string? toolUseId = observation.ToolUseId;
-                TreeNodeViewModel? preNode = toolUseId is null
-                    ? null
-                    : FindInFlightPreByToolCall(generationNode, observation);
-                if (preNode is not null)
-                {
-                    preNode.Children.Add(observationNode);
-                    preNode.IsExpanded = false;
-                    UpdatePreNodeSummary(preNode, observation);
-                    TryFormParallelWave(generationNode, preNode);
-                    return true;
-                }
+            case ObservationRole.ToolSuccess:
+                return TryNestCompletion(observation, observationNode, generationNode, expand: false);
 
-                return false;
-            }
+            case ObservationRole.ToolFailure:
+            case ObservationRole.PermissionDenied:
+                return TryNestCompletion(observation, observationNode, generationNode, expand: true);
 
-            case "postToolUseFailure":
-            {
-                string? toolUseId = observation.ToolUseId;
-                TreeNodeViewModel? preNode = toolUseId is null
-                    ? null
-                    : FindInFlightPreByToolCall(generationNode, observation);
-                if (preNode is not null)
-                {
-                    preNode.Children.Add(observationNode);
-                    preNode.IsExpanded = true;
-                    UpdatePreNodeSummary(preNode, observation);
-                    RemoveTrackedInnerPre(generationNode, preNode);
-                    TryFormParallelWave(generationNode, preNode);
-                    return true;
-                }
+            case ObservationRole.ToolBatch:
+                return TryNestToolBatch(observation, observationNode, generationNode);
 
-                return false;
-            }
-
-            case "subagentStop":
+            case ObservationRole.SubagentStop:
             {
                 string? subagentId = observation.SubagentId;
                 if (subagentId is not null &&
@@ -332,55 +307,44 @@ public sealed class MainWindowViewModel : ObservableObject
                 return false;
             }
 
-            case "beforeShellExecution":
+            case ObservationRole.InnerExecutionStart:
             {
-                TreeNodeViewModel? parent = FindInFlightPreByExecutionEvidence(
-                    generationNode,
-                    "Shell",
-                    observation.HookEventName,
-                    observation,
-                    ToolCorrelationMatcher.ScoreShellExecution);
-                if (parent is not null)
-                {
-                    parent.Children.Add(observationNode);
-                    TrackInnerPre(generationNode, observation.HookEventName, observationNode);
-                    return true;
-                }
-
-                return false;
-            }
-
-            case "beforeMCPExecution":
-            {
-                string? mcpToolName = observation.ToolName;
-                if (mcpToolName is null)
+                if (interpretation.InnerExecutionOwnerTool is null ||
+                    interpretation.InnerExecutionKind is null)
                 {
                     return false;
                 }
 
                 TreeNodeViewModel? parent = FindInFlightPreByExecutionEvidence(
                     generationNode,
-                    $"MCP:{mcpToolName}",
-                    observation.HookEventName,
+                    interpretation.InnerExecutionOwnerTool,
+                    interpretation.InnerExecutionKind,
                     observation,
-                    ToolCorrelationMatcher.ScoreMcpExecution);
+                    InnerScorer(interpretation.InnerCategory));
                 if (parent is not null)
                 {
                     parent.Children.Add(observationNode);
-                    TrackInnerPre(generationNode, observation.HookEventName, observationNode);
+                    TrackInnerPre(generationNode, interpretation.InnerExecutionKind, observationNode);
                     return true;
                 }
 
                 return false;
             }
 
-            case "afterShellExecution":
+            case ObservationRole.InnerExecutionEnd:
             {
+                if (interpretation.InnerExecutionKind is null)
+                {
+                    return false;
+                }
+
+                Func<HookObservation, HookObservation, int> scorer =
+                    InnerScorer(interpretation.InnerCategory);
                 TreeNodeViewModel? innerPre = FindAndRemoveInnerPre(
                     generationNode,
-                    "beforeShellExecution",
+                    interpretation.InnerExecutionKind,
                     observation,
-                    ToolCorrelationMatcher.ScoreShellExecution);
+                    scorer);
                 if (innerPre is not null)
                 {
                     innerPre.Children.Add(observationNode);
@@ -388,12 +352,17 @@ public sealed class MainWindowViewModel : ObservableObject
                     return true;
                 }
 
+                if (interpretation.InnerExecutionOwnerTool is null)
+                {
+                    return false;
+                }
+
                 TreeNodeViewModel? fallbackParent = FindInFlightPreByExecutionEvidence(
                     generationNode,
-                    "Shell",
-                    "beforeShellExecution",
+                    interpretation.InnerExecutionOwnerTool,
+                    interpretation.InnerExecutionKind,
                     observation,
-                    ToolCorrelationMatcher.ScoreShellExecution);
+                    scorer);
                 if (fallbackParent is not null)
                 {
                     fallbackParent.Children.Add(observationNode);
@@ -403,83 +372,27 @@ public sealed class MainWindowViewModel : ObservableObject
                 return false;
             }
 
-            case "afterMCPExecution":
+            case ObservationRole.FileAccess:
             {
-                string? mcpToolName = observation.ToolName;
-                if (mcpToolName is null)
+                // Several file calls can be in flight at once, so match on the
+                // file target rather than arrival order. Fall back to tool-name
+                // matching only when a single owning call is unambiguous.
+                if (interpretation.InnerExecutionKind is null ||
+                    interpretation.FileAccessOwnerTools.Count == 0)
                 {
                     return false;
                 }
 
-                TreeNodeViewModel? innerPre = FindAndRemoveInnerPre(
-                    generationNode,
-                    "beforeMCPExecution",
-                    observation,
-                    ToolCorrelationMatcher.ScoreMcpExecution);
-                if (innerPre is not null)
-                {
-                    innerPre.Children.Add(observationNode);
-                    innerPre.IsExpanded = true;
-                    return true;
-                }
-
-                TreeNodeViewModel? fallbackParent = FindInFlightPreByExecutionEvidence(
-                    generationNode,
-                    $"MCP:{mcpToolName}",
-                    "beforeMCPExecution",
-                    observation,
-                    ToolCorrelationMatcher.ScoreMcpExecution);
-                if (fallbackParent is not null)
-                {
-                    fallbackParent.Children.Add(observationNode);
-                    return true;
-                }
-
-                return false;
-            }
-
-            case "beforeReadFile":
-            {
-                // Several Read calls can be in flight at once, so match on the
-                // file path rather than arrival order. Fall back to tool-name
-                // matching only when a single Read pre is unambiguous, so reads
-                // whose pre lacks a comparable path still nest correctly.
                 TreeNodeViewModel? parent = FindInFlightPreByExecutionEvidence(
                     generationNode,
-                    ReadToolNames,
-                    observation.HookEventName,
+                    interpretation.FileAccessOwnerTools,
+                    interpretation.InnerExecutionKind,
                     observation,
                     ToolCorrelationMatcher.ScoreFileTargetExecution)
                     ?? FindSoleInFlightPreAwaitingInner(
                         generationNode,
-                        ReadToolNames,
-                        observation.HookEventName);
-                if (parent is not null)
-                {
-                    parent.Children.Add(observationNode);
-                    return true;
-                }
-
-                return false;
-            }
-
-            case "afterFileEdit":
-            {
-                // Several Write/StrReplace/EditNotebook calls can be in flight at
-                // once, so match on the file path rather than arrival order. Fall
-                // back to tool-name matching only when a single edit pre is
-                // unambiguous, so edits whose pre lacks a comparable path still
-                // nest correctly.
-                TreeNodeViewModel? parent = FindInFlightPreByExecutionEvidence(
-                    generationNode,
-                    WriteToolNames,
-                    observation.HookEventName,
-                    observation,
-                    ToolCorrelationMatcher.ScoreFileTargetExecution)
-                    ?? FindSoleInFlightPreAwaitingInner(
-                        generationNode,
-                        WriteToolNames,
-                        observation.HookEventName);
+                        interpretation.FileAccessOwnerTools,
+                        interpretation.InnerExecutionKind);
                 if (parent is not null)
                 {
                     parent.Children.Add(observationNode);
@@ -494,24 +407,178 @@ public sealed class MainWindowViewModel : ObservableObject
         }
     }
 
+    // Nests a tool completion (success/failure/permission-denied) under its
+    // matching in-flight tool request by scoped tool-call evidence.
+    private bool TryNestCompletion(
+        HookObservation observation,
+        TreeNodeViewModel observationNode,
+        TreeNodeViewModel generationNode,
+        bool expand)
+    {
+        if (observation.ToolUseId is null)
+        {
+            return false;
+        }
+
+        TreeNodeViewModel? preNode = FindInFlightPreByToolCall(generationNode, observation);
+        if (preNode is null)
+        {
+            return false;
+        }
+
+        preNode.Children.Add(observationNode);
+        preNode.IsExpanded = expand;
+        UpdatePreNodeSummary(preNode, observation);
+        if (expand)
+        {
+            RemoveTrackedInnerPre(generationNode, preNode);
+        }
+
+        TryFormParallelWave(generationNode, preNode);
+        return true;
+    }
+
+    // Claude's PostToolBatch fires after the matching PostToolUse has already
+    // completed its PreToolUse, so it must match against every pre in the
+    // generation (completed or not) rather than only in-flight ones. Claude's
+    // tool_use_id is unique per call, so exact id equality alone is enough to
+    // pick the parent, unlike Cursor's reused-id case elsewhere in this file.
+    // A batch of one call nests under that call's PreToolUse, mirroring
+    // PostToolUse; a batch of several instead groups its matching PreToolUse
+    // nodes under a synthetic parent (see GroupToolBatch) and is then inserted
+    // chronologically like any other sibling.
+    private static bool TryNestToolBatch(
+        HookObservation observation,
+        TreeNodeViewModel observationNode,
+        TreeNodeViewModel generationNode)
+    {
+        IReadOnlyList<string> toolCallIds = observation.BatchToolCallIds;
+        if (toolCallIds.Count == 1)
+        {
+            TreeNodeViewModel? preNode = FindPreNodeByToolCallId(generationNode, toolCallIds[0]);
+            if (preNode is null)
+            {
+                return false;
+            }
+
+            preNode.Children.Add(observationNode);
+            return true;
+        }
+
+        if (toolCallIds.Count > 1)
+        {
+            GroupToolBatch(observationNode, generationNode, toolCallIds);
+        }
+
+        return false;
+    }
+
+    // Splices the batch node in as the parent of every one of its matching
+    // PreToolUse nodes, carrying the real PostToolBatch observation the same
+    // way TryFormParallelWave splices in a synthetic ParallelWave for
+    // overlapping-time calls. Every id must resolve to a pre node or nothing
+    // is moved, so a partial match (e.g. a call outside this generation)
+    // never misrepresents which calls the batch actually covers and the
+    // event is left as an unmatched sibling instead.
+    private static void GroupToolBatch(
+        TreeNodeViewModel observationNode,
+        TreeNodeViewModel generationNode,
+        IReadOnlyList<string> toolCallIds)
+    {
+        List<TreeNodeViewModel> matches = [];
+        foreach (string id in toolCallIds)
+        {
+            TreeNodeViewModel? match = FindPreNodeByToolCallId(generationNode, id);
+            if (match is null)
+            {
+                return;
+            }
+
+            matches.Add(match);
+        }
+
+        matches.Sort((a, b) => a.Observation!.ObservedAtUtc.CompareTo(b.Observation!.ObservedAtUtc));
+
+        foreach (TreeNodeViewModel match in matches)
+        {
+            DetachToolCallNode(generationNode, match);
+            observationNode.Children.Add(match);
+        }
+    }
+
+    // Detaches a pre node wherever it currently lives — directly under the
+    // generation, or inside a ParallelWave already formed (by overlapping
+    // call timing) before the batch arrived — and unwraps/removes that wave
+    // if pulling a member out leaves it with fewer than the two members a
+    // wave requires.
+    private static void DetachToolCallNode(TreeNodeViewModel generationNode, TreeNodeViewModel node)
+    {
+        if (generationNode.Children.Remove(node))
+        {
+            return;
+        }
+
+        foreach (TreeNodeViewModel child in generationNode.Children)
+        {
+            if (child.Kind != TreeNodeKind.ParallelWave || !child.Children.Remove(node))
+            {
+                continue;
+            }
+
+            if (child.Children.Count == 0)
+            {
+                generationNode.Children.Remove(child);
+            }
+            else if (child.Children.Count == 1)
+            {
+                TreeNodeViewModel remaining = child.Children[0];
+                child.Children.Remove(remaining);
+                int index = generationNode.Children.IndexOf(child);
+                generationNode.Children.Remove(child);
+                generationNode.Children.Insert(Math.Min(index, generationNode.Children.Count), remaining);
+            }
+            else
+            {
+                UpdateWaveNode(child);
+            }
+
+            return;
+        }
+    }
+
+    private static TreeNodeViewModel? FindPreNodeByToolCallId(
+        TreeNodeViewModel generationNode,
+        string toolCallId)
+    {
+        foreach (TreeNodeViewModel child in EnumeratePreNodes(generationNode, onlyInFlight: false))
+        {
+            if (StringComparer.Ordinal.Equals(child.Observation!.ToolUseId, toolCallId))
+            {
+                return child;
+            }
+        }
+
+        return null;
+    }
+
+    private static Func<HookObservation, HookObservation, int> InnerScorer(
+        InnerExecutionCategory category) => category switch
+    {
+        InnerExecutionCategory.Shell => ToolCorrelationMatcher.ScoreShellExecution,
+        InnerExecutionCategory.Mcp => ToolCorrelationMatcher.ScoreMcpExecution,
+        _ => ToolCorrelationMatcher.ScoreFileTargetExecution
+    };
+
     // Registers a newly created node so later matching events can nest under it.
     private void TrackInFlightNode(
         HookObservation observation,
         TreeNodeViewModel node,
         TreeNodeViewModel _)
     {
-        switch (observation.HookEventName)
+        if (observation.Interpretation.OpensSubagent &&
+            observation.SubagentId is string subagentId)
         {
-            case "subagentStart":
-            {
-                string? subagentId = observation.SubagentId;
-                if (subagentId is not null)
-                {
-                    _inFlightSubagents[subagentId] = node;
-                }
-
-                break;
-            }
+            _inFlightSubagents[subagentId] = node;
         }
     }
 
@@ -541,13 +608,17 @@ public sealed class MainWindowViewModel : ObservableObject
     }
 
     private static IEnumerable<TreeNodeViewModel> EnumerateInFlightPreNodes(
-        TreeNodeViewModel parent)
+        TreeNodeViewModel parent) => EnumeratePreNodes(parent, onlyInFlight: true);
+
+    private static IEnumerable<TreeNodeViewModel> EnumeratePreNodes(
+        TreeNodeViewModel parent,
+        bool onlyInFlight)
     {
         foreach (TreeNodeViewModel child in parent.Children)
         {
             if (child.Kind == TreeNodeKind.ParallelWave)
             {
-                foreach (TreeNodeViewModel nested in EnumerateInFlightPreNodes(child))
+                foreach (TreeNodeViewModel nested in EnumeratePreNodes(child, onlyInFlight))
                 {
                     yield return nested;
                 }
@@ -555,8 +626,8 @@ public sealed class MainWindowViewModel : ObservableObject
                 continue;
             }
 
-            if (child.Observation?.HookEventName == "preToolUse" &&
-                !IsCompletedToolCall(child))
+            if (child.Observation?.Interpretation.OpensToolCall == true &&
+                (!onlyInFlight || !IsCompletedToolCall(child)))
             {
                 yield return child;
             }
@@ -620,7 +691,7 @@ public sealed class MainWindowViewModel : ObservableObject
                 toolNames.Contains(toolName, StringComparer.Ordinal) &&
                 !child.Children.Any(grandchild =>
                     StringComparer.Ordinal.Equals(
-                        grandchild.Observation?.HookEventName,
+                        grandchild.Observation?.Interpretation.InnerExecutionKind,
                         innerPreKind)))
             .ToList();
     }
@@ -708,8 +779,12 @@ public sealed class MainWindowViewModel : ObservableObject
     {
         foreach (TreeNodeViewModel child in preNode.Children)
         {
-            string? hookEventName = child.Observation?.HookEventName;
-            if (hookEventName is not ("beforeShellExecution" or "beforeMCPExecution"))
+            ObservationInterpretation? childInterpretation = child.Observation?.Interpretation;
+            if (childInterpretation is null ||
+                childInterpretation.Role != ObservationRole.InnerExecutionStart ||
+                childInterpretation.InnerExecutionKind is not string hookEventName ||
+                childInterpretation.InnerCategory is not
+                    (InnerExecutionCategory.Shell or InnerExecutionCategory.Mcp))
             {
                 continue;
             }
@@ -781,7 +856,7 @@ public sealed class MainWindowViewModel : ObservableObject
                 continue;
             }
 
-            if (child.Observation?.HookEventName is not "preToolUse")
+            if (child.Observation?.Interpretation.OpensToolCall != true)
             {
                 continue;
             }
@@ -845,14 +920,20 @@ public sealed class MainWindowViewModel : ObservableObject
     private static bool IsCompletedToolCall(TreeNodeViewModel node)
     {
         return node.Children.Any(c =>
-            c.Observation?.HookEventName is "postToolUse" or "postToolUseFailure");
+            c.Observation?.Interpretation.Role is
+                ObservationRole.ToolSuccess or
+                ObservationRole.ToolFailure or
+                ObservationRole.PermissionDenied);
     }
 
     private static DateTimeOffset GetCallEnd(TreeNodeViewModel preNode)
     {
         HookObservation? postObs = preNode.Children
             .Select(c => c.Observation)
-            .FirstOrDefault(o => o?.HookEventName is "postToolUse" or "postToolUseFailure");
+            .FirstOrDefault(o => o?.Interpretation.Role is
+                ObservationRole.ToolSuccess or
+                ObservationRole.ToolFailure or
+                ObservationRole.PermissionDenied);
 
         if (postObs is not null)
         {
@@ -980,10 +1061,10 @@ public sealed class MainWindowViewModel : ObservableObject
     // agent is running again.
     private static void UpdateSessionStatus(TreeNodeViewModel sessionNode, HookObservation observation)
     {
-        sessionNode.Status = observation.HookEventName switch
+        sessionNode.Status = observation.Interpretation.Role switch
         {
-            "sessionEnd" => SessionStatus.Ended,
-            "stop" => SessionStatus.Stopped,
+            ObservationRole.SessionEnd => SessionStatus.Ended,
+            ObservationRole.TurnStop => SessionStatus.Stopped,
             _ => SessionStatus.Active
         };
     }
@@ -1609,6 +1690,66 @@ public sealed class MainWindowViewModel : ObservableObject
             observation.OccurrenceHeader,
             TreeNodeKind.Observation,
             observation);
+    }
+
+    // Deterministic chronological placement of a direct child, ordered by
+    // (EffectiveTimestamp, IngestionOrdinal, EventId). Appended input that is
+    // already in order lands at the end (identical to the previous behaviour);
+    // a late-arriving event is reinserted at the correct position.
+    private static void InsertChronologically(
+        ObservableCollection<TreeNodeViewModel> children,
+        TreeNodeViewModel node)
+    {
+        (DateTimeOffset time, long ordinal, Guid id) key = SortKey(node);
+        for (int index = 0; index < children.Count; index++)
+        {
+            if (Compare(SortKey(children[index]), key) > 0)
+            {
+                children.Insert(index, node);
+                return;
+            }
+        }
+
+        children.Add(node);
+    }
+
+    // A node's chronological key: its own observation, or the earliest
+    // descendant for container nodes (turns, parallel waves).
+    private static (DateTimeOffset Time, long Ordinal, Guid Id) SortKey(TreeNodeViewModel node)
+    {
+        if (node.Observation is { } observation)
+        {
+            return (observation.EffectiveTimestamp, observation.IngestionOrdinal, observation.EventId);
+        }
+
+        (DateTimeOffset Time, long Ordinal, Guid Id) best =
+            (DateTimeOffset.MaxValue, long.MaxValue, Guid.Empty);
+        bool found = false;
+        foreach (TreeNodeViewModel child in node.Children)
+        {
+            (DateTimeOffset, long, Guid) childKey = SortKey(child);
+            if (!found || Compare(childKey, best) < 0)
+            {
+                best = childKey;
+                found = true;
+            }
+        }
+
+        return best;
+    }
+
+    private static int Compare(
+        (DateTimeOffset Time, long Ordinal, Guid Id) left,
+        (DateTimeOffset Time, long Ordinal, Guid Id) right)
+    {
+        int byTime = left.Time.CompareTo(right.Time);
+        if (byTime != 0)
+        {
+            return byTime;
+        }
+
+        int byOrdinal = left.Ordinal.CompareTo(right.Ordinal);
+        return byOrdinal != 0 ? byOrdinal : left.Id.CompareTo(right.Id);
     }
 
 }

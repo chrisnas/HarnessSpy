@@ -15,7 +15,7 @@
               "--event",
               "SessionStart",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "SessionStart"
             ],
@@ -34,7 +34,7 @@
               "--event",
               "Setup",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "Setup"
             ],
@@ -53,7 +53,7 @@
               "--event",
               "UserPromptSubmit",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "UserPromptSubmit"
             ],
@@ -72,7 +72,7 @@
               "--event",
               "UserPromptExpansion",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "UserPromptExpansion"
             ],
@@ -91,7 +91,7 @@
               "--event",
               "PreToolUse",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PreToolUse"
             ],
@@ -110,7 +110,7 @@
               "--event",
               "PermissionRequest",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PermissionRequest"
             ],
@@ -129,7 +129,7 @@
               "--event",
               "PermissionDenied",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PermissionDenied"
             ],
@@ -148,7 +148,7 @@
               "--event",
               "PostToolUse",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PostToolUse"
             ],
@@ -167,7 +167,7 @@
               "--event",
               "PostToolUseFailure",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PostToolUseFailure"
             ],
@@ -186,7 +186,7 @@
               "--event",
               "PostToolBatch",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PostToolBatch"
             ],
@@ -205,7 +205,7 @@
               "--event",
               "Notification",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "Notification"
             ],
@@ -224,7 +224,7 @@
               "--event",
               "SubagentStart",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "SubagentStart"
             ],
@@ -243,7 +243,7 @@
               "--event",
               "SubagentStop",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "SubagentStop"
             ],
@@ -262,7 +262,7 @@
               "--event",
               "TaskCreated",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "TaskCreated"
             ],
@@ -281,7 +281,7 @@
               "--event",
               "TaskCompleted",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "TaskCompleted"
             ],
@@ -300,7 +300,7 @@
               "--event",
               "Stop",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "Stop"
             ],
@@ -319,7 +319,7 @@
               "--event",
               "StopFailure",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "StopFailure"
             ],
@@ -338,7 +338,7 @@
               "--event",
               "TeammateIdle",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "TeammateIdle"
             ],
@@ -357,7 +357,7 @@
               "--event",
               "InstructionsLoaded",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "InstructionsLoaded"
             ],
@@ -376,7 +376,7 @@
               "--event",
               "ConfigChange",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "ConfigChange"
             ],
@@ -395,7 +395,7 @@
               "--event",
               "CwdChanged",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "CwdChanged"
             ],
@@ -414,7 +414,7 @@
               "--event",
               "DirectoryAdded",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "DirectoryAdded"
             ],
@@ -433,7 +433,7 @@
               "--event",
               "WorktreeRemove",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "WorktreeRemove"
             ],
@@ -452,7 +452,7 @@
               "--event",
               "PreCompact",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PreCompact"
             ],
@@ -471,7 +471,7 @@
               "--event",
               "PostCompact",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PostCompact"
             ],
@@ -490,7 +490,7 @@
               "--event",
               "SessionEnd",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "SessionEnd"
             ],
@@ -509,7 +509,7 @@
               "--event",
               "PreModelSwitch",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PreModelSwitch"
             ],
@@ -528,9 +528,85 @@
               "--event",
               "PostModelSwitch",
               "--source",
-              "claude-safe",
+              "claude-full",
               "--hook",
               "PostModelSwitch"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<CLAUDESPY_HOOK_EXECUTABLE>",
+            "args": [
+              "--event",
+              "MessageDisplay",
+              "--source",
+              "claude-full",
+              "--hook",
+              "MessageDisplay"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<CLAUDESPY_HOOK_EXECUTABLE>",
+            "args": [
+              "--event",
+              "FileChanged",
+              "--source",
+              "claude-full",
+              "--hook",
+              "FileChanged"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<CLAUDESPY_HOOK_EXECUTABLE>",
+            "args": [
+              "--event",
+              "Elicitation",
+              "--source",
+              "claude-full",
+              "--hook",
+              "Elicitation"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "ElicitationResult": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<CLAUDESPY_HOOK_EXECUTABLE>",
+            "args": [
+              "--event",
+              "ElicitationResult",
+              "--source",
+              "claude-full",
+              "--hook",
+              "ElicitationResult"
             ],
             "timeout": 5
           }

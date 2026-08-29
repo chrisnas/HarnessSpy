@@ -20,6 +20,13 @@ public sealed class HookRuntimeDetector : IHookRuntimeDetector
         JsonElement payload,
         IReadOnlyDictionary<string, string?> environment)
     {
+        // Explicit, generated configuration metadata is authoritative for
+        // short-lived hook collectors; payload heuristics are only a fallback.
+        if (RuntimeIdSurface(environment) is HookSurface declared)
+        {
+            return declared;
+        }
+
         if (Has(payload, "cursor_version") ||
             Has(payload, "conversation_id") && Has(payload, "generation_id") ||
             HasEnvironment(environment, "CURSOR_VERSION"))
@@ -35,6 +42,7 @@ public sealed class HookRuntimeDetector : IHookRuntimeDetector
             return HookSurface.ClaudeCode;
         }
 
+        // Copilot CLI camelCase: session id plus a numeric epoch timestamp.
         if (Has(payload, "sessionId") &&
             payload.TryGetProperty("timestamp", out JsonElement nativeTimestamp) &&
             nativeTimestamp.ValueKind == JsonValueKind.Number)
@@ -42,8 +50,13 @@ public sealed class HookRuntimeDetector : IHookRuntimeDetector
             return HookSurface.CopilotCli;
         }
 
+        // Actual VS Code Local observations are only inferred from payload shape
+        // as a legacy fallback, never solely from PascalCase + snake_case, since
+        // Copilot CLI can emit that same VS Code-compatible dialect. An ISO
+        // string timestamp plus VS Code ids is the documented host evidence.
         if (Has(payload, "hook_event_name") &&
-            Has(payload, "timestamp") &&
+            payload.TryGetProperty("timestamp", out JsonElement isoTimestamp) &&
+            isoTimestamp.ValueKind == JsonValueKind.String &&
             (Has(payload, "session_id") ||
              Has(payload, "tool_use_id") ||
              Has(payload, "agent_id")))
@@ -52,6 +65,27 @@ public sealed class HookRuntimeDetector : IHookRuntimeDetector
         }
 
         return expected.Surface;
+    }
+
+    // Maps the generated HARNESS_SPY_RUNTIME_ID to a surface. This is set by the
+    // installer-generated hook configuration and is authoritative.
+    private static HookSurface? RuntimeIdSurface(
+        IReadOnlyDictionary<string, string?> environment)
+    {
+        if (!environment.TryGetValue("HARNESS_SPY_RUNTIME_ID", out string? runtimeId) ||
+            string.IsNullOrWhiteSpace(runtimeId))
+        {
+            return null;
+        }
+
+        return runtimeId switch
+        {
+            "cursor" => HookSurface.CursorIde,
+            "claude-code" => HookSurface.ClaudeCode,
+            "github-copilot" or "copilot-cli" => HookSurface.CopilotCli,
+            "vscode-agent-hooks" => HookSurface.VsCodeAgentHooks,
+            _ => null
+        };
     }
 
     public bool IsAccepted(ProviderProfile expected, HookSurface detected)
@@ -80,11 +114,14 @@ public sealed class HookRuntimeDetector : IHookRuntimeDetector
 
 public static class HookEnvironment
 {
+    // Explicit allowlist so arbitrary environment variables are never captured.
     private static readonly string[] AllowedNames =
     [
         "CURSOR_VERSION",
         "CLAUDE_CODE_CHILD_SESSION",
         "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_REMOTE",
+        "CLAUDE_CODE_BRIDGE_SESSION_ID",
         "COPILOT_HOME",
         "HARNESS_SPY_HOST",
         "HARNESS_SPY_RUNTIME_ID"

@@ -66,7 +66,7 @@ public sealed class ProviderAdapterTests
     }
 
     [Fact]
-    public void ClaudeToolPayloadMapsToCanonicalCursorVocabulary()
+    public void ClaudeToolPayloadKeepsExactNativeNames()
     {
         HookObservation observation = ParseEnvelope(
             HookProvider.ClaudeCode,
@@ -83,12 +83,15 @@ public sealed class ProviderAdapterTests
             }
             """);
 
+        // Native identity is preserved: the event stays PreToolUse and the tool
+        // stays Bash. Nothing is renamed to Cursor's vocabulary.
         Assert.Equal("PreToolUse", observation.RawHookEventName);
-        Assert.Equal("preToolUse", observation.HookEventName);
+        Assert.Equal("PreToolUse", observation.HookEventName);
         Assert.Equal("claude-session", observation.SessionId);
         Assert.Equal("prompt-1", observation.GenerationId);
-        Assert.Equal("Shell", observation.ToolName);
+        Assert.Equal("Bash", observation.ToolName);
         Assert.Equal(CanonicalToolKind.Shell, observation.ToolKind);
+        Assert.Equal("tool-1", observation.ToolUseId);
         Assert.Equal(HookProvider.ClaudeCode, observation.Provider);
         Assert.Equal("C:\\Repo", observation.Workspace.DisplayName);
         Assert.Contains("\"tool_name\": \"Bash\"", observation.DisplayJson, StringComparison.Ordinal);
@@ -110,7 +113,7 @@ public sealed class ProviderAdapterTests
             }
             """);
 
-        Assert.Equal("stop", observation.HookEventName);
+        Assert.Equal("Stop", observation.HookEventName);
         Assert.Equal("Done.", observation.Text);
         Assert.Equal(CanonicalEventKind.TurnCompleted, observation.EventKind);
     }
@@ -135,12 +138,12 @@ public sealed class ProviderAdapterTests
         Assert.Equal("preToolUse", observation.RawHookEventName);
         Assert.Equal("preToolUse", observation.HookEventName);
         Assert.Equal("copilot-session", observation.SessionId);
-        Assert.Equal("Shell", observation.ToolName);
+        // The native camelCase tool name is preserved; it is not renamed.
+        Assert.Equal("powershell", observation.ToolName);
+        Assert.Equal(CanonicalToolKind.Shell, observation.ToolKind);
         Assert.Equal(CorrelationQuality.Derived, observation.CorrelationQuality);
-        Assert.Equal("git status", observation.Payload
-            .GetProperty("tool_input")
-            .GetProperty("command")
-            .GetString());
+        // The untouched native payload still carries the JSON-encoded toolArgs.
+        Assert.Contains("git status", observation.Payload.GetProperty("toolArgs").GetString());
     }
 
     [Fact]
@@ -161,7 +164,9 @@ public sealed class ProviderAdapterTests
             }
             """);
 
-        Assert.Equal("preToolUse", observation.HookEventName);
+        // VS Code Local keeps its exact PascalCase event and native tool name.
+        Assert.Equal("PreToolUse", observation.HookEventName);
+        Assert.Equal("editFiles", observation.ToolName);
         Assert.Equal("tool-1", observation.ToolUseId);
         Assert.Equal(CorrelationQuality.Exact, observation.CorrelationQuality);
         Assert.Equal(HookSurface.VsCodeAgentHooks, observation.Surface);

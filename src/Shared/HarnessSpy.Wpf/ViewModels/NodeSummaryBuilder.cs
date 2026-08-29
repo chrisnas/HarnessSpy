@@ -1,4 +1,5 @@
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Runtimes;
 
 namespace HarnessSpy.Wpf.ViewModels;
 
@@ -241,37 +242,50 @@ internal static class NodeSummaryBuilder
 
         RecordTokens(observation, tokensByGeneration);
 
-        switch (observation.HookEventName)
+        ObservationInterpretation interpretation = observation.Interpretation;
+        switch (interpretation.Role)
         {
-            case "preToolUse":
-                if (!observation.IsMcpPrefixedTool && observation.ToolName is string preTool)
+            case ObservationRole.ToolRequest:
+                if (IsClaudeNativeMcpTool(observation))
+                {
+                    AddCount(mcp, McpKey(observation));
+                }
+                else if (!observation.IsMcpPrefixedTool && observation.ToolName is string preTool)
                 {
                     AddCount(tools, preTool);
                 }
 
                 break;
 
-            case "postToolUse":
-                if (!observation.IsMcpPrefixedTool && observation.ToolName is string postTool)
+            case ObservationRole.ToolSuccess:
+                if (IsClaudeNativeMcpTool(observation))
+                {
+                    AddDuration(mcp, McpKey(observation), observation.DurationMs);
+                }
+                else if (!observation.IsMcpPrefixedTool && observation.ToolName is string postTool)
                 {
                     AddDuration(tools, postTool, observation.DurationMs);
                 }
 
                 break;
 
-            case "postToolUseFailure":
-                failures++;
-                break;
-
-            case "beforeMCPExecution":
+            case ObservationRole.InnerExecutionStart when
+                interpretation.InnerCategory == InnerExecutionCategory.Mcp:
                 AddCount(mcp, McpKey(observation));
                 break;
 
-            case "afterMCPExecution":
+            case ObservationRole.InnerExecutionStart when
+                interpretation.InnerCategory == InnerExecutionCategory.Shell:
+                commands++;
+                break;
+
+            case ObservationRole.InnerExecutionEnd when
+                interpretation.InnerCategory == InnerExecutionCategory.Mcp:
                 AddDuration(mcp, McpKey(observation), observation.DurationMs);
                 break;
 
-            case "afterFileEdit":
+            case ObservationRole.FileAccess when
+                interpretation.InnerCategory == InnerExecutionCategory.FileEdit:
                 edits++;
                 if (observation.TargetFilePath is string editedFile)
                 {
@@ -280,19 +294,15 @@ internal static class NodeSummaryBuilder
 
                 break;
 
-            case "beforeShellExecution":
-                commands++;
-                break;
-
-            case "subagentStart":
+            case ObservationRole.SubagentStart:
                 GetSubagent(subagents, observation).ApplyStart(observation);
                 break;
 
-            case "subagentStop":
+            case ObservationRole.SubagentStop:
                 GetSubagent(subagents, observation).ApplyStop(observation);
                 break;
 
-            case "afterAgentThought":
+            case ObservationRole.AgentThought:
                 thoughtCount++;
                 thoughtCharacterCount += observation.Text?.Length ?? 0;
                 if (observation.DurationMs is double thoughtMs)
@@ -302,9 +312,14 @@ internal static class NodeSummaryBuilder
 
                 break;
 
-            case "stop" when observation.IsAbortedStop:
+            case ObservationRole.TurnStop when observation.IsAbortedStop:
                 aborted = true;
                 break;
+        }
+
+        if (interpretation.CountsAsFailure)
+        {
+            failures++;
         }
     }
 
@@ -329,7 +344,7 @@ internal static class NodeSummaryBuilder
             return;
         }
 
-        if (StringComparer.Ordinal.Equals(observation.HookEventName, "afterAgentResponse") &&
+        if (observation.Interpretation.Role == ObservationRole.AgentResponse &&
             !tokensByGeneration.ContainsKey(key))
         {
             tokensByGeneration[key] = snapshot;
@@ -365,16 +380,36 @@ internal static class NodeSummaryBuilder
         }
     }
 
+    // Claude has no dedicated before/afterMCPExecution pair like Cursor - its
+    // PreToolUse/PostToolUse events are the only signal for an MCP call, so
+    // they must be counted here instead of just excluded from native tools.
+    private static bool IsClaudeNativeMcpTool(HookObservation observation) =>
+        observation.ToolName?.StartsWith("mcp__", StringComparison.Ordinal) == true;
+
     private static string McpKey(HookObservation observation)
     {
         string? server = observation.McpServerName;
-        string? tool = observation.ToolName;
+        string? tool = StripMcpPrefix(observation.ToolName);
         if (!string.IsNullOrEmpty(server) && !string.IsNullOrEmpty(tool))
         {
             return $"{server}/{tool}";
         }
 
         return tool ?? server ?? "MCP";
+    }
+
+    // Claude's native tool_name is "mcp__<server>__<tool>"; Cursor already
+    // reports the bare tool name via a separate field, so this is a no-op there.
+    private static string? StripMcpPrefix(string? toolName)
+    {
+        if (toolName is null || !toolName.StartsWith("mcp__", StringComparison.Ordinal))
+        {
+            return toolName;
+        }
+
+        string remainder = toolName[5..];
+        int separator = remainder.IndexOf("__", StringComparison.Ordinal);
+        return separator > 0 ? remainder[(separator + 2)..] : remainder;
     }
 
     private static SubagentAccumulator GetSubagent(
@@ -603,13 +638,15 @@ internal static class NodeSummaryBuilder
 
     private sealed class SubagentAccumulator
     {
-        public string Type { get; private set; } = "subagent";
+        public string? Type { get; private set; }
 
         public double DurationMs { get; private set; }
 
         public string? Status { get; private set; }
 
         public string? Task { get; private set; }
+
+        public string? LastMessage { get; private set; }
 
         public void ApplyStart(HookObservation observation)
         {
@@ -622,6 +659,7 @@ internal static class NodeSummaryBuilder
             Type = observation.SubagentType ?? Type;
             Status = observation.Status;
             Task ??= observation.Task;
+            LastMessage ??= observation.Text;
             if (observation.DurationMs is double ms)
             {
                 DurationMs = ms;
@@ -635,7 +673,8 @@ internal static class NodeSummaryBuilder
                 Type = Type,
                 DurationMs = DurationMs,
                 Status = Status,
-                TaskPreview = Truncate(Task)
+                TaskPreview = Truncate(Task),
+                LastMessagePreview = Truncate(LastMessage)
             };
         }
     }

@@ -23,6 +23,7 @@ public sealed class TreeNodeViewModel : ObservableObject
 {
     private const string RightArrow = "\u2192";
     private const string LeftArrow = "\u2190";
+    private const string ParallelGlyph = "\u2225";
 
     private bool _isExpanded;
     private SessionStatus _status = SessionStatus.Active;
@@ -103,69 +104,51 @@ public sealed class TreeNodeViewModel : ObservableObject
         set => SetProperty(ref _status, value);
     }
 
-    // Directional glyph shown ahead of observation nodes. "before"/"pre" hooks
-    // point right (input), "after"/"post" hooks point left (result); the blue
-    // afterAgentThought node intentionally has no arrow.
-    public string HeaderPrefix
-    {
-        get
+    // Directional glyph shown ahead of observation nodes, driven by the
+    // provider-neutral direction trait rather than the native event name. A
+    // PostToolBatch that grouped several PreToolUse nodes shows the same
+    // parallel glyph as a ParallelWave instead of its usual output arrow.
+    public string HeaderPrefix => IsToolBatchGroup
+        ? ParallelGlyph
+        : Observation?.Interpretation.Direction switch
         {
-            string? name = Observation?.HookEventName;
-            if (string.IsNullOrEmpty(name) || IsAgentThought)
-            {
-                return string.Empty;
-            }
+            ObservationDirection.Input => RightArrow,
+            ObservationDirection.Output => LeftArrow,
+            _ => string.Empty
+        };
 
-            if (name.StartsWith("before", StringComparison.Ordinal) ||
-                name.StartsWith("pre", StringComparison.Ordinal))
-            {
-                return RightArrow;
-            }
-
-            if (name.StartsWith("after", StringComparison.Ordinal) ||
-                name.StartsWith("post", StringComparison.Ordinal))
-            {
-                return LeftArrow;
-            }
-
-            return string.Empty;
-        }
-    }
+    // True for a PostToolBatch node that became the parent of 2+ matching
+    // PreToolUse nodes, so it can be styled like a ParallelWave.
+    public bool IsToolBatchGroup =>
+        Observation?.Interpretation.Role == ObservationRole.ToolBatch && Children.Count > 0;
 
     public bool IsAgentThought =>
-        Observation is not null &&
-        StringComparer.Ordinal.Equals(Observation.HookEventName, "afterAgentThought");
+        Observation?.Interpretation.Role == ObservationRole.AgentThought;
 
     public bool IsAgentResponse =>
-        Observation is not null &&
-        StringComparer.Ordinal.Equals(Observation.HookEventName, "afterAgentResponse");
+        Observation?.Interpretation.Role == ObservationRole.AgentResponse;
 
     public bool IsStop => Observation?.IsStop ?? false;
 
     public bool IsAbortedStop => Observation?.IsAbortedStop ?? false;
 
     public bool IsPreCompact =>
-        Observation is not null &&
-        StringComparer.Ordinal.Equals(Observation.HookEventName, "preCompact");
+        Observation?.Interpretation.Role == ObservationRole.CompactionStart;
 
     public bool IsFailure =>
-        Observation is not null &&
-        StringComparer.Ordinal.Equals(Observation.HookEventName, "postToolUseFailure");
+        Observation?.Interpretation.Tone == ObservationTone.Failure;
 
     public bool IsMcpExecution =>
-        Observation is not null &&
-        (StringComparer.Ordinal.Equals(Observation.HookEventName, "beforeMCPExecution") ||
-         StringComparer.Ordinal.Equals(Observation.HookEventName, "afterMCPExecution"));
+        Observation?.Interpretation.Tone == ObservationTone.Mcp;
 
     // Blue/purple/orange node labels need a light foreground on the selection
     // highlight so they stay readable when selected in the tree.
     public bool UsesLightForegroundWhenSelected =>
-        IsAgentThought || IsParallelWave || IsStop || IsPreCompact;
+        IsAgentThought || IsParallelWave || IsToolBatchGroup || IsStop || IsPreCompact;
 
-    // The full assistant/thinking text, shown as a hover tooltip on
-    // afterAgentResponse and afterAgentThought nodes only.
-    public string? HoverText =>
-        IsAgentThought || IsAgentResponse ? Observation?.Text : null;
+    // The full assistant/thinking text, shown as a hover tooltip. The engine
+    // decides which observations expose hover text (assistant/thinking output).
+    public string? HoverText => Observation?.Interpretation.HoverText;
 
     public bool HasHoverText => !string.IsNullOrEmpty(HoverText) && !HasDashboardHover;
 
@@ -190,7 +173,7 @@ public sealed class TreeNodeViewModel : ObservableObject
             return;
         }
 
-        NodeSummary = NodeSummaryBuilder.Build(Children, isSession: false, turnCount: 0, abortedTurnCount: 0);
+        NodeSummary = SummaryStrategies.Build(Children, isSession: false, turnCount: 0, abortedTurnCount: 0);
         Summary = NodeSummary.Badge;
         Header = FindPrompt(Children) is string prompt
             ? $"Turn {TurnNumber} · {BuildPromptPreview(prompt)}"
@@ -220,7 +203,7 @@ public sealed class TreeNodeViewModel : ObservableObject
             }
         }
 
-        NodeSummary = NodeSummaryBuilder.Build(Children, isSession: true, turnCount, abortedTurnCount);
+        NodeSummary = SummaryStrategies.Build(Children, isSession: true, turnCount, abortedTurnCount);
         Summary = NodeSummary.Badge;
 
         // Relabel the session with its opening prompt (like turn nodes) so the

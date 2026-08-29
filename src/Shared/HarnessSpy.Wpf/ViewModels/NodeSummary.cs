@@ -109,7 +109,7 @@ public sealed class CountedDurationRow
 
 public sealed class SubagentSummary
 {
-    public required string Type { get; init; }
+    public string? Type { get; init; }
 
     public double DurationMs { get; init; }
 
@@ -117,11 +117,20 @@ public sealed class SubagentSummary
 
     public string? TaskPreview { get; init; }
 
+    public string? LastMessagePreview { get; init; }
+
+    public bool HasTaskPreview => !string.IsNullOrEmpty(TaskPreview);
+
     public string Header
     {
         get
         {
-            List<string> parts = [Type];
+            List<string> parts = [];
+            if (!string.IsNullOrEmpty(Type))
+            {
+                parts.Add(Type);
+            }
+
             if (DurationMs > 0)
             {
                 parts.Add(HookObservation.FormatDuration(TimeSpan.FromMilliseconds(DurationMs)));
@@ -130,6 +139,11 @@ public sealed class SubagentSummary
             if (!string.IsNullOrEmpty(Status))
             {
                 parts.Add(Status);
+            }
+
+            if (!string.IsNullOrEmpty(LastMessagePreview))
+            {
+                parts.Add(LastMessagePreview);
             }
 
             return string.Join(" \u00b7 ", parts);

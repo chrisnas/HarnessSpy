@@ -8,8 +8,10 @@ The implementation is independent from the reference POC under
 
 ## Projects
 
-- `Shared/HarnessSpy.Core`: hook transport, diagnostics, provider detection,
-  adapters, normalized observations, storage, replay, and named pipes.
+- `Shared/HarnessSpy.Core`: hook transport, diagnostics, runtime detection,
+  source adapters, per-harness/per-surface runtime engines, lossless native
+  observations, storage, replay, and named pipes. See
+  [architecture.md](architecture.md) for the runtime/source design.
 - `Shared/HarnessSpy.Agent.Abstractions`: provider-neutral contracts reserved
   for future SDK-driven agent creation and streaming.
 - `Shared/HarnessSpy.Wpf`: the shared workspace/session/turn tree, summaries,
@@ -46,9 +48,11 @@ are stored under `%APPDATA%\HarnessSpy\<Provider>\settings.json`.
 
 ## Manual hook activation
 
-The files under `Config` are inert examples with absolute Debug executable
-paths. Build first, inspect the file, and manually merge or supply it to the
-host. HarnessSpy never overwrites existing host settings.
+The files under `Config` are inert examples that use a `<...>` executable
+placeholder instead of an absolute path. Regenerate them with the per-provider
+installer path below (stamping your real executable), inspect the file, and
+manually merge or supply it to the host. HarnessSpy never overwrites existing
+host settings.
 
 ### Cursor
 
@@ -61,34 +65,61 @@ All 21 native Cursor events are included.
 
 ### Claude Code
 
+Requires Claude Code `2.1.196+` for exact `prompt_id` turn grouping.
+
+Two tested passive profiles are generated from the case-sensitive
+`ClaudeHookCatalog` so the repository never ships an absolute author path:
+
+- `Config\Claude\settings.example.json` — the Safe profile with 28 events.
+- `Config\Claude\settings.full.example.json` — the Full profile with 32 events.
+
+Regenerate them (and stamp your real executable path) with the installer path:
+
+```powershell
+ClaudeSpy.Hook.exe --generate-settings safe  <out> <ClaudeSpy.Hook.exe>
+ClaudeSpy.Hook.exe --generate-settings full  <out> <ClaudeSpy.Hook.exe>
+```
+
 Prefer an isolated one-run settings file:
 
 ```powershell
-claude --settings C:\dev\research\AI\HarnessSpy\src\Config\Claude\settings.example.json
+claude --settings C:\path\to\settings.example.json
 ```
 
-Alternatively merge the hooks into `.claude\settings.local.json`,
-`.claude\settings.json`, or `%USERPROFILE%\.claude\settings.json`.
+Both profiles deliberately exclude `WorktreeCreate`: its command must return a
+worktree path and cannot use the passive silent forwarder. The Full profile
+adds the high-volume/sensitive events `MessageDisplay`, `FileChanged`,
+`Elicitation`, and `ElicitationResult`; enable it only when you need them.
+`PreModelSwitch`/`PostModelSwitch` are registered but their payload schemas are
+treated as open-ended until documented.
 
-The default template deliberately excludes `WorktreeCreate`, because defining
-that hook replaces Claude's normal worktree creation. High-volume or sensitive
-events such as `MessageDisplay`, `FileChanged`, and elicitation are also not
-enabled by default.
-
-Cursor and Copilot can import repository Claude settings. The Claude hook
-binary checks runtime evidence and silently ignores foreign invocations.
+Cursor and Copilot can import repository Claude settings. The Claude hook binary
+checks runtime evidence and silently ignores foreign invocations.
 
 ### GitHub Copilot CLI and VS Code
 
-Copy or merge `Config\Copilot\harness-spy.example.json` under
-`.github\hooks\`. Copilot CLI uses its lower-camel event configuration and
-passes the configured event name to the hook because native CLI payloads may
-omit `hook_event_name`.
+`Config\Copilot\harness-spy.example.json` registers all 14 documented Copilot
+CLI hook events (version `1`). Regenerate it with the installer path:
 
-VS Code can load and translate the same file into PascalCase/snake-case hook
-payloads. CopilotSpy detects and supports both local formats. GitHub cloud
-coding-agent collection is not included because a local Windows executable and
-named pipe are unavailable from its ephemeral Linux environment.
+```powershell
+CopilotSpy.Hook.exe --generate-settings <out> <CopilotSpy.Hook.exe>
+```
+
+Copilot CLI passes the configured event name and an explicit runtime/dialect id
+to the hook because native CLI payloads omit `hook_event_name`. The CLI can also
+emit a VS Code-compatible PascalCase/snake_case dialect; that dialect keeps CLI
+surface identity and is never reclassified as actual VS Code. The VS Code Local
+Preview surface has its own eight-event contract with exact `tool_use_id`/
+`agent_id` correlation.
+
+Copilot CLI correlation is derived, not exact: turns are derived from
+`userPromptSubmitted`..`agentStop`, and subagents correlate heuristically by
+name because `subagentStart` lacks the `agentId` supplied by `subagentStop`.
+
+GitHub cloud coding-agent collection is out of scope: an authenticated HTTPS
+relay and a Linux-compatible collector are required from its ephemeral Linux
+sandbox. Copilot SDK, OpenTelemetry, and ACP ingestion are documented follow-ups
+in [architecture.md](architecture.md).
 
 ## Passive safety contract
 
@@ -100,19 +131,32 @@ named pipe are unavailable from its ephemeral Linux environment.
 - Hook output never contains permission, continuation, context, or rewritten
   input fields.
 
-## Replay and normalization
+## Native identity architecture
+
+Each provider's exact native hook and tool names are displayed, persisted, and
+used for correlation. `Bash`/`PowerShell` are never renamed to `Shell`, `Edit`
+is never renamed to `Write`, and Claude events keep their PascalCase names.
+Semantic traits (scope, direction, category, correlation role) are derived
+sidecar metadata only; the shared WPF tree, inspector, and summaries branch on
+those traits, never on provider event-name strings or casing.
+
+Per-harness, per-surface runtime engines (Cursor, Claude, Copilot CLI, VS Code
+Local, and an unknown fallback) interpret native events into those traits. A
+`HarnessRuntimeRegistry` selects the engine; unknown providers/events always
+appear in deterministic time order rather than being dropped.
 
 New captures use versioned envelopes containing provider, configured and
 detected surfaces, raw event name, and the untouched provider payload. The
-viewer also accepts the original Cursor `hp_*.json` files.
+viewer also accepts the original Cursor `hp_*.json` files and legacy raw
+payloads. Every observation is placed by `(EffectiveTimestamp, IngestionOrdinal,
+EventId)`, so late-arriving events land at the correct position.
 
-Provider adapters derive a common event/tool vocabulary for tree projection,
-but the inspector always displays the raw provider payload. Unknown future
-events and tools are retained instead of rejected.
+Explicit source/surface/dialect metadata (`HARNESS_SPY_RUNTIME_ID`) wins over
+payload casing heuristics; VS Code is never inferred from PascalCase/snake_case
+alone because Copilot CLI can emit that same dialect.
 
-Copilot CLI lacks documented exact turn and tool-call IDs. Its turns are
-derived from prompt/stop boundaries and ambiguous concurrent operations are not
-presented as exact correlations.
+See [architecture.md](architecture.md) for the full runtime/source model and the
+CodexSpy and Copilot SDK/OTel/ACP follow-up blueprints.
 
 ## Future SDK agent support
 

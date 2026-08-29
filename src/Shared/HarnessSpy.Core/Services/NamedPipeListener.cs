@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Text;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Sources;
 
 namespace HarnessSpy.Core.Services;
 
@@ -83,6 +84,7 @@ public sealed class NamedPipeListener(
         Func<HookObservation, CancellationToken, Task> onObservation,
         CancellationToken stoppingToken)
     {
+        HookInvocationSourceAdapter sourceAdapter = new();
         await using (server)
         {
             try
@@ -94,7 +96,7 @@ public sealed class NamedPipeListener(
                 foreach (string frame in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
                 {
                     string line = frame.TrimEnd('\r');
-                    if (!HookObservation.TryParse(line, out HookObservation? observation) || observation is null)
+                    if (!sourceAdapter.TryConvert(line, out HookObservation? observation) || observation is null)
                     {
                         continue;
                     }

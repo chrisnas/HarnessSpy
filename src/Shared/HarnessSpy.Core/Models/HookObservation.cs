@@ -4,58 +4,70 @@ using System.Text.RegularExpressions;
 using System.IO;
 using System.Linq;
 using HarnessSpy.Core.Providers;
+using HarnessSpy.Core.Runtimes;
 
 namespace HarnessSpy.Core.Models;
 
+// A single native observation. The payload is stored untouched; the exact
+// native event and tool names are the public identity. All provider-specific
+// interpretation (scope, correlation, presentation, summary traits) is produced
+// by the owning harness runtime engine and carried in Interpretation.
 public sealed class HookObservation
 {
     private HookObservation(
         Guid eventId,
         DateTimeOffset observedAtUtc,
         JsonElement payload,
-        JsonElement rawPayload,
         HookProvider provider,
         HookSurface surface,
         ObservationSourceKind sourceKind,
         string rawHookEventName,
-        string hookEventName,
-        CanonicalEventKind eventKind,
-        CanonicalToolKind toolKind,
-        CorrelationQuality correlationQuality,
-        string? sessionId,
-        string? generationId,
         WorkspaceContext workspace,
         string displayJson,
         double? durationMs,
-        string? sourceFilePath)
+        string? sourceFilePath,
+        ObservationInterpretation interpretation)
     {
         EventId = eventId;
         ObservedAtUtc = observedAtUtc;
+        NativeTimestampUtc = ReadNativeTimestamp(payload);
+        IngestionOrdinal = System.Threading.Interlocked.Increment(ref _ingestionCounter);
         Payload = payload;
-        RawPayload = rawPayload;
         Provider = provider;
         Surface = surface;
         SourceKind = sourceKind;
         RawHookEventName = rawHookEventName;
-        HookEventName = hookEventName;
-        EventKind = eventKind;
-        ToolKind = toolKind;
-        CorrelationQuality = correlationQuality;
-        SessionId = sessionId;
-        GenerationId = generationId;
         Workspace = workspace;
         DisplayJson = displayJson;
         DurationMs = durationMs;
         SourceFilePath = sourceFilePath;
+        Interpretation = interpretation;
     }
+
+    private static long _ingestionCounter;
 
     public Guid EventId { get; }
 
     public DateTimeOffset ObservedAtUtc { get; }
 
+    // The provider's own timestamp when the payload carries one (Copilot CLI
+    // epoch milliseconds, VS Code ISO-8601). Null when the payload has none.
+    public DateTimeOffset? NativeTimestampUtc { get; }
+
+    // Monotonic capture order, used as the deterministic tie-breaker when two
+    // observations share an effective timestamp.
+    public long IngestionOrdinal { get; }
+
+    // Native timestamp when present, otherwise HarnessSpy capture time. Drives
+    // deterministic chronological placement in the tree.
+    public DateTimeOffset EffectiveTimestamp => NativeTimestampUtc ?? ObservedAtUtc;
+
+    // The untouched provider payload. Never rewritten with aliases.
     public JsonElement Payload { get; }
 
-    public JsonElement RawPayload { get; }
+    // Retained for callers that referenced the pre-refactor property name; the
+    // native payload is the raw payload now that nothing is normalised.
+    public JsonElement RawPayload => Payload;
 
     public HookProvider Provider { get; }
 
@@ -63,26 +75,30 @@ public sealed class HookObservation
 
     public ObservationSourceKind SourceKind { get; }
 
+    // The exact event name as it arrived (hook_event_name or the configured
+    // hook key). Kept distinct from the interpreted native identity.
     public string RawHookEventName { get; }
 
-    public string HookEventName { get; }
+    // The exact native event/item name. This is the identity shown in the UI
+    // and used for correlation; it is never renamed.
+    public string HookEventName => Interpretation.NativeEventName;
 
-    public CanonicalEventKind EventKind { get; }
+    public ObservationInterpretation Interpretation { get; }
 
-    public CanonicalToolKind ToolKind { get; }
+    public CanonicalEventKind EventKind => Interpretation.EventKind;
 
-    public CorrelationQuality CorrelationQuality { get; }
+    public CanonicalToolKind ToolKind => Interpretation.ToolKind;
 
-    public string? SessionId { get; }
+    public CorrelationQuality CorrelationQuality => Interpretation.CorrelationQuality;
+
+    public string? SessionId => Interpretation.SessionId;
 
     public string ProviderScopedSessionId =>
         $"{Provider}:{Surface}:{SessionId ?? "unknown"}";
 
-    // Identifies a single agent turn within a conversation: every hook event a
-    // prompt produces shares this id, which lets the viewer group a turn's
-    // events together. Null for session-scoped events (sessionStart/End) and
-    // any payload that does not carry one.
-    public string? GenerationId { get; }
+    // The turn/generation key: every observation a single turn produces shares
+    // it. Null for session-scoped events and payloads that carry no turn id.
+    public string? GenerationId => Interpretation.TurnId;
 
     public WorkspaceContext Workspace { get; }
 
@@ -92,31 +108,25 @@ public sealed class HookObservation
 
     public string? SourceFilePath { get; }
 
-    // Correlation key shared by preToolUse, postToolUse, and postToolUseFailure
-    // for the same tool invocation. Used to nest post under pre.
-    public string? ToolUseId => ReadString(Payload, "tool_use_id");
+    public string? ToolUseId => Interpretation.ToolCallId;
 
-    // Correlation key shared by subagentStart and subagentStop for the same
-    // subagent invocation.
-    public string? SubagentId => ReadString(Payload, "subagent_id");
+    public IReadOnlyList<string> BatchToolCallIds => Interpretation.BatchToolCallIds;
 
-    // The tool being invoked (e.g. "Shell", "Read", "Write", "Grep").
-    public string? ToolName => ReadString(Payload, "tool_name");
+    public string? SubagentId => Interpretation.SubagentId;
 
-    // The user prompt that opened a turn; only present on beforeSubmitPrompt.
-    public string? PromptText => ReadString(Payload, "prompt");
+    public string? ToolName => Interpretation.ToolName;
 
-    // Aggregated assistant text (afterAgentResponse) or thinking text
-    // (afterAgentThought); surfaced as a hover tooltip in the tree.
-    public string? Text => ReadString(Payload, "text");
+    public string? PromptText => Interpretation.PromptText;
 
-    public string? McpServerName => ReadString(Payload, "mcp_server_name");
+    public string? Text => Interpretation.AssistantText;
 
-    public string? Status => ReadString(Payload, "status");
+    public string? McpServerName => Interpretation.McpServerName;
 
-    public string? SubagentType => ReadString(Payload, "subagent_type");
+    public string? Status => Interpretation.Status;
 
-    public string? Task => ReadString(Payload, "task");
+    public string? SubagentType => Interpretation.SubagentType;
+
+    public string? Task => Interpretation.Task;
 
     public long? InputTokens => ReadLong(Payload, "input_tokens");
 
@@ -126,23 +136,14 @@ public sealed class HookObservation
 
     public long? CacheWriteTokens => ReadLong(Payload, "cache_write_tokens");
 
-    // File path from beforeReadFile/afterFileEdit, or from a Read/Write tool_input.
-    public string? TargetFilePath =>
-        ReadString(Payload, "file_path") ?? ReadToolInputString("file_path") ?? ReadToolInputString("path");
+    public string? TargetFilePath => Interpretation.TargetFilePath;
 
     public string? SkillName => TryGetSkillName(TargetFilePath);
 
-    // A "/name" token anywhere in the submitted prompt is an explicit
-    // invocation of a command or a skill (e.g. "/dotnet-memory-analysis look
-    // at ..."). Only populated for beforeSubmitPrompt; empty for every other
-    // hook.
     public IReadOnlyList<string> SlashCommands => TryGetSlashCommands(PromptText);
 
-    // Skills the agent names in its own reasoning, phrased as "<skill-id>
-    // skill" (e.g. "follow the dotnet-memory-analysis skill"). Mined only from
-    // afterAgentThought text; empty for every other hook.
     public IReadOnlyList<string> SkillMentions =>
-        StringComparer.Ordinal.Equals(HookEventName, "afterAgentThought")
+        Interpretation.Role == ObservationRole.AgentThought
             ? TryGetSkillMentions(Text)
             : [];
 
@@ -152,130 +153,56 @@ public sealed class HookObservation
         CacheReadTokens is not null ||
         CacheWriteTokens is not null;
 
-    public bool IsMcpPrefixedTool =>
-        ToolName is not null &&
-        ToolName.StartsWith("MCP:", StringComparison.Ordinal);
+    public bool IsMcpPrefixedTool => RuntimeJson.IsMcpPrefixed(ToolName);
 
-    // The most relevant payload fields for the selected hook, shown as a
-    // name/value table above the raw payload in the inspector pane.
     public IReadOnlyList<PayloadField> DetailFields => BuildDetailFields();
 
     private IReadOnlyList<PayloadField> BuildDetailFields()
     {
         List<PayloadField> fields = [];
 
-        switch (HookEventName)
+        foreach (FieldSpec spec in Interpretation.DetailFieldSpecs)
         {
-            case "sessionStart":
-            case "sessionEnd":
-                AddScalar(fields, "is_background_agent");
-                break;
-
-            case "beforeSubmitPrompt":
-                AddScalar(fields, "prompt");
-                AddArrayMembers(fields, "attachments");
-                break;
-
-            case "afterAgentThought":
-            case "afterAgentResponse":
-                AddScalar(fields, "text");
-                break;
-
-            case "preToolUse":
-                AddObjectMembers(fields, "tool_input");
-                break;
-
-            case "postToolUse":
-                AddJsonStringMembers(fields, "tool_output");
-                break;
-
-            case "postToolUseFailure":
-                AddObjectMembers(fields, "tool_input");
-                AddScalar(fields, "is_interrupt");
-                AddScalar(fields, "failure_type");
-                AddScalar(fields, "error_message");
-                break;
-
-            case "beforeShellExecution":
-                AddScalar(fields, "command");
-                AddScalar(fields, "cwd");
-                AddScalar(fields, "sandbox");
-                break;
-
-            case "afterShellExecution":
-                AddScalar(fields, "command");
-                AddScalar(fields, "output");
-                AddScalar(fields, "sandbox");
-                break;
-
-            case "beforeMCPExecution":
-                AddScalar(fields, "mcp_server_name");
-                AddScalar(fields, "tool_name");
-                AddScalar(fields, "command");
-                AddJsonStringMembers(fields, "tool_input");
-                break;
-
-            case "afterMCPExecution":
-                AddScalar(fields, "mcp_server_name");
-                AddScalar(fields, "tool_name");
-                AddScalar(fields, "command");
-                AddJsonStringMembers(fields, "tool_input");
-                AddJsonStringMembers(fields, "result_json");
-                break;
-
-            case "beforeReadFile":
-                AddScalar(fields, "file_path");
-                AddScalar(fields, "content");
-                AddArrayMembers(fields, "attachments");
-                break;
-
-            case "beforeTabFileRead":
-                AddScalar(fields, "content");
-                break;
-
-            case "afterFileEdit":
-                AddScalar(fields, "file_path");
-                AddArrayMembers(fields, "edits");
-                break;
-
-            case "afterTabFileEdit":
-                AddFlattenedArrayMembers(fields, "edits");
-                break;
-
-            case "workspaceOpen":
-                AddScalar(fields, "cursor_version");
-                AddScalar(fields, "user_email");
-                AddArrayMembers(fields, "workspace_roots");
-                break;
-
-            case "subagentStart":
-            case "subagentStop":
-                AddScalar(fields, "subagent_type");
-                AddScalar(fields, "task");
-                AddScalarPreferred(fields, "model", "subagent_model");
-                AddScalar(fields, "git_branch");
-                break;
-
-            case "preCompact":
-                AddPreCompactDetailFields(fields);
-                break;
-
-            case "stop":
-                AddScalar(fields, "loop_count");
-                break;
-
-            default:
-                AddAllTopLevel(fields);
-                break;
+            ApplyFieldSpec(fields, spec);
         }
 
         AddDurationField(fields);
-
         return fields;
     }
 
+    private void ApplyFieldSpec(List<PayloadField> fields, FieldSpec spec)
+    {
+        switch (spec.Kind)
+        {
+            case FieldSpecKind.Scalar:
+                AddScalar(fields, spec.Names[0]);
+                break;
+            case FieldSpecKind.ScalarPreferred:
+                AddScalarPreferred(fields, spec.Names);
+                break;
+            case FieldSpecKind.ObjectMembers:
+                AddObjectMembers(fields, spec.Names[0]);
+                break;
+            case FieldSpecKind.JsonStringMembers:
+                AddJsonStringMembers(fields, spec.Names[0]);
+                break;
+            case FieldSpecKind.ArrayMembers:
+                AddArrayMembers(fields, spec.Names[0]);
+                break;
+            case FieldSpecKind.FlattenedArrayMembers:
+                AddFlattenedArrayMembers(fields, spec.Names[0]);
+                break;
+            case FieldSpecKind.PreCompactSummary:
+                AddPreCompactDetailFields(fields);
+                break;
+            case FieldSpecKind.AllTopLevel:
+                AddAllTopLevel(fields);
+                break;
+        }
+    }
+
     // Surfaces the elapsed time on any hook that reports it, always as the first
-    // row - even when a preceding case (e.g. preCompact) already listed it.
+    // row, even when a preceding spec already listed it.
     private void AddDurationField(List<PayloadField> fields)
     {
         fields.RemoveAll(field => field.Name is "duration" or "duration_ms");
@@ -304,8 +231,6 @@ public sealed class HookObservation
         }
     }
 
-    // Adds the first of the candidate names that is present, keeping the label
-    // aligned with the actual payload shape (e.g. model vs subagent_model).
     private void AddScalarPreferred(List<PayloadField> fields, params string[] propertyNames)
     {
         if (Payload.ValueKind != JsonValueKind.Object)
@@ -323,7 +248,6 @@ public sealed class HookObservation
         }
     }
 
-    // Flattens an object's members into one row per member (e.g. tool_input).
     private void AddObjectMembers(List<PayloadField> fields, string propertyName)
     {
         if (Payload.ValueKind == JsonValueKind.Object &&
@@ -337,9 +261,6 @@ public sealed class HookObservation
         }
     }
 
-    // tool_output (and similar) arrives as a JSON-encoded string, so its inner
-    // paths carry doubled backslashes. Parsing it yields one row per subfield
-    // (e.g. tool_output.file_path, tool_output.success) with clean values.
     private void AddJsonStringMembers(List<PayloadField> fields, string propertyName)
     {
         if (Payload.ValueKind != JsonValueKind.Object ||
@@ -400,8 +321,6 @@ public sealed class HookObservation
         }
     }
 
-    // Flattens an array of objects into indexed rows (e.g. attachments, edits),
-    // noting an empty collection so the reader knows the field was present.
     private void AddArrayMembers(List<PayloadField> fields, string propertyName)
     {
         if (Payload.ValueKind != JsonValueKind.Object ||
@@ -436,8 +355,6 @@ public sealed class HookObservation
         }
     }
 
-    // Same as AddArrayMembers, but object values (e.g. afterTabFileEdit range)
-    // become one row per nested field instead of a single JSON blob.
     private void AddFlattenedArrayMembers(List<PayloadField> fields, string propertyName)
     {
         if (Payload.ValueKind != JsonValueKind.Object ||
@@ -484,9 +401,41 @@ public sealed class HookObservation
 
         foreach (JsonProperty member in Payload.EnumerateObject())
         {
+            if (fields.Any(field => StringComparer.Ordinal.Equals(field.Name, member.Name)))
+            {
+                continue;
+            }
+
             fields.Add(new PayloadField(member.Name, FormatFieldValue(member.Value)));
         }
     }
+
+    private void AddPreCompactDetailFields(List<PayloadField> fields)
+    {
+        AddScalar(fields, "is_first_compaction");
+        AddScalar(fields, "trigger");
+
+        if (ReadDouble(Payload, "context_usage_percent") is double usage)
+        {
+            fields.Add(new PayloadField("context usage percent", FormatPercent(usage)));
+        }
+
+        if (ReadLong(Payload, "context_window_size") is long windowSize)
+        {
+            fields.Add(new PayloadField("window size", FormatTokens(windowSize)));
+        }
+
+        long? messageCount = ReadLong(Payload, "message_count");
+        long? messagesToCompact = ReadLong(Payload, "messages_to_compact");
+        if (messageCount is not null || messagesToCompact is not null)
+        {
+            fields.Add(new PayloadField(
+                "messages count/to compact",
+                $"{messageCount?.ToString() ?? "?"}/{messagesToCompact?.ToString() ?? "?"}"));
+        }
+    }
+
+    private static string FormatPercent(double value) => $"{value:0.##}%";
 
     private static string FormatFieldValue(JsonElement element)
     {
@@ -499,33 +448,21 @@ public sealed class HookObservation
         };
     }
 
-    // JSON-encoded MCP/tool payloads often carry doubled backslashes in string
-    // values; collapse them so paths read naturally in the inspector table.
     private static string NormalizeDisplayEscapes(string value)
     {
         return value.Replace("\\\\", "\\", StringComparison.Ordinal);
     }
 
-    // sessionStart/sessionEnd bracket the whole conversation, so they belong at
-    // the session level even though Cursor may stamp them with a generation_id.
-    public bool IsSessionLifecycle =>
-        StringComparer.Ordinal.Equals(HookEventName, "sessionStart") ||
-        StringComparer.Ordinal.Equals(HookEventName, "sessionEnd");
+    public bool IsSessionLifecycle => Interpretation.Scope == ObservationScope.SessionLifecycle;
 
-    public bool IsWorkspaceOpen => StringComparer.Ordinal.Equals(HookEventName, "workspaceOpen");
+    public bool IsWorkspaceOpen => Interpretation.Scope == ObservationScope.Workspace;
 
-    public bool IsTabHook =>
-        StringComparer.Ordinal.Equals(HookEventName, "beforeTabFileRead") ||
-        StringComparer.Ordinal.Equals(HookEventName, "afterTabFileEdit");
+    public bool IsTabHook => Interpretation.Scope == ObservationScope.Tab;
 
-    public bool IsStop => StringComparer.Ordinal.Equals(HookEventName, "stop");
+    public bool IsStop => Interpretation.Role == ObservationRole.TurnStop;
 
-    public bool IsAbortedStop =>
-        IsStop &&
-        StringComparer.OrdinalIgnoreCase.Equals(Status, "aborted");
+    public bool IsAbortedStop => Interpretation.IsAbortedStop;
 
-    // Skill usage is not a dedicated hook: the agent reads SKILL.md, and the
-    // parent folder name is the skill id (e.g. .../dotnet-threads-analysis/SKILL.md).
     public static string? TryGetSkillName(string? filePath)
     {
         if (string.IsNullOrWhiteSpace(filePath) ||
@@ -539,14 +476,6 @@ public sealed class HookObservation
         return string.IsNullOrWhiteSpace(name) ? null : name;
     }
 
-    // Detects every "/name" invocation in the submitted prompt, wherever it
-    // appears. Cursor sends slash commands and slash-invoked skills verbatim, so
-    // a token like "/dotnet-memory-analysis" identifies the command or skill
-    // regardless of whether its SKILL.md was ever read. Each token must stand on
-    // its own (start of text or after whitespace) and end at whitespace,
-    // end-of-text, or sentence punctuation, which keeps paths and URLs
-    // (C:/foo, http://host, and/or) from being mistaken for commands. Returns
-    // the distinct tokens with their leading slash (e.g. "/dotnet-memory-analysis").
     public static IReadOnlyList<string> TryGetSlashCommands(string? promptText)
     {
         if (string.IsNullOrWhiteSpace(promptText))
@@ -597,11 +526,6 @@ public sealed class HookObservation
         return commands ?? (IReadOnlyList<string>)[];
     }
 
-    // Matches "<skill-id> skill" references the agent writes in its reasoning,
-    // e.g. "follow the dotnet-memory-analysis skill". The id must be hyphenated
-    // so generic phrases ("this skill", "analysis skill") are ignored, and any
-    // surrounding markdown emphasis (**id** skill, `id` skill) is tolerated.
-    // Returns the distinct skill ids in lower case.
     public static IReadOnlyList<string> TryGetSkillMentions(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -627,9 +551,6 @@ public sealed class HookObservation
         @"(?<![\w-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)[*`_]*\s+skills?\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    // When the payload carries the fully expanded prompt (skills block, then the
-    // user text wrapped in <user_query>), the invocation lives inside that tag;
-    // otherwise the raw prompt is used as-is.
     private static string ExtractUserQuery(string text)
     {
         const string open = "<user_query>";
@@ -651,240 +572,30 @@ public sealed class HookObservation
     private static bool IsCommandChar(char c) =>
         char.IsLetterOrDigit(c) || c is '-' or '_';
 
-    // A slash command is delimited by whitespace, end-of-text, or sentence
-    // punctuation; ':' , '/' and '\' are excluded so path fragments (e.g. the
-    // "/c" in "/c:/Users") are rejected rather than truncated into a command.
     private static bool IsCommandTerminator(char c) =>
         char.IsWhiteSpace(c) || c is '.' or ',' or ';' or '!' or '?' or ')' or ']' or '}' or '"' or '\'';
 
-    // Builds "{hookEventName} · {detail} · {timing}", omitting either segment
-    // when there is nothing relevant to show for that event.
+    // Builds "{nativeEventName} · {detail} · {timing}", omitting a segment when
+    // there is nothing relevant to show.
     public string OccurrenceHeader
     {
         get
         {
             string header = HookEventName;
 
-            string? detail = GetDetail();
-            if (!string.IsNullOrEmpty(detail))
+            if (!string.IsNullOrEmpty(Interpretation.HeaderDetail))
             {
-                header = $"{header} · {detail}";
+                header = $"{header} \u00b7 {Interpretation.HeaderDetail}";
             }
 
             string? timing = GetTimingSuffix();
             if (!string.IsNullOrEmpty(timing))
             {
-                header = $"{header} · {timing}";
+                header = $"{header} \u00b7 {timing}";
             }
 
             return header;
         }
-    }
-
-    // Surfaces the most useful field(s) for each hook type so the tree header
-    // reads meaningfully without opening the raw payload pane.
-    private string? GetDetail()
-    {
-        switch (HookEventName)
-        {
-            case "sessionStart":
-                string? version = ReadString(Payload, "cursor_version");
-                return version is null ? null : $"Cursor {version}";
-
-            case "preToolUse":
-            case "postToolUse":
-                return GetToolUseDetail();
-
-            case "beforeSubmitPrompt":
-                return JoinNonEmpty(ReadString(Payload, "composer_mode"), ReadString(Payload, "model"));
-
-            case "beforeReadFile":
-            case "afterFileEdit":
-            case "beforeTabFileRead":
-            case "afterTabFileEdit":
-                string? filePath = ReadString(Payload, "file_path");
-                return filePath is null ? null : Path.GetFileName(filePath);
-
-            case "beforeShellExecution":
-                return ReadString(Payload, "command");
-
-            case "beforeMCPExecution":
-            case "afterMCPExecution":
-                return GetMcpExecutionDetail();
-
-            case "afterAgentResponse":
-                return GetTokenSummary();
-
-            case "stop":
-                return JoinNonEmpty(ReadString(Payload, "status"), GetTokenSummary());
-
-            case "preCompact":
-                return GetPreCompactDetail();
-
-            case "sessionEnd":
-                return JoinNonEmpty(
-                    ReadString(Payload, "reason"),
-                    ReadString(Payload, "final_status"),
-                    ReadString(Payload, "error_message"));
-
-            case "postToolUseFailure":
-                return GetFailureDetail();
-
-            default:
-                return null;
-        }
-    }
-
-    // "{tool_name} ({model})", plus the target file for Read/Write tools whose
-    // file path lives inside tool_input.
-    private string? GetToolUseDetail()
-    {
-        string? toolName = ReadString(Payload, "tool_name");
-        string? model = ReadString(Payload, "model");
-
-        string? head = toolName;
-        if (!string.IsNullOrEmpty(model))
-        {
-            head = string.IsNullOrEmpty(head) ? $"({model})" : $"{head} ({model})";
-        }
-
-        if (toolName is "Read" or "Write")
-        {
-            string? filePath = ReadToolInputString("file_path") ?? ReadToolInputString("path");
-            if (!string.IsNullOrEmpty(filePath))
-            {
-                head = JoinNonEmpty(head, filePath);
-            }
-        }
-
-        return head;
-    }
-
-    // Compact per-turn token accounting shared by afterAgentResponse and stop.
-    private string? GetTokenSummary()
-    {
-        List<string> parts = [];
-
-        if (ReadLong(Payload, "input_tokens") is long input)
-        {
-            parts.Add($"in {FormatTokens(input)}");
-        }
-
-        if (ReadLong(Payload, "output_tokens") is long output)
-        {
-            parts.Add($"out {FormatTokens(output)}");
-        }
-
-        if (ReadLong(Payload, "cache_read_tokens") is long cacheRead)
-        {
-            parts.Add($"cache r {FormatTokens(cacheRead)}");
-        }
-
-        if (ReadLong(Payload, "cache_write_tokens") is long cacheWrite)
-        {
-            parts.Add($"cache w {FormatTokens(cacheWrite)}");
-        }
-
-        return parts.Count == 0 ? null : string.Join(" · ", parts);
-    }
-
-    private void AddPreCompactDetailFields(List<PayloadField> fields)
-    {
-        AddScalar(fields, "is_first_compaction");
-        AddScalar(fields, "trigger");
-
-        if (ReadDouble(Payload, "context_usage_percent") is double usage)
-        {
-            fields.Add(new PayloadField("context usage percent", FormatPercent(usage)));
-        }
-
-        if (ReadLong(Payload, "context_window_size") is long windowSize)
-        {
-            fields.Add(new PayloadField("window size", FormatTokens(windowSize)));
-        }
-
-        long? messageCount = ReadLong(Payload, "message_count");
-        long? messagesToCompact = ReadLong(Payload, "messages_to_compact");
-        if (messageCount is not null || messagesToCompact is not null)
-        {
-            fields.Add(new PayloadField(
-                "messages count/to compact",
-                $"{messageCount?.ToString() ?? "?"}/{messagesToCompact?.ToString() ?? "?"}"));
-        }
-    }
-
-    private string? GetPreCompactDetail()
-    {
-        List<string> parts = [];
-
-        if (ReadString(Payload, "trigger") is string trigger)
-        {
-            parts.Add(trigger);
-        }
-
-        if (ReadDouble(Payload, "context_usage_percent") is double usage)
-        {
-            parts.Add(FormatPercent(usage));
-        }
-
-        if (ReadLong(Payload, "context_window_size") is long windowSize)
-        {
-            parts.Add(FormatTokens(windowSize));
-        }
-
-        long? messageCount = ReadLong(Payload, "message_count");
-        long? messagesToCompact = ReadLong(Payload, "messages_to_compact");
-        if (messageCount is not null || messagesToCompact is not null)
-        {
-            parts.Add($"{messageCount?.ToString() ?? "?"}/{messagesToCompact?.ToString() ?? "?"}");
-        }
-
-        return parts.Count == 0 ? null : string.Join(" · ", parts);
-    }
-
-    private static string FormatPercent(double value) => $"{value:0.##}%";
-
-    private string? GetFailureDetail()
-    {
-        string? errorMessage = ReadString(Payload, "error_message") ?? ReadString(Payload, "error");
-        return JoinNonEmpty(
-            ReadString(Payload, "tool_name"),
-            ReadString(Payload, "failure_type"),
-            FormatFailureErrorPreview(errorMessage));
-    }
-
-    private static string? FormatFailureErrorPreview(string? errorMessage)
-    {
-        if (string.IsNullOrEmpty(errorMessage))
-        {
-            return null;
-        }
-
-        string normalized = errorMessage.ReplaceLineEndings("\n");
-        int newlineIndex = normalized.IndexOf('\n');
-        if (newlineIndex < 0)
-        {
-            return normalized;
-        }
-
-        return normalized[..newlineIndex].TrimEnd() + "...";
-    }
-
-    private string? GetMcpExecutionDetail()
-    {
-        return JoinNonEmpty(ReadString(Payload, "mcp_server_name"), ReadString(Payload, "tool_name"));
-    }
-
-    private string? ReadToolInputString(string propertyName)
-    {
-        if (Payload.ValueKind == JsonValueKind.Object &&
-            Payload.TryGetProperty("tool_input", out JsonElement toolInput) &&
-            toolInput.ValueKind == JsonValueKind.Object)
-        {
-            return ReadString(toolInput, propertyName);
-        }
-
-        return null;
     }
 
     public static string FormatTokens(long value)
@@ -902,12 +613,11 @@ public sealed class HookObservation
         return value.ToString();
     }
 
-    // The clock time is only meaningful for sessionStart (the first event of
-    // a session); every other event either reports its own duration or gets
-    // no timing suffix at all.
+    // The clock time is meaningful for the first event of a session; every
+    // other event reports its own duration or no timing at all.
     private string? GetTimingSuffix()
     {
-        if (StringComparer.Ordinal.Equals(HookEventName, "sessionStart"))
+        if (Interpretation.ShowClockTimestamp)
         {
             return ObservedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
         }
@@ -915,10 +625,6 @@ public sealed class HookObservation
         return DurationMs is double ms ? FormatDuration(TimeSpan.FromMilliseconds(ms)) : null;
     }
 
-    // Formats a duration as its non-zero leading units down to milliseconds,
-    // e.g. "456ms", "4s 000ms", "1m 05s 000ms", "1h 01m 01s 500ms". Leading
-    // hour/minute/second units are dropped while they are zero; milliseconds
-    // are always shown.
     public static string FormatDuration(TimeSpan elapsed)
     {
         if (elapsed < TimeSpan.Zero)
@@ -950,13 +656,6 @@ public sealed class HookObservation
         }
 
         return $"{milliseconds}ms";
-    }
-
-    private static string? JoinNonEmpty(params string?[] parts)
-    {
-        IEnumerable<string> nonEmpty = parts.Where(part => !string.IsNullOrEmpty(part))!;
-        string joined = string.Join(" · ", nonEmpty);
-        return joined.Length == 0 ? null : joined;
     }
 
     public static bool TryParse(string line, out HookObservation? observation)
@@ -1050,7 +749,8 @@ public sealed class HookObservation
                     out observation);
             }
 
-            if (ReadString(root, "hook_event_name") is null)
+            if (ReadString(root, "hook_event_name") is null &&
+                !RuntimeJson.Has(root, "sessionId"))
             {
                 return false;
             }
@@ -1096,38 +796,58 @@ public sealed class HookObservation
             return false;
         }
 
-        ProviderNormalization normalized = ProviderAdapterRegistry
-            .Get(provider)
-            .Normalize(payloadElement, surface, configuredEventName);
-        JsonElement payload = normalized.CanonicalPayload;
-        string hookEventName = normalized.CanonicalEventName;
-        string? sessionId = ReadString(payload, "conversation_id") ?? ReadString(payload, "session_id");
-        string? generationId = ReadString(payload, "generation_id");
-        WorkspaceContext workspace = WorkspaceContext.FromPayload(payload);
-        string displayJson = FormatForDisplay(normalized.RawPayload);
+        JsonElement payload = payloadElement.Clone();
+        string? payloadEventName = ReadString(payload, "hook_event_name");
+        string rawEventName = payloadEventName ?? configuredEventName ?? "unknownHook";
+
+        IHarnessRuntimeEngine engine = HarnessRuntimeRegistry.Resolve(provider, surface);
+        ObservationContext context = new(
+            payload,
+            payloadEventName,
+            configuredEventName,
+            HarnessRuntimeRegistry.DialectFor(provider, surface),
+            observedAtUtc);
+        ObservationInterpretation interpretation = engine.Interpret(context);
+
+        WorkspaceContext workspace = ResolveWorkspace(payload, provider);
+        string displayJson = FormatForDisplay(payload);
         double? durationMs = ReadDouble(payload, "duration_ms") ?? ReadDouble(payload, "duration");
 
         observation = new HookObservation(
             eventId,
             observedAtUtc,
             payload,
-            normalized.RawPayload,
-            normalized.Provider,
-            normalized.Surface,
+            provider,
+            surface,
             sourceKind,
-            normalized.RawEventName,
-            hookEventName,
-            normalized.EventKind,
-            normalized.ToolKind,
-            normalized.CorrelationQuality,
-            sessionId,
-            generationId,
+            rawEventName,
             workspace,
             displayJson,
             durationMs,
-            sourceFilePath);
+            sourceFilePath,
+            interpretation);
 
         return true;
+    }
+
+    // Cursor supplies workspace_roots directly. Other providers report a single
+    // cwd, which becomes the workspace root so their sessions group under the
+    // repository they run in.
+    private static WorkspaceContext ResolveWorkspace(JsonElement payload, HookProvider provider)
+    {
+        if (payload.ValueKind == JsonValueKind.Object &&
+            payload.TryGetProperty("workspace_roots", out _))
+        {
+            return WorkspaceContext.FromPayload(payload);
+        }
+
+        string? cwd = ReadString(payload, "cwd");
+        if (cwd is not null)
+        {
+            return WorkspaceContext.FromRoot(cwd);
+        }
+
+        return WorkspaceContext.FromPayload(payload);
     }
 
     private static Guid ReadEventId(JsonElement root)
@@ -1182,6 +902,37 @@ public sealed class HookObservation
         return fallback;
     }
 
+    // Parses a native timestamp without rewriting the payload: Copilot CLI sends
+    // epoch milliseconds as a number; VS Code sends ISO-8601 as a string.
+    private static DateTimeOffset? ReadNativeTimestamp(JsonElement payload)
+    {
+        if (payload.ValueKind != JsonValueKind.Object ||
+            !payload.TryGetProperty("timestamp", out JsonElement value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out long epochMs))
+        {
+            try
+            {
+                return DateTimeOffset.FromUnixTimeMilliseconds(epochMs).ToUniversalTime();
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return null;
+            }
+        }
+
+        if (value.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(value.GetString(), out DateTimeOffset parsed))
+        {
+            return parsed.ToUniversalTime();
+        }
+
+        return null;
+    }
+
     private static double? ReadDouble(JsonElement root, string propertyName)
     {
         if (root.ValueKind == JsonValueKind.Object &&
@@ -1221,17 +972,21 @@ public sealed class HookObservation
         return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 
-    // Re-serializing a JsonElement with System.Text.Json always JSON-escapes
-    // backslashes and quotes inside strings (that's required for the result to
-    // be valid JSON). For a human-facing inspector that back-and-forth escaping
-    // just adds noise - e.g. a Windows path turns into "C:\\dev\\..." - so this
-    // walks the element tree itself and writes string values verbatim, only
-    // escaping the handful of control characters that would otherwise garble
-    // the indentation.
+    // High-volume events (MessageDisplay, Elicitation) can carry very large
+    // payloads; cap the rendered inspector text so the UI stays responsive while
+    // still showing the great majority of the content.
+    private const int MaxDisplayJsonLength = 200_000;
+
     private static string FormatForDisplay(JsonElement element)
     {
         var builder = new StringBuilder();
         WriteElement(builder, element, indentLevel: 0);
+        if (builder.Length > MaxDisplayJsonLength)
+        {
+            return builder.ToString(0, MaxDisplayJsonLength) +
+                "\n\u2026 (payload truncated for display)";
+        }
+
         return builder.ToString();
     }
 
@@ -1325,9 +1080,6 @@ public sealed class HookObservation
         builder.Append(']');
     }
 
-    // Only escapes what would otherwise be invisible or break the layout
-    // (control characters); backslashes and quotes inside the value are
-    // written as-is so paths and quoted shell commands read naturally.
     private static void WriteRawString(StringBuilder builder, string? value)
     {
         builder.Append('"');

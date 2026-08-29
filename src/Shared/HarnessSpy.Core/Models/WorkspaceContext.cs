@@ -28,6 +28,21 @@ public sealed record WorkspaceContext(
         Array.Empty<string>(),
         WorkspaceContextKind.NoWorkspace);
 
+    // Providers that report a single working directory (Claude, Copilot) instead
+    // of Cursor's workspace_roots array still group under the repository they run
+    // in.
+    public static WorkspaceContext FromRoot(string? root)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return Unknown;
+        }
+
+        string normalized = NormalizePathForDisplay(root);
+        string key = "roots:" + normalized.ToUpperInvariant();
+        return new WorkspaceContext(key, normalized, [normalized], WorkspaceContextKind.Normal);
+    }
+
     public static WorkspaceContext FromPayload(JsonElement payload)
     {
         if (!payload.TryGetProperty("workspace_roots", out JsonElement rootsElement))

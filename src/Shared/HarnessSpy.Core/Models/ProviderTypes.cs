@@ -19,10 +19,17 @@ public enum HookSurface
 
 public enum ObservationSourceKind
 {
+    // Ordinals 0-3 are persisted in existing v2 envelopes and must stay stable.
     Hook,
     Sdk,
     Synthetic,
-    Replay
+    Replay,
+
+    // Reserved for future higher-fidelity sources. Appended so old captures
+    // keep replaying correctly.
+    ProtocolStream,
+    OpenTelemetry,
+    CloudApi
 }
 
 public enum AgentRuntimeKind

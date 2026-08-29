@@ -14,7 +14,8 @@ public partial class App : Application
         base.OnStartup(e);
         _host = new SpyApplicationHost(new SpyAppProfile(
             ProviderProfile.Claude,
-            new UnavailableAgentProvider(ProviderProfile.Claude.Provider)));
+            new UnavailableAgentProvider(ProviderProfile.Claude.Provider),
+            new Uri("pack://application:,,,/ClaudeSpy.App;component/ClaudeSpy.png")));
         _host.Start(this);
     }
 

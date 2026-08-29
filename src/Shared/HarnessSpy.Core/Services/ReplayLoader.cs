@@ -1,11 +1,14 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Sources;
 
 namespace HarnessSpy.Core.Services;
 
 public sealed class ReplayLoader
 {
+    private readonly ReplaySourceAdapter _sourceAdapter = new();
+
     private static readonly Regex TimestampedPayloadFile = new(
         @"_(?<timestamp>\d{8}_\d{6}_\d{3})_(?<suffix>[0-9a-fA-F]{8})\.json$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -54,7 +57,7 @@ public sealed class ReplayLoader
             }
 
             string sourceFilePath = GetFullPath(file);
-            if (HookObservation.TryParseRawPayload(
+            if (_sourceAdapter.TryConvert(
                     content,
                     observedAtUtc,
                     sourceFilePath,

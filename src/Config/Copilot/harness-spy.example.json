@@ -4,154 +4,168 @@
     "sessionStart": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event sessionStart --source copilot-template --hook sessionStart",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event sessionStart --source copilot-cli --hook sessionStart --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "sessionEnd": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event sessionEnd --source copilot-template --hook sessionEnd",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event sessionEnd --source copilot-cli --hook sessionEnd --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "userPromptSubmitted": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event userPromptSubmitted --source copilot-template --hook userPromptSubmitted",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event userPromptSubmitted --source copilot-cli --hook userPromptSubmitted --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "userPromptTransformed": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event userPromptTransformed --source copilot-template --hook userPromptTransformed",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event userPromptTransformed --source copilot-cli --hook userPromptTransformed --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "preToolUse": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event preToolUse --source copilot-template --hook preToolUse",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event preToolUse --source copilot-cli --hook preToolUse --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "postToolUse": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event postToolUse --source copilot-template --hook postToolUse",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event postToolUse --source copilot-cli --hook postToolUse --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "postToolUseFailure": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event postToolUseFailure --source copilot-template --hook postToolUseFailure",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event postToolUseFailure --source copilot-cli --hook postToolUseFailure --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "permissionRequest": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event permissionRequest --source copilot-template --hook permissionRequest",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event permissionRequest --source copilot-cli --hook permissionRequest --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "notification": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event notification --source copilot-template --hook notification",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event notification --source copilot-cli --hook notification --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "agentStop": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event agentStop --source copilot-template --hook agentStop",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event agentStop --source copilot-cli --hook agentStop --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "subagentStart": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event subagentStart --source copilot-template --hook subagentStart",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event subagentStart --source copilot-cli --hook subagentStart --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "subagentStop": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event subagentStop --source copilot-template --hook subagentStop",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event subagentStop --source copilot-cli --hook subagentStop --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "errorOccurred": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event errorOccurred --source copilot-template --hook errorOccurred",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event errorOccurred --source copilot-cli --hook errorOccurred --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ],
     "preCompact": [
       {
         "type": "command",
-        "powershell": "& 'C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CopilotSpy.Hook\\bin\\Debug\\net10.0\\CopilotSpy.Hook.exe' --event preCompact --source copilot-template --hook preCompact",
+        "powershell": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event preCompact --source copilot-cli --hook preCompact --runtime github-copilot --dialect copilot-cli-camel",
         "cwd": ".",
         "timeoutSec": 5,
         "env": {
-          "HARNESS_SPY_HOST": "github-copilot"
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "github-copilot"
         }
       }
     ]
