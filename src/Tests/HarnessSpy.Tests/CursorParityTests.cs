@@ -915,6 +915,14 @@ public sealed class NestingAndParallelWaveTests
 
         AssertReadCall(calls, "C:\\Repo\\baseline_report.txt");
         AssertReadCall(calls, "C:\\Repo\\after_report.txt");
+
+        // Cursor fires both preToolUse/postToolUse and the dedicated
+        // beforeReadFile hook for the same read, so each path must be counted
+        // once, not twice.
+        NodeSummary summary = generation.NodeSummary!;
+        Assert.Equal(2, summary.ReadFiles.Count);
+        Assert.Contains(summary.ReadFiles, row => row.FullPath == "C:\\Repo\\baseline_report.txt");
+        Assert.Contains(summary.ReadFiles, row => row.FullPath == "C:\\Repo\\after_report.txt");
     }
 
     [Fact]
@@ -983,6 +991,14 @@ public sealed class NestingAndParallelWaveTests
         AssertFileEditCall(calls, "file_path", "C:\\Repo\\a.cs");
         AssertFileEditCall(calls, "path", "C:\\Repo\\b.cs");
         AssertFileEditCall(calls, "target_notebook", "C:\\Repo\\c.ipynb");
+
+        // Same dedup guarantee for writes: preToolUse/postToolUse and
+        // afterFileEdit both report each file, but it must count once.
+        NodeSummary summary = generation.NodeSummary!;
+        Assert.Equal(3, summary.WrittenFiles.Count);
+        Assert.Contains(summary.WrittenFiles, row => row.FullPath == "C:\\Repo\\a.cs");
+        Assert.Contains(summary.WrittenFiles, row => row.FullPath == "C:\\Repo\\b.cs");
+        Assert.Contains(summary.WrittenFiles, row => row.FullPath == "C:\\Repo\\c.ipynb");
     }
 
     [Fact]

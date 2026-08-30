@@ -20,15 +20,18 @@ internal sealed class VsCodeLocalRuntimeEngine : HarnessRuntimeEngineBase
             "unknownHook";
 
         string? toolName = RuntimeJson.String(payload, "tool_name");
+        IReadOnlyList<string> targetFilePaths = RuntimeJson.NestedStringArray(payload, "tool_input", "files");
         string? targetFilePath =
             RuntimeJson.String(payload, "file_path") ??
-            RuntimeJson.NestedString(payload, "tool_input", "file_path", "path");
+            RuntimeJson.NestedString(payload, "tool_input", "file_path", "path") ??
+            (targetFilePaths.Count > 0 ? targetFilePaths[0] : null);
 
         var b = new InterpretationBuilder(name)
         {
             SessionId = RuntimeJson.String(payload, "session_id"),
             ToolName = toolName,
             TargetFilePath = targetFilePath,
+            TargetFilePaths = targetFilePaths,
             PromptText = RuntimeJson.String(payload, "prompt"),
             SubagentId = RuntimeJson.String(payload, "agent_id"),
             SubagentType = RuntimeJson.String(payload, "agent_type"),

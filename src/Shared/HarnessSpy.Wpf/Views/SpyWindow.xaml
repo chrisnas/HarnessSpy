@@ -230,18 +230,51 @@
                                 </StackPanel>
 
                                 <StackPanel Margin="0,8,0,0"
+                                            Orientation="Horizontal"
+                                            Visibility="{Binding NodeSummary.HasCompactions, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Compactions" />
+                                    <TextBlock Margin="8,0,0,0"
+                                               Foreground="#57606A"
+                                               Text="{Binding NodeSummary.CompactionText}" />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
                                             Visibility="{Binding NodeSummary.HasTokens, Converter={StaticResource BooleanToVisibilityConverter}}">
                                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tokens" />
                                     <TextBlock Text="{Binding NodeSummary.TokenLine}" />
                                 </StackPanel>
 
                                 <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasReadFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File reads" />
+                                    <ItemsControl ItemsSource="{Binding NodeSummary.ReadFiles}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding FileName}" ToolTip="{Binding FullPath}" TextTrimming="CharacterEllipsis" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
                                             Visibility="{Binding NodeSummary.HasWrittenFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Files" />
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File writes" />
                                     <ItemsControl ItemsSource="{Binding NodeSummary.WrittenFiles}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding FileName}" ToolTip="{Binding FullPath}" TextTrimming="CharacterEllipsis" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasDeletedFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File deletes" />
+                                    <ItemsControl ItemsSource="{Binding NodeSummary.DeletedFiles}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding FileName}" ToolTip="{Binding FullPath}" TextTrimming="CharacterEllipsis" />
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
@@ -371,7 +404,8 @@
                                 <DataTrigger Binding="{Binding IsAbortedStop}" Value="True">
                                     <Setter Property="Foreground" Value="#CF222E" />
                                 </DataTrigger>
-                                <DataTrigger Binding="{Binding IsPreCompact}" Value="True">
+                                <DataTrigger Binding="{Binding IsCompaction}" Value="True">
+                                    <Setter Property="FontWeight" Value="Bold" />
                                     <Setter Property="Foreground" Value="#CF222E" />
                                 </DataTrigger>
                                 <DataTrigger Binding="{Binding IsFailure}" Value="True">
@@ -664,6 +698,16 @@
                         </DataGrid>
                     </StackPanel>
 
+                    <StackPanel Margin="0,16,0,0"
+                                Orientation="Horizontal"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasCompactions, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Compactions" />
+                        <TextBlock Margin="8,0,0,0"
+                                   FontSize="14"
+                                   Foreground="#57606A"
+                                   Text="{Binding SelectedNode.NodeSummary.CompactionText}" />
+                    </StackPanel>
+
                     <StackPanel Margin="0,8,0,0"
                                 Visibility="{Binding SelectedNode.NodeSummary.HasTokens, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tokens" />
@@ -671,12 +715,36 @@
                     </StackPanel>
 
                     <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasReadFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File reads" />
+                        <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.ReadFiles}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock FontSize="13" Text="{Binding FullPath}" TextTrimming="CharacterEllipsis" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
                                 Visibility="{Binding SelectedNode.NodeSummary.HasWrittenFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
-                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Files" />
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File writes" />
                         <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.WrittenFiles}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <TextBlock FontSize="13" Text="{Binding}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock FontSize="13" Text="{Binding FullPath}" TextTrimming="CharacterEllipsis" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasDeletedFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File deletes" />
+                        <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.DeletedFiles}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock FontSize="13" Text="{Binding FullPath}" TextTrimming="CharacterEllipsis" />
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>

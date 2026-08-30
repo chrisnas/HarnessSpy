@@ -121,6 +121,31 @@ internal static class RuntimeJson
         return null;
     }
 
+    // Reads a string array from a nested object member, e.g. tool_input.files.
+    public static IReadOnlyList<string> NestedStringArray(JsonElement payload, string container, string arrayName)
+    {
+        if (payload.ValueKind != JsonValueKind.Object ||
+            !payload.TryGetProperty(container, out JsonElement inner) ||
+            inner.ValueKind != JsonValueKind.Object ||
+            !inner.TryGetProperty(arrayName, out JsonElement array) ||
+            array.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        List<string> values = [];
+        foreach (JsonElement item in array.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String && item.GetString() is string value &&
+                !string.IsNullOrWhiteSpace(value))
+            {
+                values.Add(value);
+            }
+        }
+
+        return values;
+    }
+
     public static bool IsMcpPrefixed(string? toolName) =>
         toolName is not null &&
         (toolName.StartsWith("MCP:", StringComparison.Ordinal) ||

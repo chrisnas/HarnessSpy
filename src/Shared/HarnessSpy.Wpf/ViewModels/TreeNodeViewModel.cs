@@ -135,6 +135,12 @@ public sealed class TreeNodeViewModel : ObservableObject
     public bool IsPreCompact =>
         Observation?.Interpretation.Role == ObservationRole.CompactionStart;
 
+    // Both ends of a compaction (PreCompact/PostCompact) share the bold-red
+    // styling so the whole compaction block reads as one unit.
+    public bool IsCompaction =>
+        Observation?.Interpretation.Role is
+            ObservationRole.CompactionStart or ObservationRole.CompactionEnd;
+
     public bool IsFailure =>
         Observation?.Interpretation.Tone == ObservationTone.Failure;
 
@@ -150,7 +156,7 @@ public sealed class TreeNodeViewModel : ObservableObject
     // Bold coloured node labels (blue/purple/orange/green/red) need a light
     // foreground on the selection highlight so they stay readable when selected.
     public bool UsesLightForegroundWhenSelected =>
-        IsAgentThought || IsParallelWave || IsToolBatchGroup || IsStop || IsPreCompact ||
+        IsAgentThought || IsParallelWave || IsToolBatchGroup || IsStop || IsCompaction ||
         IsPermission || IsPermissionDenied;
 
     // The full assistant/thinking text, shown as a hover tooltip. The engine

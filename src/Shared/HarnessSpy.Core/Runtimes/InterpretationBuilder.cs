@@ -22,6 +22,8 @@ internal sealed class InterpretationBuilder(string nativeEventName)
 
     public string? TargetFilePath { get; set; }
 
+    public IReadOnlyList<string> TargetFilePaths { get; set; } = [];
+
     public string? PromptText { get; set; }
 
     public string? AssistantText { get; set; }
@@ -116,6 +118,7 @@ internal sealed class InterpretationBuilder(string nativeEventName)
             PromptText = PromptText,
             AssistantText = AssistantText,
             TargetFilePath = TargetFilePath,
+            TargetFilePaths = TargetFilePaths,
             Task = Task,
             Status = Status,
             MatchStrategy = MatchStrategy,

@@ -19,14 +19,14 @@ internal static class NodeSummaryBuilder
         Dictionary<string, TokenSnapshot> tokensByGeneration = new(StringComparer.Ordinal);
         SortedSet<string> skills = new(StringComparer.OrdinalIgnoreCase);
         SortedSet<string> slashCommands = new(StringComparer.OrdinalIgnoreCase);
-        SortedSet<string> writtenFiles = new(StringComparer.OrdinalIgnoreCase);
+        FileAccessAccumulator fileAccess = new();
 
-        int edits = 0;
         int commands = 0;
         int failures = 0;
         int thoughtCount = 0;
         double thoughtDurationMs = 0;
         int thoughtCharacterCount = 0;
+        int compactionCount = 0;
         bool aborted = false;
         DateTimeOffset? start = null;
         DateTimeOffset? end = null;
@@ -39,13 +39,13 @@ internal static class NodeSummaryBuilder
             tokensByGeneration,
             skills,
             slashCommands,
-            writtenFiles,
-            ref edits,
+            fileAccess,
             ref commands,
             ref failures,
             ref thoughtCount,
             ref thoughtDurationMs,
             ref thoughtCharacterCount,
+            ref compactionCount,
             ref aborted,
             ref start,
             ref end);
@@ -88,6 +88,7 @@ internal static class NodeSummaryBuilder
             ThoughtCount = thoughtCount,
             ThoughtDurationMs = thoughtDurationMs,
             ThoughtCharacterCount = thoughtCharacterCount,
+            CompactionCount = compactionCount,
             InputTokens = tokenTotals.Input,
             OutputTokens = tokenTotals.Output,
             CacheReadTokens = tokenTotals.CacheRead,
@@ -97,7 +98,9 @@ internal static class NodeSummaryBuilder
             Thoughts = thoughtRows,
             Skills = skills.ToArray(),
             Commands = slashCommands.ToArray(),
-            WrittenFiles = writtenFiles.ToArray(),
+            ReadFiles = ToFileRows(fileAccess.Reads),
+            WrittenFiles = ToFileRows(fileAccess.Writes),
+            DeletedFiles = ToFileRows(fileAccess.Deletes),
             Subagents = subagentRows,
             Kpis = BuildKpis(
                 isSession,
@@ -111,7 +114,7 @@ internal static class NodeSummaryBuilder
                 thoughtCharacterCount,
                 wallTime,
                 tokenLine,
-                writtenFiles.Count),
+                fileAccess),
             Badge = BuildBadge(
                 isSession,
                 turnCount,
@@ -119,7 +122,7 @@ internal static class NodeSummaryBuilder
                 isAborted,
                 toolRows,
                 toolCallCount,
-                edits,
+                fileAccess.Writes.Count + fileAccess.Deletes.Count,
                 commands,
                 failures,
                 wallTime,
@@ -136,13 +139,13 @@ internal static class NodeSummaryBuilder
         Dictionary<string, TokenSnapshot> tokensByGeneration,
         SortedSet<string> skills,
         SortedSet<string> slashCommands,
-        SortedSet<string> writtenFiles,
-        ref int edits,
+        FileAccessAccumulator fileAccess,
         ref int commands,
         ref int failures,
         ref int thoughtCount,
         ref double thoughtDurationMs,
         ref int thoughtCharacterCount,
+        ref int compactionCount,
         ref bool aborted,
         ref DateTimeOffset? start,
         ref DateTimeOffset? end)
@@ -160,13 +163,13 @@ internal static class NodeSummaryBuilder
                     tokensByGeneration,
                     skills,
                     slashCommands,
-                    writtenFiles,
-                    ref edits,
+                    fileAccess,
                     ref commands,
                     ref failures,
                     ref thoughtCount,
                     ref thoughtDurationMs,
                     ref thoughtCharacterCount,
+                    ref compactionCount,
                     ref aborted,
                     ref start,
                     ref end);
@@ -182,13 +185,13 @@ internal static class NodeSummaryBuilder
                     tokensByGeneration,
                     skills,
                     slashCommands,
-                    writtenFiles,
-                    ref edits,
+                    fileAccess,
                     ref commands,
                     ref failures,
                     ref thoughtCount,
                     ref thoughtDurationMs,
                     ref thoughtCharacterCount,
+                    ref compactionCount,
                     ref aborted,
                     ref start,
                     ref end);
@@ -204,13 +207,13 @@ internal static class NodeSummaryBuilder
         Dictionary<string, TokenSnapshot> tokensByGeneration,
         SortedSet<string> skills,
         SortedSet<string> slashCommands,
-        SortedSet<string> writtenFiles,
-        ref int edits,
+        FileAccessAccumulator fileAccess,
         ref int commands,
         ref int failures,
         ref int thoughtCount,
         ref double thoughtDurationMs,
         ref int thoughtCharacterCount,
+        ref int compactionCount,
         ref bool aborted,
         ref DateTimeOffset? start,
         ref DateTimeOffset? end)
@@ -267,6 +270,11 @@ internal static class NodeSummaryBuilder
                     AddDuration(tools, postTool, observation.DurationMs);
                 }
 
+                if (!observation.IsMcpPrefixedTool)
+                {
+                    fileAccess.Record(observation.ToolKind, observation.TargetFilePaths);
+                }
+
                 break;
 
             case ObservationRole.InnerExecutionStart when
@@ -285,13 +293,13 @@ internal static class NodeSummaryBuilder
                 break;
 
             case ObservationRole.FileAccess when
-                interpretation.InnerCategory == InnerExecutionCategory.FileEdit:
-                edits++;
-                if (observation.TargetFilePath is string editedFile)
-                {
-                    writtenFiles.Add(editedFile);
-                }
+                interpretation.InnerCategory == InnerExecutionCategory.FileRead:
+                fileAccess.Record(CanonicalToolKind.FileRead, observation.TargetFilePaths);
+                break;
 
+            case ObservationRole.FileAccess when
+                interpretation.InnerCategory == InnerExecutionCategory.FileEdit:
+                fileAccess.Record(CanonicalToolKind.FileEdit, observation.TargetFilePaths);
                 break;
 
             case ObservationRole.SubagentStart:
@@ -310,6 +318,10 @@ internal static class NodeSummaryBuilder
                     thoughtDurationMs += thoughtMs;
                 }
 
+                break;
+
+            case ObservationRole.CompactionStart:
+                compactionCount++;
                 break;
 
             case ObservationRole.TurnStop when observation.IsAbortedStop:
@@ -499,6 +511,9 @@ internal static class NodeSummaryBuilder
         return string.Join(" \u00b7 ", parts);
     }
 
+    private static IReadOnlyList<FileAccessRow> ToFileRows(IReadOnlyCollection<string> paths) =>
+        paths.Select(static path => new FileAccessRow { FullPath = path }).ToArray();
+
     private static IReadOnlyList<KpiItem> BuildKpis(
         bool isSession,
         int turnCount,
@@ -511,7 +526,7 @@ internal static class NodeSummaryBuilder
         int thoughtCharacterCount,
         TimeSpan wallTime,
         string tokenLine,
-        int writtenFileCount)
+        FileAccessAccumulator fileAccess)
     {
         List<KpiItem> kpis = [];
 
@@ -541,9 +556,19 @@ internal static class NodeSummaryBuilder
 
         kpis.Add(new KpiItem { Label = "Tools", Value = toolCallCount.ToString() });
 
-        if (writtenFileCount > 0)
+        if (fileAccess.Reads.Count > 0)
         {
-            kpis.Add(new KpiItem { Label = "Files", Value = writtenFileCount.ToString() });
+            kpis.Add(new KpiItem { Label = "Reads", Value = fileAccess.Reads.Count.ToString() });
+        }
+
+        if (fileAccess.Writes.Count > 0)
+        {
+            kpis.Add(new KpiItem { Label = "Writes", Value = fileAccess.Writes.Count.ToString() });
+        }
+
+        if (fileAccess.Deletes.Count > 0)
+        {
+            kpis.Add(new KpiItem { Label = "Deletes", Value = fileAccess.Deletes.Count.ToString() });
         }
 
         if (!string.IsNullOrEmpty(tokenLine))
@@ -649,6 +674,40 @@ internal static class NodeSummaryBuilder
         public int Count { get; set; }
 
         public double DurationMs { get; set; }
+    }
+
+    private sealed class FileAccessAccumulator
+    {
+        private readonly SortedSet<string> _reads = new(StringComparer.OrdinalIgnoreCase);
+        private readonly SortedSet<string> _writes = new(StringComparer.OrdinalIgnoreCase);
+        private readonly SortedSet<string> _deletes = new(StringComparer.OrdinalIgnoreCase);
+
+        public IReadOnlyCollection<string> Reads => _reads;
+
+        public IReadOnlyCollection<string> Writes => _writes;
+
+        public IReadOnlyCollection<string> Deletes => _deletes;
+
+        public void Record(CanonicalToolKind kind, IEnumerable<string> paths)
+        {
+            SortedSet<string>? target = kind switch
+            {
+                CanonicalToolKind.FileRead => _reads,
+                CanonicalToolKind.FileWrite or CanonicalToolKind.FileEdit => _writes,
+                CanonicalToolKind.FileDelete => _deletes,
+                _ => null
+            };
+
+            if (target is null)
+            {
+                return;
+            }
+
+            foreach (string path in paths)
+            {
+                target.Add(path);
+            }
+        }
     }
 
     private sealed class SubagentAccumulator

@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Runtimes;
 using HarnessSpy.Core.Services;
@@ -291,6 +292,12 @@ public sealed class MainWindowViewModel : ObservableObject
             case ObservationRole.PermissionDenied:
                 return TryNestCompletion(observation, observationNode, generationNode, expand: true);
 
+            case ObservationRole.PermissionRequest:
+                return TryNestPermissionRequest(observation, observationNode, generationNode);
+
+            case ObservationRole.CompactionEnd:
+                return TryNestCompaction(observation, observationNode, generationNode);
+
             case ObservationRole.ToolBatch:
                 return TryNestToolBatch(observation, observationNode, generationNode);
 
@@ -460,6 +467,113 @@ public sealed class MainWindowViewModel : ObservableObject
         return true;
     }
 
+    // A permission prompt is raised while its tool request is still open, so it
+    // reads as a child of that request rather than a detached sibling. Unlike a
+    // completion it does not close the call, so the request stays in flight and
+    // its later PostToolUse still nests too.
+    private bool TryNestPermissionRequest(
+        HookObservation observation,
+        TreeNodeViewModel observationNode,
+        TreeNodeViewModel generationNode)
+    {
+        TreeNodeViewModel? preNode =
+            FindInFlightPreByPermissionSignature(generationNode, observation);
+        if (preNode is null)
+        {
+            return false;
+        }
+
+        preNode.Children.Add(observationNode);
+        preNode.IsExpanded = true;
+        return true;
+    }
+
+    // A PreCompact opens a compaction and its PostCompact closes it, so the end
+    // reads as a child of the start rather than a detached sibling. Compaction
+    // carries no id, so the end pairs with the still-open start in the same
+    // generation. The compaction is produced by a summarizing subagent whose
+    // SubagentStop has no SubagentStart to nest under and whose final message is
+    // the PostCompact's compact_summary; that orphan is pulled under the start
+    // too, ahead of the end, so the whole compaction reads as one block.
+    private bool TryNestCompaction(
+        HookObservation observation,
+        TreeNodeViewModel observationNode,
+        TreeNodeViewModel generationNode)
+    {
+        TreeNodeViewModel? startNode = FindInFlightCompactionStart(generationNode);
+        if (startNode is null)
+        {
+            return false;
+        }
+
+        RelocateCompactionSummarizer(generationNode, startNode, observation);
+        startNode.Children.Add(observationNode);
+        startNode.IsExpanded = true;
+        return true;
+    }
+
+    // The matching start is the most recent CompactionStart in the generation
+    // that has not yet received its CompactionEnd child.
+    private static TreeNodeViewModel? FindInFlightCompactionStart(
+        TreeNodeViewModel generationNode)
+    {
+        for (int i = generationNode.Children.Count - 1; i >= 0; i--)
+        {
+            TreeNodeViewModel child = generationNode.Children[i];
+            if (child.Observation?.Interpretation.Role == ObservationRole.CompactionStart &&
+                !child.Children.Any(c =>
+                    c.Observation?.Interpretation.Role == ObservationRole.CompactionEnd))
+            {
+                return child;
+            }
+        }
+
+        return null;
+    }
+
+    // Moves any orphan SubagentStop whose final assistant message is the
+    // compaction summary out of the generation and under the compaction start.
+    private static void RelocateCompactionSummarizer(
+        TreeNodeViewModel generationNode,
+        TreeNodeViewModel startNode,
+        HookObservation endObservation)
+    {
+        string? summary = ReadCompactSummary(endObservation);
+        if (string.IsNullOrEmpty(summary))
+        {
+            return;
+        }
+
+        for (int i = generationNode.Children.Count - 1; i >= 0; i--)
+        {
+            TreeNodeViewModel child = generationNode.Children[i];
+            if (child.Observation?.Interpretation.Role != ObservationRole.SubagentStop)
+            {
+                continue;
+            }
+
+            string? message = child.Observation.Interpretation.AssistantText;
+            if (!string.IsNullOrEmpty(message) &&
+                summary.Contains(message, StringComparison.Ordinal))
+            {
+                generationNode.Children.RemoveAt(i);
+                startNode.Children.Insert(0, child);
+            }
+        }
+    }
+
+    private static string? ReadCompactSummary(HookObservation observation)
+    {
+        if (observation.Payload.ValueKind == JsonValueKind.Object &&
+            observation.Payload.TryGetProperty("compact_summary", out JsonElement value) &&
+            value.ValueKind == JsonValueKind.String)
+        {
+            return value.GetString();
+        }
+
+        return null;
+    }
+
     // Claude's PostToolBatch fires after the matching PostToolUse has already
     // completed its PreToolUse, so it must match against every pre in the
     // generation (completed or not) rather than only in-flight ones. Claude's
@@ -622,11 +736,50 @@ public sealed class MainWindowViewModel : ObservableObject
                     postObservation.ToolName))
             .ToList();
 
+        // A unique tool_use_id + tool_name already identifies the request
+        // unambiguously, so the completion nests under it even when its
+        // tool_input legitimately grew: AskUserQuestion and ExitPlanMode echo
+        // the request input back in their PostToolUse plus an "answers" block
+        // that the PreToolUse never carried. Canonical tool_input is only a
+        // tie-breaker for Cursor's reused-id case, where several open requests
+        // share the same id and name and nothing else distinguishes them.
+        if (candidates.Count == 1)
+        {
+            return candidates[0];
+        }
+
         return SelectUniqueBest(
             candidates,
             child => ToolCorrelationMatcher.ScoreGenericToolCall(
                 child.Observation!,
                 postObservation));
+    }
+
+    // A PermissionRequest carries the tool name and tool_input but no
+    // tool_use_id, so it nests under its still-in-flight PreToolUse by matching
+    // tool name and canonical tool_input - the same evidence a completion falls
+    // back to when an id is reused. Copilot's slash-form permission name never
+    // equals its flat request name, so it correctly stays a sibling there.
+    private static TreeNodeViewModel? FindInFlightPreByPermissionSignature(
+        TreeNodeViewModel generationNode,
+        HookObservation permissionObservation)
+    {
+        if (permissionObservation.ToolName is null)
+        {
+            return null;
+        }
+
+        List<TreeNodeViewModel> candidates = EnumerateInFlightPreNodes(generationNode)
+            .Where(child => StringComparer.Ordinal.Equals(
+                child.Observation!.ToolName,
+                permissionObservation.ToolName))
+            .ToList();
+
+        return SelectUniqueBest(
+            candidates,
+            child => ToolCorrelationMatcher.ScoreGenericToolCall(
+                child.Observation!,
+                permissionObservation));
     }
 
     // Copilot CLI supplies no tool-use id, so a completion nests under the

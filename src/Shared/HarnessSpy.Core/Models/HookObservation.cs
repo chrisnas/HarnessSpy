@@ -148,6 +148,10 @@ public sealed class HookObservation
 
     public string? TargetFilePath => Interpretation.TargetFilePath;
 
+    public IReadOnlyList<string> TargetFilePaths => Interpretation.TargetFilePaths.Count > 0
+        ? Interpretation.TargetFilePaths
+        : TargetFilePath is string path ? [path] : [];
+
     public string? SkillName => TryGetSkillName(TargetFilePath);
 
     public IReadOnlyList<string> SlashCommands => TryGetSlashCommands(PromptText);

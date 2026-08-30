@@ -365,6 +365,77 @@ public sealed class CopilotParityTests
         Assert.Equal(1, mcpCall.Count);
     }
 
+    [Fact]
+    public void CliSummarySplitsViewAndEditIntoReadsAndWrites()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","toolName":"view","toolArgs":{"path":"C:\\Repo\\src\\App.cs"}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":3,"cwd":"C:\\Repo","toolName":"view","toolArgs":{"path":"C:\\Repo\\src\\App.cs"},"toolResult":{"resultType":"success"}}""",
+            "postToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":4,"cwd":"C:\\Repo","toolName":"edit","toolArgs":{"path":"C:\\Repo\\src\\Program.cs"}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":5,"cwd":"C:\\Repo","toolName":"edit","toolArgs":{"path":"C:\\Repo\\src\\Program.cs"},"toolResult":{"resultType":"success"}}""",
+            "postToolUse"));
+
+        NodeSummary summary = OnlyTurn(viewModel).NodeSummary!;
+        Assert.Equal("C:\\Repo\\src\\App.cs", Assert.Single(summary.ReadFiles).FullPath);
+        Assert.Equal("C:\\Repo\\src\\Program.cs", Assert.Single(summary.WrittenFiles).FullPath);
+    }
+
+    [Fact]
+    public void VsCodeEditFilesIsClassifiedAsFileEdit()
+    {
+        HookObservation observation = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.VsCodeAgentHooks,
+            """{"tool_name":"editFiles","tool_use_id":"t1","tool_input":{"files":["src/App.cs"]}}""",
+            "PreToolUse");
+
+        Assert.Equal(CanonicalToolKind.FileEdit, observation.ToolKind);
+    }
+
+    [Fact]
+    public void VsCodeEditFilesArrayPopulatesWrittenFiles()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.VsCodeAgentHooks,
+            """{"session_id":"s1","prompt":"go"}""",
+            "UserPromptSubmit"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.VsCodeAgentHooks,
+            """{"session_id":"s1","tool_name":"editFiles","tool_use_id":"t1","tool_input":{"files":["src/App.cs"]}}""",
+            "PreToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.VsCodeAgentHooks,
+            """{"session_id":"s1","tool_name":"editFiles","tool_use_id":"t1","tool_input":{"files":["src/App.cs"]},"tool_response":{"ok":true}}""",
+            "PostToolUse"));
+
+        NodeSummary summary = OnlyTurn(viewModel).NodeSummary!;
+        Assert.Equal("src/App.cs", Assert.Single(summary.WrittenFiles).FullPath);
+    }
+
     private static CorrelationQuality GetBaselineQuality(HookObservation observation)
     {
         // Subagent events are explicitly heuristic on the CLI; every other CLI

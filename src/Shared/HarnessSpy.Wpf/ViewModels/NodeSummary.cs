@@ -1,3 +1,4 @@
+using System.IO;
 using HarnessSpy.Core.Models;
 
 namespace HarnessSpy.Wpf.ViewModels;
@@ -14,7 +15,9 @@ public sealed class NodeSummary
             Thoughts = [],
             Skills = [],
             Commands = [],
+            ReadFiles = [],
             WrittenFiles = [],
+            DeletedFiles = [],
             Subagents = [],
             Kpis = []
         };
@@ -35,6 +38,8 @@ public sealed class NodeSummary
     public int McpCallCount { get; init; }
 
     public int ThoughtCount { get; init; }
+
+    public int CompactionCount { get; init; }
 
     public double ThoughtDurationMs { get; init; }
 
@@ -58,7 +63,11 @@ public sealed class NodeSummary
 
     public required IReadOnlyList<string> Commands { get; init; }
 
-    public required IReadOnlyList<string> WrittenFiles { get; init; }
+    public required IReadOnlyList<FileAccessRow> ReadFiles { get; init; }
+
+    public required IReadOnlyList<FileAccessRow> WrittenFiles { get; init; }
+
+    public required IReadOnlyList<FileAccessRow> DeletedFiles { get; init; }
 
     public required IReadOnlyList<SubagentSummary> Subagents { get; init; }
 
@@ -74,11 +83,19 @@ public sealed class NodeSummary
 
     public bool HasThoughts => ThoughtCount > 0;
 
+    public bool HasCompactions => CompactionCount > 0;
+
+    public string CompactionText => CompactionCount.ToString();
+
     public bool HasSkills => Skills.Count > 0;
 
     public bool HasCommands => Commands.Count > 0;
 
+    public bool HasReadFiles => ReadFiles.Count > 0;
+
     public bool HasWrittenFiles => WrittenFiles.Count > 0;
+
+    public bool HasDeletedFiles => DeletedFiles.Count > 0;
 
     public bool HasSubagents => Subagents.Count > 0;
 
@@ -149,6 +166,13 @@ public sealed class SubagentSummary
             return string.Join(" \u00b7 ", parts);
         }
     }
+}
+
+public sealed class FileAccessRow
+{
+    public required string FullPath { get; init; }
+
+    public string FileName => Path.GetFileName(FullPath);
 }
 
 public sealed class KpiItem

@@ -192,6 +192,14 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
             case "Notification":
                 b.Role = ObservationRole.Notification;
                 b.EventKind = CanonicalEventKind.Notification;
+                // A permission prompt is a user-blocking approval request, so it
+                // is highlighted like the other permission events, matching the
+                // Copilot CLI behaviour.
+                if (RuntimeJson.String(payload, "notification_type") == "permission_prompt")
+                {
+                    b.Tone = ObservationTone.Permission;
+                }
+
                 b.HeaderDetail = JoinNonEmpty(
                     RuntimeJson.String(payload, "notification_type"),
                     Preview(RuntimeJson.String(payload, "message")));

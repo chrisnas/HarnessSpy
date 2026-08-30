@@ -27,7 +27,7 @@ internal abstract class HarnessRuntimeEngineBase : IHarnessRuntimeEngine
             "shell" or "bash" or "powershell" => CanonicalToolKind.Shell,
             "read" or "view" => CanonicalToolKind.FileRead,
             "write" or "create" => CanonicalToolKind.FileWrite,
-            "edit" or "strreplace" or "str_replace_editor" or "apply_patch" =>
+            "edit" or "strreplace" or "str_replace_editor" or "apply_patch" or "editfiles" =>
                 CanonicalToolKind.FileEdit,
             "delete" => CanonicalToolKind.FileDelete,
             "grep" or "rg" => CanonicalToolKind.TextSearch,

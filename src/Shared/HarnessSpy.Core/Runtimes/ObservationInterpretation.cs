@@ -70,6 +70,12 @@ public sealed record ObservationInterpretation
 
     public string? TargetFilePath { get; init; }
 
+    // Populated only by engines whose native tool reports several files in one
+    // call (VS Code Copilot's editFiles). Empty for the single-path case; see
+    // HookObservation.TargetFilePaths for the read-side fallback to the
+    // singular TargetFilePath.
+    public IReadOnlyList<string> TargetFilePaths { get; init; } = [];
+
     public string? Task { get; init; }
 
     public string? Status { get; init; }
