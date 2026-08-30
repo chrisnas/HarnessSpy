@@ -107,6 +107,135 @@ public sealed class CopilotParityTests
             Assert.Single(pre.Children).Observation!.HookEventName);
     }
 
+    [Fact]
+    public void CliSessionStartSortsAboveTurnEvenWhenItsTimestampIsLater()
+    {
+        // Copilot CLI emits sessionStart a couple of seconds after the first
+        // prompt, so its native timestamp is later than the turn's; it must
+        // still read as the opening node of the session.
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1788075874476,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1788075877060,"cwd":"C:\\Repo","source":"new","initialPrompt":"go"}""",
+            "sessionStart"));
+
+        TreeNodeViewModel session = Assert.Single(Assert.Single(viewModel.Roots).Children);
+        Assert.Equal("sessionStart", session.Children[0].Observation?.HookEventName);
+    }
+
+    [Fact]
+    public void CliTransformedPromptNestsUnderSubmittedPrompt()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","prompt":"go","transformedPrompt":"GO"}""",
+            "userPromptTransformed"));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel submitted = Assert.Single(
+            turn.Children,
+            child => child.Observation?.HookEventName == "userPromptSubmitted");
+        Assert.Equal(
+            "userPromptTransformed",
+            Assert.Single(submitted.Children).Observation!.HookEventName);
+    }
+
+    [Fact]
+    public void CliToolCompletionNestsUnderRequestByToolSignature()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","toolName":"grep","toolArgs":{"pattern":"hook","path":"C:\\Repo"}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":3,"cwd":"C:\\Repo","toolName":"grep","toolArgs":{"pattern":"hook","path":"C:\\Repo"},"toolResult":{"resultType":"success"}}""",
+            "postToolUse"));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel pre = Assert.Single(
+            turn.Children,
+            child => child.Observation?.HookEventName == "preToolUse");
+        Assert.Equal(
+            "postToolUse",
+            Assert.Single(pre.Children).Observation!.HookEventName);
+    }
+
+    [Fact]
+    public void CliIdenticalToolCallsPairInArrivalOrder()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","toolName":"glob","toolArgs":{"pattern":"**/*.cs"}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":3,"cwd":"C:\\Repo","toolName":"glob","toolArgs":{"pattern":"**/*.cs"},"toolResult":{"resultType":"success"}}""",
+            "postToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":4,"cwd":"C:\\Repo","toolName":"glob","toolArgs":{"pattern":"**/*.cs"}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":5,"cwd":"C:\\Repo","toolName":"glob","toolArgs":{"pattern":"**/*.cs"},"toolResult":{"resultType":"success"}}""",
+            "postToolUse"));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        List<TreeNodeViewModel> preNodes = turn.Children
+            .Where(child => child.Observation?.HookEventName == "preToolUse")
+            .ToList();
+
+        // Every request pairs with exactly one completion; none is left orphaned.
+        Assert.Equal(2, preNodes.Count);
+        Assert.All(preNodes, pre => Assert.Equal(
+            "postToolUse",
+            Assert.Single(pre.Children).Observation!.HookEventName));
+    }
+
+    [Fact]
+    public void CliPermissionNotificationUsesPermissionTone()
+    {
+        HookObservation observation = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","message":"Path permission needed","title":"Permission needed","notification_type":"permission_prompt"}""",
+            "notification");
+
+        Assert.Equal(ObservationTone.Permission, observation.Interpretation.Tone);
+    }
+
     private static CorrelationQuality GetBaselineQuality(HookObservation observation)
     {
         // Subagent events are explicitly heuristic on the CLI; every other CLI

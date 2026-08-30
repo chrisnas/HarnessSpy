@@ -281,6 +281,9 @@ public sealed class MainWindowViewModel : ObservableObject
         ObservationInterpretation interpretation = observation.Interpretation;
         switch (interpretation.Role)
         {
+            case ObservationRole.PromptTransformed:
+                return TryNestPromptTransformed(observationNode, generationNode);
+
             case ObservationRole.ToolSuccess:
                 return TryNestCompletion(observation, observationNode, generationNode, expand: false);
 
@@ -407,6 +410,25 @@ public sealed class MainWindowViewModel : ObservableObject
         }
     }
 
+    // The transformed prompt is the runtime's rewrite of the submitted prompt,
+    // so it reads as a child of the prompt it derives from rather than a sibling.
+    private static bool TryNestPromptTransformed(
+        TreeNodeViewModel observationNode,
+        TreeNodeViewModel generationNode)
+    {
+        foreach (TreeNodeViewModel child in generationNode.Children)
+        {
+            if (child.Observation?.Interpretation.Role == ObservationRole.PromptSubmitted)
+            {
+                child.Children.Add(observationNode);
+                child.IsExpanded = true;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // Nests a tool completion (success/failure/permission-denied) under its
     // matching in-flight tool request by scoped tool-call evidence.
     private bool TryNestCompletion(
@@ -415,12 +437,12 @@ public sealed class MainWindowViewModel : ObservableObject
         TreeNodeViewModel generationNode,
         bool expand)
     {
-        if (observation.ToolUseId is null)
-        {
-            return false;
-        }
-
-        TreeNodeViewModel? preNode = FindInFlightPreByToolCall(generationNode, observation);
+        TreeNodeViewModel? preNode =
+            observation.Interpretation.MatchStrategy == ToolCallMatchStrategy.ToolSignature
+                ? FindInFlightPreByToolSignature(generationNode, observation)
+                : observation.ToolUseId is not null
+                    ? FindInFlightPreByToolCall(generationNode, observation)
+                    : null;
         if (preNode is null)
         {
             return false;
@@ -605,6 +627,40 @@ public sealed class MainWindowViewModel : ObservableObject
             child => ToolCorrelationMatcher.ScoreGenericToolCall(
                 child.Observation!,
                 postObservation));
+    }
+
+    // Copilot CLI supplies no tool-use id, so a completion nests under the
+    // earliest still-open request with the same tool name, preferring one whose
+    // canonical toolArgs are identical. Sequential CLI execution makes this
+    // arrival-order fallback correct even when the same tool runs twice.
+    private static TreeNodeViewModel? FindInFlightPreByToolSignature(
+        TreeNodeViewModel generationNode,
+        HookObservation postObservation)
+    {
+        if (postObservation.ToolName is null)
+        {
+            return null;
+        }
+
+        List<TreeNodeViewModel> sameTool = EnumerateInFlightPreNodes(generationNode)
+            .Where(child => StringComparer.Ordinal.Equals(
+                child.Observation!.ToolName,
+                postObservation.ToolName))
+            .ToList();
+        if (sameTool.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (TreeNodeViewModel candidate in sameTool)
+        {
+            if (ToolCorrelationMatcher.CopilotToolArgsEqual(candidate.Observation!, postObservation))
+            {
+                return candidate;
+            }
+        }
+
+        return sameTool[0];
     }
 
     private static IEnumerable<TreeNodeViewModel> EnumerateInFlightPreNodes(
@@ -1719,7 +1775,17 @@ public sealed class MainWindowViewModel : ObservableObject
     {
         if (node.Observation is { } observation)
         {
-            return (observation.EffectiveTimestamp, observation.IngestionOrdinal, observation.EventId);
+            // Session brackets sort to the extremes of the session regardless of
+            // the provider's own timestamps: Copilot CLI, for instance, emits
+            // sessionStart a couple of seconds after the first prompt, which
+            // would otherwise drop the "new session" node to the bottom.
+            DateTimeOffset time = observation.Interpretation.Role switch
+            {
+                ObservationRole.SessionStart => DateTimeOffset.MinValue,
+                ObservationRole.SessionEnd => DateTimeOffset.MaxValue,
+                _ => observation.EffectiveTimestamp
+            };
+            return (time, observation.IngestionOrdinal, observation.EventId);
         }
 
         (DateTimeOffset Time, long Ordinal, Guid Id) best =

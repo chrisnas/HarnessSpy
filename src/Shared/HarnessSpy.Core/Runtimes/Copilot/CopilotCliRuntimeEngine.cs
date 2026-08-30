@@ -94,6 +94,9 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.Role = ObservationRole.ToolSuccess;
                 b.EventKind = CanonicalEventKind.ToolSucceeded;
                 b.Direction = ObservationDirection.Output;
+                // The CLI carries no tool-use id, so the completion is paired to
+                // its request by tool name and canonical toolArgs.
+                b.MatchStrategy = ToolCallMatchStrategy.ToolSignature;
                 b.HeaderDetail = ToolDetail(toolName, targetFilePath);
                 b.Fields(S("toolName"), J("toolArgs"), J("toolResult"));
                 break;
@@ -104,6 +107,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.Direction = ObservationDirection.Output;
                 b.Tone = ObservationTone.Failure;
                 b.CountsAsFailure = true;
+                b.MatchStrategy = ToolCallMatchStrategy.ToolSignature;
                 b.HeaderDetail = JoinNonEmpty(toolName, Preview(RuntimeJson.String(payload, "error")));
                 b.Fields(S("toolName"), J("toolArgs"), S("error"));
                 break;
@@ -112,6 +116,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.Role = ObservationRole.PermissionRequest;
                 b.EventKind = CanonicalEventKind.PermissionRequested;
                 b.Direction = ObservationDirection.Input;
+                b.Tone = ObservationTone.Permission;
                 b.HeaderDetail = ToolDetail(toolName, targetFilePath);
                 b.Fields(FieldSpec.AllTopLevel);
                 break;
@@ -119,6 +124,13 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
             case "notification":
                 b.Role = ObservationRole.Notification;
                 b.EventKind = CanonicalEventKind.Notification;
+                // A permission prompt is a user-blocking approval request, so it
+                // is highlighted like the other permission events.
+                if (RuntimeJson.String(payload, "notification_type") == "permission_prompt")
+                {
+                    b.Tone = ObservationTone.Permission;
+                }
+
                 b.HeaderDetail = JoinNonEmpty(
                     RuntimeJson.String(payload, "notification_type"),
                     Preview(RuntimeJson.String(payload, "message")));

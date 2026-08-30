@@ -83,8 +83,15 @@ chronological order.
   `agent_id`; batches use `PostToolBatch.tool_calls`. Requires Claude Code
   `2.1.196+`.
 - Copilot CLI: the configured event key is the native identity; native tool
-  names are preserved; turns are derived (`userPromptSubmitted`..`agentStop`);
-  subagents correlate heuristically by name; ordering uses the epoch timestamp.
+  names are preserved; turns are derived (`userPromptSubmitted`..`agentStop`)
+  with `userPromptTransformed` nested under its `userPromptSubmitted`. There is
+  no `tool_use_id`, so `postToolUse`/`postToolUseFailure` pair to their
+  `preToolUse` by tool name and canonical `toolArgs`, falling back to arrival
+  order; subagents correlate heuristically by name. Ordering uses the epoch
+  timestamp, but `sessionStart`/`sessionEnd` are pinned to the session's first
+  and last positions because the CLI emits `sessionStart` after the first
+  prompt. Permission prompts (`notification`/`permissionRequest`) are toned
+  distinctly.
 - VS Code Local: eight Preview events with exact `tool_use_id`/`agent_id` and ISO
   ordering; native tool names such as `editFiles` are preserved.
 
@@ -109,6 +116,10 @@ chronological order.
   `Replay`, and `Synthetic`.
 - High-volume payloads (MessageDisplay, elicitation) are capped in the inspector
   so the UI stays responsive while the raw payload remains visible.
+- Each hook envelope also carries the best-effort PID/name of the process that
+  spawned the hook console app (`SpawningProcessId`/`SpawningProcessName`,
+  resolved via `NtQueryInformationProcess`), alongside the environment
+  allowlist above.
 
 ## Follow-up: Copilot observation sources (not implemented)
 

@@ -380,6 +380,14 @@
                                 <DataTrigger Binding="{Binding IsMcpExecution}" Value="True">
                                     <Setter Property="Foreground" Value="#2ECC71" />
                                 </DataTrigger>
+                                <DataTrigger Binding="{Binding IsPermission}" Value="True">
+                                    <Setter Property="FontWeight" Value="Bold" />
+                                    <Setter Property="Foreground" Value="#1A7F37" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsPermissionDenied}" Value="True">
+                                    <Setter Property="FontWeight" Value="Bold" />
+                                    <Setter Property="Foreground" Value="#CF222E" />
+                                </DataTrigger>
                                 <MultiDataTrigger>
                                     <MultiDataTrigger.Conditions>
                                         <Condition Binding="{Binding UsesLightForegroundWhenSelected}" Value="True" />

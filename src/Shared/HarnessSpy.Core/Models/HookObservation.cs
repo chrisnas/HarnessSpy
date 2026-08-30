@@ -26,7 +26,9 @@ public sealed class HookObservation
         string displayJson,
         double? durationMs,
         string? sourceFilePath,
-        ObservationInterpretation interpretation)
+        ObservationInterpretation interpretation,
+        int? spawningProcessId,
+        string? spawningProcessName)
     {
         EventId = eventId;
         ObservedAtUtc = observedAtUtc;
@@ -42,6 +44,8 @@ public sealed class HookObservation
         DurationMs = durationMs;
         SourceFilePath = sourceFilePath;
         Interpretation = interpretation;
+        SpawningProcessId = spawningProcessId;
+        SpawningProcessName = spawningProcessName;
     }
 
     private static long _ingestionCounter;
@@ -108,6 +112,12 @@ public sealed class HookObservation
 
     public string? SourceFilePath { get; }
 
+    // Best-effort identity of the process that launched this hook invocation.
+    // Both null for legacy captures and non-Windows hosts.
+    public int? SpawningProcessId { get; }
+
+    public string? SpawningProcessName { get; }
+
     public string? ToolUseId => Interpretation.ToolCallId;
 
     public IReadOnlyList<string> BatchToolCallIds => Interpretation.BatchToolCallIds;
@@ -167,6 +177,7 @@ public sealed class HookObservation
         }
 
         AddDurationField(fields);
+        AddSpawningProcessField(fields);
         return fields;
     }
 
@@ -220,6 +231,26 @@ public sealed class HookObservation
                 return;
             }
         }
+    }
+
+    // Surfaces the process that launched this hook invocation, when resolved.
+    // Only inserted when at least one of id/name is known.
+    private void AddSpawningProcessField(List<PayloadField> fields)
+    {
+        if (SpawningProcessId is null && SpawningProcessName is null)
+        {
+            return;
+        }
+
+        string value = (SpawningProcessName, SpawningProcessId) switch
+        {
+            (string name, int id) => $"{name} (pid {id})",
+            (string name, null) => name,
+            (null, int id) => $"pid {id}",
+            _ => string.Empty
+        };
+
+        fields.Add(new PayloadField("spawning process", value));
     }
 
     private void AddScalar(List<PayloadField> fields, string propertyName)
@@ -697,6 +728,8 @@ public sealed class HookObservation
                 surface,
                 sourceKind,
                 configuredEventName: ReadString(root, "configuredEventName"),
+                spawningProcessId: ReadInt(root, "spawningProcessId"),
+                spawningProcessName: ReadString(root, "spawningProcessName"),
                 out observation);
         }
         catch (JsonException)
@@ -746,6 +779,8 @@ public sealed class HookObservation
                     envelopeSurface,
                     ReadEnum(root, "sourceKind", ObservationSourceKind.Replay),
                     ReadString(root, "configuredEventName"),
+                    spawningProcessId: ReadInt(root, "spawningProcessId"),
+                    spawningProcessName: ReadString(root, "spawningProcessName"),
                     out observation);
             }
 
@@ -766,6 +801,8 @@ public sealed class HookObservation
                 surface,
                 ObservationSourceKind.Replay,
                 configuredEventName: null,
+                spawningProcessId: null,
+                spawningProcessName: null,
                 out observation);
         }
         catch (JsonException)
@@ -787,6 +824,8 @@ public sealed class HookObservation
         HookSurface surface,
         ObservationSourceKind sourceKind,
         string? configuredEventName,
+        int? spawningProcessId,
+        string? spawningProcessName,
         out HookObservation? observation)
     {
         observation = null;
@@ -825,7 +864,9 @@ public sealed class HookObservation
             displayJson,
             durationMs,
             sourceFilePath,
-            interpretation);
+            interpretation,
+            spawningProcessId,
+            spawningProcessName);
 
         return true;
     }
@@ -957,6 +998,13 @@ public sealed class HookObservation
         }
 
         return null;
+    }
+
+    private static int? ReadInt(JsonElement root, string propertyName)
+    {
+        return ReadLong(root, propertyName) is long value && value is >= int.MinValue and <= int.MaxValue
+            ? (int)value
+            : null;
     }
 
     private static string? ReadString(JsonElement root, string propertyName)

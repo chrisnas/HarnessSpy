@@ -18,6 +18,31 @@ internal static class ToolCorrelationMatcher
             : NoMatch;
     }
 
+    // Copilot CLI has no tool-use id, so a completion is matched to its request
+    // by identical canonical toolArgs. Returns false when either side has no
+    // toolArgs so callers can fall back to arrival order.
+    public static bool CopilotToolArgsEqual(
+        HookObservation left,
+        HookObservation right)
+    {
+        string? leftArgs = ReadCanonicalObject(left.Payload, "toolArgs");
+        string? rightArgs = ReadCanonicalObject(right.Payload, "toolArgs");
+        return leftArgs is not null &&
+            rightArgs is not null &&
+            StringComparer.Ordinal.Equals(leftArgs, rightArgs);
+    }
+
+    private static string? ReadCanonicalObject(JsonElement payload, string propertyName)
+    {
+        if (payload.ValueKind != JsonValueKind.Object ||
+            !payload.TryGetProperty(propertyName, out JsonElement value))
+        {
+            return null;
+        }
+
+        return CanonicalizeToolInput(value);
+    }
+
     public static int ScoreShellExecution(
         HookObservation candidate,
         HookObservation observation)

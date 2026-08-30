@@ -192,6 +192,49 @@ public sealed class HookForwarderTests
         }
     }
 
+    [Fact]
+    public async Task SpawningProcessIsCapturedInPipeEnvelopeAndSavedPayload()
+    {
+        const string payload =
+            """{"hook_event_name":"stop","conversation_id":"conversation-1","workspace_roots":["C:\\Repo"]}""";
+        string folder = Path.Combine(
+            Path.GetTempPath(),
+            "HarnessSpySpawningProcessTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+
+        try
+        {
+            RecordingSink sink = new();
+            FileHookDiagnostics diagnostics = new(folder);
+            HookForwarder forwarder = new(
+                sink,
+                new HookProcessOptions(ProviderProfile.Cursor),
+                diagnostics,
+                runtimeDetector: null,
+                environment: new Dictionary<string, string?>(),
+                spawningProcessResolver: new FixedSpawningProcessResolver(1234, "node"));
+
+            await forwarder.RunAsync([], new StringReader(payload), new StringWriter());
+
+            string forwarded = Assert.Single(sink.ForwardedLines);
+            using JsonDocument envelope = JsonDocument.Parse(forwarded);
+            JsonElement root = envelope.RootElement;
+            Assert.Equal(1234, root.GetProperty("spawningProcessId").GetInt32());
+            Assert.Equal("node", root.GetProperty("spawningProcessName").GetString());
+
+            string payloadFile = Assert.Single(
+                Directory.EnumerateFiles(Path.Combine(folder, "Payloads"), "*.json"));
+            using JsonDocument saved = JsonDocument.Parse(await File.ReadAllTextAsync(payloadFile));
+            JsonElement savedRoot = saved.RootElement;
+            Assert.Equal(1234, savedRoot.GetProperty("spawningProcessId").GetInt32());
+            Assert.Equal("node", savedRoot.GetProperty("spawningProcessName").GetString());
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
     private static async Task<string?> ReadOneLineAsync(NamedPipeServerStream server)
     {
         await server.WaitForConnectionAsync();
@@ -214,6 +257,12 @@ public sealed class HookForwarderTests
     {
         public Task ForwardAsync(ReadOnlyMemory<byte> payloadLine, CancellationToken cancellationToken)
             => Task.FromException(new IOException("Simulated pipe write failure."));
+    }
+
+    private sealed class FixedSpawningProcessResolver(int processId, string processName)
+        : ISpawningProcessResolver
+    {
+        public SpawningProcessInfo Resolve() => new(processId, processName);
     }
 }
 

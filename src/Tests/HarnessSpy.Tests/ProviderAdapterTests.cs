@@ -66,6 +66,31 @@ public sealed class ProviderAdapterTests
     }
 
     [Fact]
+    public void SpawningProcessSurfacesAsDetailFieldOnlyWhenKnown()
+    {
+        const string payload = """{"hook_event_name":"stop","conversation_id":"conversation-1"}""";
+
+        HookObservation withoutSpawningProcess = ParseEnvelope(
+            HookProvider.ClaudeCode,
+            HookSurface.ClaudeCode,
+            payload);
+        Assert.DoesNotContain(
+            withoutSpawningProcess.DetailFields,
+            field => field.Name == "spawning process");
+
+        HookObservation withSpawningProcess = ParseEnvelope(
+            HookProvider.ClaudeCode,
+            HookSurface.ClaudeCode,
+            payload,
+            spawningProcessId: 1234,
+            spawningProcessName: "node");
+        PayloadField spawningField = Assert.Single(
+            withSpawningProcess.DetailFields,
+            field => field.Name == "spawning process");
+        Assert.Equal("node (pid 1234)", spawningField.Value);
+    }
+
+    [Fact]
     public void ClaudeToolPayloadKeepsExactNativeNames()
     {
         HookObservation observation = ParseEnvelope(
@@ -268,7 +293,9 @@ public sealed class ProviderAdapterTests
         HookProvider provider,
         HookSurface surface,
         string payloadJson,
-        string? configuredEventName = null)
+        string? configuredEventName = null,
+        int? spawningProcessId = null,
+        string? spawningProcessName = null)
     {
         using JsonDocument payloadDocument = JsonDocument.Parse(payloadJson);
         ObservationEnvelope envelope = new(
@@ -284,7 +311,9 @@ public sealed class ProviderAdapterTests
             "test",
             null,
             "valid",
-            payloadDocument.RootElement.Clone());
+            payloadDocument.RootElement.Clone(),
+            spawningProcessId,
+            spawningProcessName);
         string line = JsonSerializer.Serialize(
             envelope,
             new JsonSerializerOptions(JsonSerializerDefaults.Web));

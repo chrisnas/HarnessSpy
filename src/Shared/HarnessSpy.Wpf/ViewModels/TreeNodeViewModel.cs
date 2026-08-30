@@ -141,10 +141,17 @@ public sealed class TreeNodeViewModel : ObservableObject
     public bool IsMcpExecution =>
         Observation?.Interpretation.Tone == ObservationTone.Mcp;
 
-    // Blue/purple/orange node labels need a light foreground on the selection
-    // highlight so they stay readable when selected in the tree.
+    public bool IsPermission =>
+        Observation?.Interpretation.Tone == ObservationTone.Permission;
+
+    public bool IsPermissionDenied =>
+        Observation?.Interpretation.Role == ObservationRole.PermissionDenied;
+
+    // Bold coloured node labels (blue/purple/orange/green/red) need a light
+    // foreground on the selection highlight so they stay readable when selected.
     public bool UsesLightForegroundWhenSelected =>
-        IsAgentThought || IsParallelWave || IsToolBatchGroup || IsStop || IsPreCompact;
+        IsAgentThought || IsParallelWave || IsToolBatchGroup || IsStop || IsPreCompact ||
+        IsPermission || IsPermissionDenied;
 
     // The full assistant/thinking text, shown as a hover tooltip. The engine
     // decides which observations expose hover text (assistant/thinking output).

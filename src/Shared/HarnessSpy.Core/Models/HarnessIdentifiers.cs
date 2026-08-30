@@ -129,7 +129,8 @@ public enum ObservationTone
     Failure,
     Stop,
     Compaction,
-    Mcp
+    Mcp,
+    Permission
 }
 
 // Which shared correlation algorithm nests this observation under a parent.
@@ -139,7 +140,12 @@ public enum ToolCallMatchStrategy
     ToolCallId,
     Subagent,
     ExecutionEvidence,
-    FileTarget
+    FileTarget,
+
+    // Surfaces without a tool-use id (Copilot CLI) pair a tool completion to its
+    // request by tool name and canonical arguments, falling back to arrival
+    // order when several identical calls are in flight.
+    ToolSignature
 }
 
 // The kind of inner execution/file hook, used only for summary categorisation.

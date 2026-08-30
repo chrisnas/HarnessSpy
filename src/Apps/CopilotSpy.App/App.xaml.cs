@@ -14,7 +14,8 @@ public partial class App : Application
         base.OnStartup(e);
         _host = new SpyApplicationHost(new SpyAppProfile(
             ProviderProfile.Copilot,
-            new UnavailableAgentProvider(ProviderProfile.Copilot.Provider)));
+            new UnavailableAgentProvider(ProviderProfile.Copilot.Provider),
+            new Uri("pack://application:,,,/CopilotSpy.App;component/CopilotSpy.png")));
         _host.Start(this);
     }
 

@@ -63,6 +63,7 @@ public sealed class HookForwarder
     private readonly IHookDiagnostics _diagnostics;
     private readonly IHookRuntimeDetector _runtimeDetector;
     private readonly IReadOnlyDictionary<string, string?> _environment;
+    private readonly ISpawningProcessResolver _spawningProcessResolver;
 
     public HookForwarder(
         IHookPayloadSink sink,
@@ -81,13 +82,15 @@ public sealed class HookForwarder
         HookProcessOptions options,
         IHookDiagnostics? diagnostics = null,
         IHookRuntimeDetector? runtimeDetector = null,
-        IReadOnlyDictionary<string, string?>? environment = null)
+        IReadOnlyDictionary<string, string?>? environment = null,
+        ISpawningProcessResolver? spawningProcessResolver = null)
     {
         _sink = sink;
         _options = options;
         _diagnostics = diagnostics ?? NullHookDiagnostics.Instance;
         _runtimeDetector = runtimeDetector ?? new HookRuntimeDetector();
         _environment = environment ?? HookEnvironment.Capture();
+        _spawningProcessResolver = spawningProcessResolver ?? new SpawningProcessResolver();
     }
 
     public async Task<int> RunAsync(
@@ -101,6 +104,7 @@ public sealed class HookForwarder
         string rawEventName = effectiveOptions.ConfiguredEventName ?? "unknownHook";
         string sessionId = "unknownSession";
         string? sourceFilePath = null;
+        SpawningProcessInfo spawningProcess = _spawningProcessResolver.Resolve();
 
         try
         {
@@ -141,7 +145,9 @@ public sealed class HookForwarder
                     effectiveOptions.SourceConfigurationId,
                     SourceFilePath: null,
                     ParseStatus: "valid",
-                    Payload: payload);
+                    Payload: payload,
+                    SpawningProcessId: spawningProcess.ProcessId,
+                    SpawningProcessName: spawningProcess.ProcessName);
 
                 sourceFilePath = await _diagnostics
                     .SaveObservationAsync(

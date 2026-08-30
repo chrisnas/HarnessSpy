@@ -128,6 +128,7 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
                 b.Role = ObservationRole.PermissionRequest;
                 b.EventKind = CanonicalEventKind.PermissionRequested;
                 b.Direction = ObservationDirection.Input;
+                b.Tone = ObservationTone.Permission;
                 b.HeaderDetail = ToolDetail(toolName, targetFilePath);
                 b.Fields(S("tool_name"), O("tool_input"), Arr("permission_suggestions"));
                 break;
