@@ -246,7 +246,7 @@ internal static class NodeSummaryBuilder
         switch (interpretation.Role)
         {
             case ObservationRole.ToolRequest:
-                if (IsClaudeNativeMcpTool(observation))
+                if (IsNativeMcpToolCall(observation))
                 {
                     AddCount(mcp, McpKey(observation));
                 }
@@ -258,7 +258,7 @@ internal static class NodeSummaryBuilder
                 break;
 
             case ObservationRole.ToolSuccess:
-                if (IsClaudeNativeMcpTool(observation))
+                if (IsNativeMcpToolCall(observation))
                 {
                     AddDuration(mcp, McpKey(observation), observation.DurationMs);
                 }
@@ -380,16 +380,31 @@ internal static class NodeSummaryBuilder
         }
     }
 
-    // Claude has no dedicated before/afterMCPExecution pair like Cursor - its
-    // PreToolUse/PostToolUse events are the only signal for an MCP call, so
-    // they must be counted here instead of just excluded from native tools.
-    private static bool IsClaudeNativeMcpTool(HookObservation observation) =>
-        observation.ToolName?.StartsWith("mcp__", StringComparison.Ordinal) == true;
+    // Claude and Copilot have no dedicated before/afterMCPExecution pair like
+    // Cursor - their PreToolUse/PostToolUse events are the only signal for an MCP
+    // call, so they are counted here (as MCP) instead of as native tools. The MCP
+    // kind is provider-neutral: Claude sets it from the "mcp__" prefix and Copilot
+    // from its hooks-only heuristics. Cursor also flags the kind on its "MCP:"
+    // pre/post events, but those are excluded because its before/afterMCPExecution
+    // pair is the canonical MCP signal and already counts the call.
+    private static bool IsNativeMcpToolCall(HookObservation observation) =>
+        observation.ToolKind == CanonicalToolKind.Mcp &&
+        observation.ToolName?.StartsWith("MCP:", StringComparison.Ordinal) != true;
 
     private static string McpKey(HookObservation observation)
     {
         string? server = observation.McpServerName;
         string? tool = StripMcpPrefix(observation.ToolName);
+
+        // Copilot flattens an MCP call as "<server>-<tool>" in a single field.
+        // Use that flattened name as the key so a request and its completion
+        // agree even before the server is learned from the permission event.
+        if (!string.IsNullOrEmpty(server) && tool is not null &&
+            tool.StartsWith(server + "-", StringComparison.Ordinal))
+        {
+            return tool;
+        }
+
         if (!string.IsNullOrEmpty(server) && !string.IsNullOrEmpty(tool))
         {
             return $"{server}/{tool}";

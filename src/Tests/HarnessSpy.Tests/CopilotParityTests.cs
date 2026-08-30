@@ -236,6 +236,135 @@ public sealed class CopilotParityTests
         Assert.Equal(ObservationTone.Permission, observation.Interpretation.Tone);
     }
 
+    [Fact]
+    public void CliUnknownToolIsFlaggedMcpByAllowlistWithoutPermission()
+    {
+        // Idea 3: with no permission event to learn from, a tool name that is
+        // not a built-in is still recognised as MCP - only the server is unknown.
+        HookObservation observation = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-allowlist","timestamp":1,"cwd":"C:\\Repo","toolName":"dotnet-dstrings-get_duplicated_strings","toolArgs":{"dumpPath":"d.dmp"}}""",
+            "preToolUse");
+
+        Assert.Equal(CanonicalToolKind.Mcp, observation.ToolKind);
+        Assert.Equal(ObservationTone.Mcp, observation.Interpretation.Tone);
+        Assert.Null(observation.McpServerName);
+    }
+
+    [Theory]
+    [InlineData("grep", CanonicalToolKind.TextSearch)]
+    [InlineData("glob", CanonicalToolKind.FileSearch)]
+    [InlineData("view", CanonicalToolKind.FileRead)]
+    [InlineData("powershell", CanonicalToolKind.Shell)]
+    public void CliBuiltInToolsAreNeverFlaggedAsMcp(string toolName, CanonicalToolKind expectedKind)
+    {
+        string payload =
+            "{\"sessionId\":\"mcp-builtin\",\"timestamp\":1,\"cwd\":\"C:\\\\Repo\",\"toolName\":\"" +
+            toolName +
+            "\",\"toolArgs\":{}}";
+        HookObservation observation = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            payload,
+            "preToolUse");
+
+        Assert.Equal(expectedKind, observation.ToolKind);
+        Assert.NotEqual(ObservationTone.Mcp, observation.Interpretation.Tone);
+        Assert.Null(observation.McpServerName);
+    }
+
+    [Fact]
+    public void CliPermissionRequestSlashFormIsFlaggedMcpAndKeepsPermissionTone()
+    {
+        // Idea 2: the "<server>/<tool>" permission form is unambiguously MCP.
+        HookObservation observation = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-permission","timestamp":1,"cwd":"C:\\Repo","toolName":"dotnet-dstrings/get_duplicated_strings","toolInput":{"dumpPath":"d.dmp"}}""",
+            "permissionRequest");
+
+        Assert.Equal(CanonicalToolKind.Mcp, observation.ToolKind);
+        Assert.Equal("dotnet-dstrings", observation.McpServerName);
+        Assert.Equal(ObservationTone.Permission, observation.Interpretation.Tone);
+    }
+
+    [Fact]
+    public void CliPostToolUseRecoversServerFromEarlierPermission()
+    {
+        // Idea 4: the permission slash form teaches the session how to split the
+        // flattened preToolUse/postToolUse name back into its server and tool.
+        ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-learn","timestamp":1,"cwd":"C:\\Repo","toolName":"dotnet-dstrings/get_duplicated_strings","toolInput":{"dumpPath":"d.dmp"}}""",
+            "permissionRequest");
+
+        HookObservation post = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-learn","timestamp":2,"cwd":"C:\\Repo","toolName":"dotnet-dstrings-get_duplicated_strings","toolArgs":{"dumpPath":"d.dmp"},"toolResult":{"resultType":"success"}}""",
+            "postToolUse");
+
+        Assert.Equal(CanonicalToolKind.Mcp, post.ToolKind);
+        Assert.Equal(ObservationTone.Mcp, post.Interpretation.Tone);
+        Assert.Equal("dotnet-dstrings", post.McpServerName);
+    }
+
+    [Fact]
+    public void CliNotificationTeachesServerSplitForLaterCalls()
+    {
+        // Idea 4 via the "Use MCP tool: <server>/<tool>" notification message.
+        ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-notify","timestamp":1,"cwd":"C:\\Repo","message":"Use MCP tool: dotnet-dstrings/get_duplicated_strings","title":"Permission needed","notification_type":"permission_prompt"}""",
+            "notification");
+
+        HookObservation post = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-notify","timestamp":2,"cwd":"C:\\Repo","toolName":"dotnet-dstrings-get_duplicated_strings","toolArgs":{"dumpPath":"d.dmp"},"toolResult":{"resultType":"success"}}""",
+            "postToolUse");
+
+        Assert.Equal("dotnet-dstrings", post.McpServerName);
+    }
+
+    [Fact]
+    public void CliMcpCallCountsAsMcpNotNativeToolInSummary()
+    {
+        // The request arrives before the permission (as observed in real traces),
+        // yet the completion still pairs with it and the call is summarised as a
+        // single MCP call rather than a native tool.
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-summary","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-summary","timestamp":2,"cwd":"C:\\Repo","toolName":"dotnet-dstrings-get_duplicated_strings","toolArgs":{"dumpPath":"d.dmp"}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-summary","timestamp":3,"cwd":"C:\\Repo","toolName":"dotnet-dstrings/get_duplicated_strings","toolInput":{"dumpPath":"d.dmp"}}""",
+            "permissionRequest"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"mcp-summary","timestamp":4,"cwd":"C:\\Repo","toolName":"dotnet-dstrings-get_duplicated_strings","toolArgs":{"dumpPath":"d.dmp"},"toolResult":{"resultType":"success"}}""",
+            "postToolUse"));
+
+        NodeSummary summary = OnlyTurn(viewModel).NodeSummary!;
+        Assert.Empty(summary.Tools);
+        CountedDurationRow mcpCall = Assert.Single(summary.McpCalls);
+        Assert.Equal("dotnet-dstrings-get_duplicated_strings", mcpCall.Name);
+        Assert.Equal(1, mcpCall.Count);
+    }
+
     private static CorrelationQuality GetBaselineQuality(HookObservation observation)
     {
         // Subagent events are explicitly heuristic on the CLI; every other CLI

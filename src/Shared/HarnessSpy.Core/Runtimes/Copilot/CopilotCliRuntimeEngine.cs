@@ -11,6 +11,10 @@ namespace HarnessSpy.Core.Runtimes.Copilot;
 // exact tool-use id.
 internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
 {
+    // MCP calls arrive flattened as "<server>-<tool>" with no marker, so a
+    // per-session classifier learns their identity from the permission events.
+    private readonly CopilotMcpToolClassifier _mcp = new();
+
     public override string HarnessId => HarnessIds.GitHubCopilot;
 
     public override ObservationInterpretation Interpret(ObservationContext context)
@@ -24,13 +28,14 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
             context.PayloadEventName ??
             "unknownHook";
 
+        string? sessionId = RuntimeJson.String(payload, "sessionId", "session_id");
         string? toolName = RuntimeJson.String(payload, "toolName", "tool_name");
         string? targetFilePath = RuntimeJson.ToolInputString(payload, "toolArgs", "path", "file_path")
             ?? RuntimeJson.ToolInputString(payload, "tool_input", "path", "file_path");
 
         var b = new InterpretationBuilder(name)
         {
-            SessionId = RuntimeJson.String(payload, "sessionId", "session_id"),
+            SessionId = sessionId,
             ToolName = toolName,
             TargetFilePath = targetFilePath,
             PromptText = RuntimeJson.String(payload, "prompt", "initialPrompt"),
@@ -44,6 +49,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
         switch (name)
         {
             case "sessionStart":
+                _mcp.ResetSession(sessionId);
                 b.ScopeOverride = ObservationScope.SessionLifecycle;
                 b.Role = ObservationRole.SessionStart;
                 b.EventKind = CanonicalEventKind.SessionStarted;
@@ -56,6 +62,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 break;
 
             case "sessionEnd":
+                _mcp.ResetSession(sessionId);
                 b.ScopeOverride = ObservationScope.SessionLifecycle;
                 b.Role = ObservationRole.SessionEnd;
                 b.EventKind = CanonicalEventKind.SessionEnded;
@@ -86,6 +93,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.EventKind = CanonicalEventKind.ToolRequested;
                 b.Direction = ObservationDirection.Input;
                 b.OpensToolCall = true;
+                ApplyMcp(b, _mcp.ClassifyFlatName(sessionId, toolName));
                 b.HeaderDetail = ToolDetail(toolName, targetFilePath);
                 b.Fields(S("toolName"), J("toolArgs"));
                 break;
@@ -97,6 +105,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 // The CLI carries no tool-use id, so the completion is paired to
                 // its request by tool name and canonical toolArgs.
                 b.MatchStrategy = ToolCallMatchStrategy.ToolSignature;
+                ApplyMcp(b, _mcp.ClassifyFlatName(sessionId, toolName));
                 b.HeaderDetail = ToolDetail(toolName, targetFilePath);
                 b.Fields(S("toolName"), J("toolArgs"), J("toolResult"));
                 break;
@@ -108,6 +117,8 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.Tone = ObservationTone.Failure;
                 b.CountsAsFailure = true;
                 b.MatchStrategy = ToolCallMatchStrategy.ToolSignature;
+                // Keep the failure tone; only flag the MCP kind/server.
+                ApplyMcp(b, _mcp.ClassifyFlatName(sessionId, toolName), applyMcpTone: false);
                 b.HeaderDetail = JoinNonEmpty(toolName, Preview(RuntimeJson.String(payload, "error")));
                 b.Fields(S("toolName"), J("toolArgs"), S("error"));
                 break;
@@ -117,6 +128,9 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.EventKind = CanonicalEventKind.PermissionRequested;
                 b.Direction = ObservationDirection.Input;
                 b.Tone = ObservationTone.Permission;
+                // The "<server>/<tool>" form here teaches the session its MCP
+                // split; keep the permission tone rather than the MCP tone.
+                ApplyMcp(b, _mcp.RegisterFromSlashName(sessionId, toolName), applyMcpTone: false);
                 b.HeaderDetail = ToolDetail(toolName, targetFilePath);
                 b.Fields(FieldSpec.AllTopLevel);
                 break;
@@ -131,6 +145,8 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                     b.Tone = ObservationTone.Permission;
                 }
 
+                // "Use MCP tool: <server>/<tool>" also teaches the session split.
+                ApplyMcp(b, _mcp.RegisterFromNotification(sessionId, RuntimeJson.String(payload, "message")), applyMcpTone: false);
                 b.HeaderDetail = JoinNonEmpty(
                     RuntimeJson.String(payload, "notification_type"),
                     Preview(RuntimeJson.String(payload, "message")));
@@ -209,6 +225,32 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
         }
 
         return b.Build();
+    }
+
+    // Marks an interpretation as an MCP call. The server name is only attached
+    // once it has been learned; the MCP tone is suppressed for events (failure,
+    // permission) whose own tone must win.
+    private static void ApplyMcp(
+        InterpretationBuilder b,
+        CopilotMcpIdentity? identity,
+        bool applyMcpTone = true)
+    {
+        if (identity is null)
+        {
+            return;
+        }
+
+        b.ToolKind = CanonicalToolKind.Mcp;
+
+        if (identity.Value.ServerName is string server)
+        {
+            b.McpServerName = server;
+        }
+
+        if (applyMcpTone)
+        {
+            b.Tone = ObservationTone.Mcp;
+        }
     }
 
     private static FieldSpec S(string name) => new(FieldSpecKind.Scalar, name);
