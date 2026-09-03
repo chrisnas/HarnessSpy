@@ -53,6 +53,8 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
                 RuntimeJson.Long(payload, "cache_write_tokens") is not null
         };
 
+        interpretation.TranscriptReferences = TranscriptReferences(payload);
+
         switch (name)
         {
             case "workspaceOpen":
@@ -290,6 +292,23 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
         }
 
         return interpretation.Build();
+    }
+
+    // Cursor exposes the main session transcript via transcript_path. It is
+    // null on sessionStart and the first few events, so callers backfill when
+    // it first appears. Cursor exposes no subagent transcript pointer today.
+    private static IReadOnlyList<TranscriptReference> TranscriptReferences(JsonElement payload)
+    {
+        if (RuntimeJson.String(payload, "transcript_path") is not string path)
+        {
+            return [];
+        }
+
+        return [new TranscriptReference(
+            string.Empty,
+            path,
+            TranscriptFileRole.Main,
+            DialectIds.CursorTranscript)];
     }
 
     private static ObservationDirection DirectionFromName(string name)

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using HarnessSpy.Agent.Abstractions;
@@ -11,11 +12,13 @@ namespace HarnessSpy.Wpf;
 
 // WindowIconUri lets each app override the main window's title-bar icon (the
 // exe/binary icon is set separately via <ApplicationIcon>); null keeps the
-// WPF default.
+// WPF default. EnableTranscripts turns on the provider-owned transcript
+// secondary source (discover from hooks, backfill, tail, durably capture).
 public sealed record SpyAppProfile(
     ProviderProfile Provider,
     IAgentProvider AgentProvider,
-    Uri? WindowIconUri = null);
+    Uri? WindowIconUri = null,
+    bool EnableTranscripts = true);
 
 public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
 {
@@ -23,6 +26,7 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
     private readonly ObservationBuffer<HookObservation> _buffer = new();
     private Task? _listenerTask;
     private Task? _dispatcherTask;
+    private ObservationIngestionCoordinator? _coordinator;
 
     public void Start(Application application)
     {
@@ -30,7 +34,27 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
         AppSettings settings = settingsService.Load();
         MainWindowViewModel viewModel = new();
 
-        _dispatcherTask = DispatchAsync(application, viewModel, _shutdown.Token);
+        bool enableTranscripts = profile.EnableTranscripts && settings.EnableTranscriptIngestion;
+        string payloadsDirectory = Path.Combine(
+            FileHookDiagnostics.GetDefaultDirectory(profile.Provider),
+            "Payloads");
+        TranscriptCaptureStore captureStore = new(payloadsDirectory);
+        TranscriptBindingJournal bindingJournal = new(captureStore);
+        TranscriptSessionRegistry registry = new();
+
+        _coordinator = new ObservationIngestionCoordinator(
+            registry,
+            captureStore,
+            bindingJournal,
+            (change, cancellationToken) =>
+            {
+                application.Dispatcher.InvokeAsync(() => viewModel.ApplyObservationChange(change));
+                return Task.CompletedTask;
+            },
+            enableTranscripts);
+        _coordinator.Start(_shutdown.Token);
+
+        _dispatcherTask = DispatchAsync(_shutdown.Token);
         NamedPipeListener listener = new(
             profile.Provider.PipeName,
             profile.Provider.Provider);
@@ -65,38 +89,33 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
 
         await AwaitQuietly(_listenerTask).ConfigureAwait(false);
         await AwaitQuietly(_dispatcherTask).ConfigureAwait(false);
+        if (_coordinator is not null)
+        {
+            await _coordinator.DisposeAsync().ConfigureAwait(false);
+        }
+
         await profile.AgentProvider.DisposeAsync().ConfigureAwait(false);
         _shutdown.Dispose();
     }
 
-    private async Task DispatchAsync(
-        Application application,
-        MainWindowViewModel viewModel,
-        CancellationToken cancellationToken)
+    // Feeds pipe-delivered hooks into the coordinator, which serializes hook
+    // and transcript ingestion and emits reconciled changes back on the UI
+    // thread. The bounded buffer preserves backpressure from the pipe.
+    private async Task DispatchAsync(CancellationToken cancellationToken)
     {
-        const int maxBatch = 128;
-        List<HookObservation> batch = new(maxBatch);
-
-        await foreach (HookObservation observation in
-            _buffer.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        try
         {
-            batch.Add(observation);
-            while (batch.Count < maxBatch &&
-                   _buffer.TryRead(out HookObservation? queued) &&
-                   queued is not null)
+            await foreach (HookObservation observation in
+                _buffer.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                batch.Add(queued);
-            }
-
-            HookObservation[] pending = [.. batch];
-            batch.Clear();
-            await application.Dispatcher.InvokeAsync(() =>
-            {
-                foreach (HookObservation item in pending)
+                if (_coordinator is not null)
                 {
-                    viewModel.AddObservation(item);
+                    await _coordinator.IngestHookAsync(observation, cancellationToken).ConfigureAwait(false);
                 }
-            });
+            }
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 

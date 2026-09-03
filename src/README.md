@@ -10,8 +10,13 @@ The implementation is independent from the reference POC under
 
 - `Shared/HarnessSpy.Core`: hook transport, diagnostics, runtime detection,
   source adapters, per-harness/per-surface runtime engines, lossless native
-  observations, storage, replay, and named pipes. See
-  [architecture.md](architecture.md) for the runtime/source design.
+  observations, storage, replay, named pipes, and the transcript secondary
+  source (discovery, tailing, durable sidecar capture, and hook-first
+  reconciliation). See [architecture.md](architecture.md) for the runtime/source
+  design and the per-harness transcript extraction contracts
+  ([Transcripts_Cursor.md](Transcripts_Cursor.md),
+  [Transcripts_Claude.md](Transcripts_Claude.md),
+  [Transcripts_Copilot.md](Transcripts_Copilot.md)).
 - `Shared/HarnessSpy.Agent.Abstractions`: provider-neutral contracts reserved
   for future SDK-driven agent creation and streaming.
 - `Shared/HarnessSpy.Wpf`: the shared workspace/session/turn tree, summaries,

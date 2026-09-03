@@ -1,0 +1,10 @@
+{"type":"session.start","id":"e1","timestamp":1,"data":{"producer":"copilot-agent","version":1,"sessionId":"c1","copilotVersion":"1.0.82"}}
+{"type":"user.message","id":"e2","timestamp":2,"parentId":"e1","data":{"turnId":0,"content":"find duplicated strings"}}
+{"type":"assistant.message","id":"e3","timestamp":3,"parentId":"e2","data":{"turnId":0,"reasoningOpaque":"REDACTED_OPAQUE","toolRequests":[{"toolCallId":"call_1","name":"dotnet-dstrings-get_duplicated_strings","mcpServerName":"dotnet-dstrings","mcpToolName":"get_duplicated_strings","toolTitle":"Get duplicated strings"}]}}
+{"type":"tool.execution_start","id":"e4","timestamp":4,"parentId":"e3","data":{"toolCallId":"call_1","name":"dotnet-dstrings-get_duplicated_strings","mcpServerName":"dotnet-dstrings","mcpToolName":"get_duplicated_strings"}}
+{"type":"tool.execution_complete","id":"e5","timestamp":5,"parentId":"e4","data":{"toolCallId":"call_1","mcpServerName":"dotnet-dstrings"}}
+{"type":"permission.requested","id":"e6","timestamp":6,"parentId":"e3","data":{"permissionRequest":{"kind":"mcp","serverName":"dotnet-dstrings"}}}
+{"type":"permission.completed","id":"e7","timestamp":7,"parentId":"e6","data":{"result":{"approval":{"kind":"mcp"}}}}
+{"type":"assistant.message","id":"e8","timestamp":8,"parentId":"e7","data":{"turnId":0,"phase":"final_answer","content":"Here are the duplicated strings."}}
+{"type":"session.usage_checkpoint","id":"e9","timestamp":9,"data":{"totalNanoAiu":269356000,"totalPremiumRequests":1}}
+{"type":"session.shutdown","id":"e10","timestamp":10,"data":{"tokenDetails":{"input":9531,"output":270,"cache_read":23168,"reasoningTokens":0},"totalNanoAiu":269356000,"totalPremiumRequests":1,"totalApiDurationMs":5315}}

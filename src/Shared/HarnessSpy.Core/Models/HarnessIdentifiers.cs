@@ -51,6 +51,12 @@ public static class DialectIds
     public const string CopilotVsCodeCompat = "copilot-vscode-compat";
     public const string VsCodeLocal = "vscode-local";
     public const string Unknown = "unknown";
+
+    // Provider-owned agent transcript JSONL dialects. One per verified format.
+    public const string CursorTranscript = "cursor-transcript-jsonl";
+    public const string ClaudeTranscript = "claude-transcript-jsonl";
+    public const string CopilotCliTranscript = "copilot-cli-events-v1";
+    public const string UnknownTranscript = "unknown-transcript-jsonl";
 }
 
 // How the session/turn scope of an observation is resolved by the shared tree

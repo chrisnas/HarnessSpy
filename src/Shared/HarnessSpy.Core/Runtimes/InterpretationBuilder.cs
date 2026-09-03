@@ -82,6 +82,18 @@ internal sealed class InterpretationBuilder(string nativeEventName)
 
     public bool StartsDerivedTurn { get; set; }
 
+    public IReadOnlyList<TranscriptReference> TranscriptReferences { get; set; } = [];
+
+    public InferenceEvidence Evidence { get; set; } = InferenceEvidence.Observed;
+
+    public bool EnrichmentOnly { get; set; }
+
+    public bool ExcludeFromSummary { get; set; }
+
+    public SkillEvidence? Skill { get; set; }
+
+    public IReadOnlyList<UsageMeasurement> UsageMeasurements { get; set; } = [];
+
     public ObservationScope ScopeOverride
     {
         set
@@ -138,7 +150,13 @@ internal sealed class InterpretationBuilder(string nativeEventName)
             IsAbortedStop = IsAbortedStop,
             HasTokenCounts = HasTokenCounts,
             ParticipatesInDerivedTurns = ParticipatesInDerivedTurns,
-            StartsDerivedTurn = StartsDerivedTurn
+            StartsDerivedTurn = StartsDerivedTurn,
+            TranscriptReferences = TranscriptReferences,
+            Evidence = Evidence,
+            EnrichmentOnly = EnrichmentOnly,
+            ExcludeFromSummary = ExcludeFromSummary,
+            Skill = Skill,
+            UsageMeasurements = UsageMeasurements
         };
     }
 }

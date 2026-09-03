@@ -69,7 +69,23 @@ public sealed class SettingsService
     }
 }
 
+public enum TranscriptReplayMode
+{
+    // Reproduce the live tree from the finalized bindings journal.
+    Exact,
+
+    // Re-run the current parsers/reconciler over captured source rows.
+    Reinterpret
+}
+
 public sealed class AppSettings
 {
     public string? LastReplayFolder { get; set; }
+
+    // Discover, backfill, tail, and durably capture provider transcripts as a
+    // secondary source. On by default; turning it off stops tailers but leaves
+    // already-captured sidecar evidence visible.
+    public bool EnableTranscriptIngestion { get; set; } = true;
+
+    public TranscriptReplayMode TranscriptReplayMode { get; set; } = TranscriptReplayMode.Exact;
 }

@@ -392,6 +392,9 @@
                                     <Setter Property="FontWeight" Value="SemiBold" />
                                     <Setter Property="Foreground" Value="#8250DF" />
                                 </DataTrigger>
+                                <DataTrigger Binding="{Binding IsTranscriptSourced}" Value="True">
+                                    <Setter Property="Foreground" Value="#1F6FEB" />
+                                </DataTrigger>
                                 <DataTrigger Binding="{Binding IsAgentThought}" Value="True">
                                     <Setter Property="Foreground" Value="#1F6FEB" />
                                 </DataTrigger>
@@ -787,6 +790,36 @@
 
                 <DockPanel Grid.Row="0"
                            Visibility="{Binding HasSelectedFields, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <StackPanel DockPanel.Dock="Top"
+                                Margin="0,0,0,6"
+                                Visibility="{Binding SelectedNode.IsTranscriptSourced, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock FontStyle="Italic"
+                                   Foreground="#57606A">
+                            <Run Text="Transcript-sourced" />
+                            <Run Text=" · " />
+                            <Run Text="{Binding SelectedNode.CorrelationConfidence, Mode=OneWay}" />
+                        </TextBlock>
+                    </StackPanel>
+
+                    <StackPanel DockPanel.Dock="Top"
+                                Margin="0,0,0,8"
+                                Visibility="{Binding SelectedNode.HasEvidence, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Margin="0,0,0,4"
+                                   FontWeight="SemiBold"
+                                   Text="Transcript evidence" />
+                        <ItemsControl ItemsSource="{Binding SelectedNode.Evidence}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock FontSize="12" Foreground="#57606A">
+                                        <Run Text="{Binding Relationship, Mode=OneWay}" />
+                                        <Run Text=" · " />
+                                        <Run Text="{Binding Observation.HookEventName, Mode=OneWay}" />
+                                    </TextBlock>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
                     <TextBlock DockPanel.Dock="Top"
                                Margin="0,0,0,4"
                                FontWeight="SemiBold"

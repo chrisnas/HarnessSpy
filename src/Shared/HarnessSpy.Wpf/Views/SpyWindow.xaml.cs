@@ -1,8 +1,10 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using HarnessSpy.Core.Services;
@@ -48,6 +50,49 @@ public partial class SpyWindow : Window
     }
 
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
+
+    // System menu command IDs must be below 0xF000 and have their low 4 bits
+    // clear, since Windows reserves those bits on the wParam it delivers with
+    // WM_SYSCOMMAND.
+    private const int WM_SYSCOMMAND = 0x0112;
+    private const uint MF_STRING = 0x0000;
+    private const uint MF_SEPARATOR = 0x0800;
+    private const nuint AboutSystemMenuId = 0x1000;
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+
+        IntPtr handle = new WindowInteropHelper(this).Handle;
+        HwndSource.FromHwnd(handle)?.AddHook(WndProc);
+
+        IntPtr systemMenu = GetSystemMenu(handle, revert: false);
+        AppendMenu(systemMenu, MF_SEPARATOR, UIntPtr.Zero, string.Empty);
+        AppendMenu(systemMenu, MF_STRING, AboutSystemMenuId, $"About {_productName}");
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WM_SYSCOMMAND && ((nuint)wParam.ToInt64() & 0xFFF0) == AboutSystemMenuId)
+        {
+            ShowAboutWindow();
+            handled = true;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private void ShowAboutWindow()
+    {
+        AboutWindow about = new(_productName, Icon) { Owner = this };
+        about.ShowDialog();
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetSystemMenu(IntPtr hWnd, bool revert);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool AppendMenu(IntPtr hMenu, uint flags, nuint idNewItem, string newItem);
 
     private async void SpyWindow_Loaded(object sender, RoutedEventArgs e)
     {

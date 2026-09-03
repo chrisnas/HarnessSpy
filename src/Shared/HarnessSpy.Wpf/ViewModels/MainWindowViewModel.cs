@@ -14,6 +14,12 @@ public sealed class MainWindowViewModel : ObservableObject
     private const string UnknownSession = "Unknown session";
 
     private readonly ReplayLoader _replayLoader;
+    private readonly TranscriptReplayLoader _transcriptReplayLoader = new();
+
+    // A reconciler dedicated to replay/reload so a restarted session's durable
+    // transcript sidecar is matched against the replayed hooks exactly as it
+    // was live. Persistent across LoadFolderAsync calls for idempotent dedupe.
+    private readonly ObservationReconciler _replayReconciler = new();
     private readonly Dictionary<string, TreeNodeViewModel> _workspaceNodes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TreeNodeViewModel> _sessionNodes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TreeNodeViewModel> _generationNodes = new(StringComparer.Ordinal);
@@ -22,6 +28,15 @@ public sealed class MainWindowViewModel : ObservableObject
     private readonly HashSet<string> _loadedSourceFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _derivedTurnCounters = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _activeDerivedTurns = new(StringComparer.Ordinal);
+
+    // Observation nodes indexed by their observation EventId so transcript
+    // evidence and promotions can find the canonical node they enrich.
+    private readonly Dictionary<Guid, TreeNodeViewModel> _nodesByEventId = [];
+
+    // Provenance dedupe keys of transcript rows already projected, so a row seen
+    // by both startup replay and live tailing (or re-captured across runs)
+    // creates at most one node regardless of which path reached it first.
+    private readonly HashSet<string> _appliedTranscriptProvenance = new(StringComparer.OrdinalIgnoreCase);
 
     // In-flight subagent nodes keyed by subagent_id.
     private readonly Dictionary<string, TreeNodeViewModel> _inFlightSubagents = new(StringComparer.Ordinal);
@@ -161,13 +176,36 @@ public sealed class MainWindowViewModel : ObservableObject
                     continue;
                 }
 
-                AddObservation(observation);
+                foreach (ObservationChange change in _replayReconciler.Reconcile(observation))
+                {
+                    ApplyObservationChange(change);
+                }
+
                 added++;
             }
 
+            // Rehydrate transcript nodes from the durable sidecar so a restart
+            // or folder replay shows the same transcript content it did live,
+            // even after the provider deleted the original files. All hooks are
+            // reconciled first, so transcript tool rows nest under their hooks.
+            int transcriptRows = 0;
+            foreach (HookObservation transcript in _transcriptReplayLoader.Load(folder))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                foreach (ObservationChange change in _replayReconciler.Reconcile(transcript))
+                {
+                    ApplyObservationChange(change);
+                }
+
+                transcriptRows++;
+            }
+
+            string transcriptSuffix = transcriptRows == 0
+                ? string.Empty
+                : $" plus {transcriptRows} transcript record(s)";
             StatusText = skipped == 0
-                ? $"Loaded {added} replay event(s) from {folderName}."
-                : $"Loaded {added} replay event(s) from {folderName}; skipped {skipped} duplicate file(s).";
+                ? $"Loaded {added} replay event(s){transcriptSuffix} from {folderName}."
+                : $"Loaded {added} replay event(s){transcriptSuffix} from {folderName}; skipped {skipped} duplicate file(s).";
         }
         finally
         {
@@ -1892,13 +1930,99 @@ public sealed class MainWindowViewModel : ObservableObject
         }
     }
 
-    private static TreeNodeViewModel CreateObservationNode(HookObservation observation)
+    private TreeNodeViewModel CreateObservationNode(HookObservation observation)
     {
-        return new TreeNodeViewModel(
+        TreeNodeViewModel node = new(
             observation.EventId == Guid.Empty ? Guid.NewGuid().ToString("N") : observation.EventId.ToString("N"),
             observation.OccurrenceHeader,
             TreeNodeKind.Observation,
             observation);
+
+        if (observation.EventId != Guid.Empty)
+        {
+            _nodesByEventId[observation.EventId] = node;
+        }
+
+        return node;
+    }
+
+    // Applies a reconciler decision to the tree. Add routes through the normal
+    // hook placement so existing nesting/summaries are unchanged; AttachEvidence
+    // enriches an existing canonical node without adding a duplicate; other
+    // change kinds fall back to Add so nothing is ever lost.
+    //
+    // Transcript rows are deduplicated by their stable provenance key so a row
+    // observed by more than one path (startup folder replay plus live tailing,
+    // or the same row re-captured across app runs) projects at most one node.
+    // The key is identical across those paths because it uses the original
+    // transcript file path and byte offset.
+    public void ApplyObservationChange(ObservationChange change)
+    {
+        if (change.Observation.Provenance is { } provenance &&
+            !_appliedTranscriptProvenance.Add(provenance.DedupeKey))
+        {
+            return;
+        }
+
+        switch (change.Kind)
+        {
+            case ObservationChangeKind.AttachEvidence when change.TargetEventId is Guid target &&
+                _nodesByEventId.TryGetValue(target, out TreeNodeViewModel? node):
+                node.AddEvidence(change.Observation, change.Relationship);
+
+                // A transcript tool request and its result both nest as visible
+                // children of the matching PreToolUse (connected by native id).
+                // The result sorts last by timestamp. Other rows stay as
+                // inspector-only evidence to avoid clutter.
+                if (change.Observation.Interpretation.Role is
+                    ObservationRole.ToolRequest or
+                    ObservationRole.ToolSuccess or
+                    ObservationRole.ToolFailure)
+                {
+                    TreeNodeViewModel toolChild = CreateObservationNode(change.Observation);
+                    InsertChronologically(node.Children, toolChild);
+                    node.IsExpanded = true;
+                }
+
+                break;
+
+            case ObservationChangeKind.PromotePrimary when change.TargetEventId is Guid transcriptNodeId &&
+                _nodesByEventId.TryGetValue(transcriptNodeId, out TreeNodeViewModel? transcriptNode):
+                // The transcript tool node was created before its PreToolUse
+                // hook arrived. Add the hook as canonical, then re-parent the
+                // transcript node under it so they are connected.
+                transcriptNode.MarkPromotedFromTranscript();
+                AddObservation(change.Observation);
+                if (_nodesByEventId.TryGetValue(change.Observation.EventId, out TreeNodeViewModel? hookNode) &&
+                    !ReferenceEquals(hookNode, transcriptNode))
+                {
+                    ReparentUnder(hookNode, transcriptNode);
+                    hookNode.AddEvidence(
+                        change.Observation,
+                        TranscriptRelationshipKind.HookInvocationEvidence);
+                }
+
+                break;
+
+            default:
+                AddObservation(change.Observation);
+                break;
+        }
+    }
+
+    // Detaches a node from its current parent and nests it, in chronological
+    // order, under the given parent. Used when a hook adopts a transcript node
+    // that was projected before the hook arrived.
+    private void ReparentUnder(TreeNodeViewModel parent, TreeNodeViewModel child)
+    {
+        List<TreeNodeViewModel>? path = TreeNodeViewModel.FindAncestorPath(Roots, child);
+        if (path is { Count: >= 2 })
+        {
+            path[^2].Children.Remove(child);
+        }
+
+        InsertChronologically(parent.Children, child);
+        parent.IsExpanded = true;
     }
 
     // Deterministic chronological placement of a direct child, ordered by

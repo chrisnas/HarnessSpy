@@ -42,6 +42,8 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
             HasTokenCounts = false
         };
 
+        b.TranscriptReferences = TranscriptReferences(payload);
+
         switch (name)
         {
             case "SessionStart":
@@ -129,7 +131,7 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
                 b.EventKind = CanonicalEventKind.PermissionRequested;
                 b.Direction = ObservationDirection.Input;
                 b.Tone = ObservationTone.Permission;
-                b.HeaderDetail = ToolDetail(toolName, targetFilePath);
+                b.HeaderDetail = JoinNonEmpty(toolName, PermissionSuggestionTypes(payload));
                 b.Fields(S("tool_name"), O("tool_input"), Arr("permission_suggestions"));
                 break;
 
@@ -371,6 +373,36 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
         return b.Build();
     }
 
+    // Claude exposes the main transcript on the first SessionStart via
+    // transcript_path, and the short-lived subagent transcript on SubagentStop
+    // via agent_transcript_path keyed by agent_id. Both must be captured
+    // immediately because provider cleanup is aggressive.
+    private static IReadOnlyList<TranscriptReference> TranscriptReferences(JsonElement payload)
+    {
+        List<TranscriptReference> references = [];
+
+        if (RuntimeJson.String(payload, "transcript_path") is string main)
+        {
+            references.Add(new TranscriptReference(
+                string.Empty,
+                main,
+                TranscriptFileRole.Main,
+                DialectIds.ClaudeTranscript));
+        }
+
+        if (RuntimeJson.String(payload, "agent_transcript_path") is string subagent)
+        {
+            references.Add(new TranscriptReference(
+                string.Empty,
+                subagent,
+                TranscriptFileRole.Subagent,
+                DialectIds.ClaudeTranscript,
+                RuntimeJson.String(payload, "agent_id")));
+        }
+
+        return references;
+    }
+
     private static string? mcpServerName(JsonElement payload) =>
         RuntimeJson.String(payload, "mcp_server_name");
 
@@ -416,6 +448,37 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
         }
 
         return true;
+    }
+
+    // Concatenates the permission_suggestions[].type values (e.g. "addRules")
+    // so a PermissionRequest node shows what kind of permission was proposed
+    // after the tool name. Tolerates the field being a single object.
+    private static string? PermissionSuggestionTypes(JsonElement payload)
+    {
+        if (payload.ValueKind != JsonValueKind.Object ||
+            !payload.TryGetProperty("permission_suggestions", out JsonElement suggestions))
+        {
+            return null;
+        }
+
+        List<string> types = [];
+        if (suggestions.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement suggestion in suggestions.EnumerateArray())
+            {
+                if (RuntimeJson.String(suggestion, "type") is string type)
+                {
+                    types.Add(type);
+                }
+            }
+        }
+        else if (suggestions.ValueKind == JsonValueKind.Object &&
+            RuntimeJson.String(suggestions, "type") is string single)
+        {
+            types.Add(single);
+        }
+
+        return types.Count == 0 ? null : string.Join(", ", types);
     }
 
     private static string? ToolDetail(string? toolName, string? targetFilePath)

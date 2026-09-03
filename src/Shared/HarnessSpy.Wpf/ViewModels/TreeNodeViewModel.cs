@@ -12,6 +12,12 @@ public enum TreeNodeKind
     ParallelWave
 }
 
+// One transcript row attached to a canonical hook node as corroborating
+// evidence, with the relationship that ties them together.
+public sealed record TranscriptEvidence(
+    HookObservation Observation,
+    TranscriptRelationshipKind Relationship);
+
 public enum SessionStatus
 {
     Active,
@@ -83,6 +89,38 @@ public sealed class TreeNodeViewModel : ObservableObject
     public HookObservation? Observation { get; }
 
     public ObservableCollection<TreeNodeViewModel> Children { get; } = [];
+
+    // Transcript rows that enrich this canonical node without adding their own
+    // timeline entry. Populated by the reconciler via AttachEvidence.
+    public ObservableCollection<TranscriptEvidence> Evidence { get; } = [];
+
+    public bool HasEvidence => Evidence.Count > 0;
+
+    private bool _promotedFromTranscript;
+
+    // True for a node whose content came from a provider transcript rather than
+    // a hook. Used for a source badge in the inspector.
+    public bool IsTranscriptSourced => Observation?.IsTranscriptSourced ?? false;
+
+    // The correlation confidence of this node's own observation, shown as a
+    // badge so heuristic transcript matches are never presented as exact.
+    public string? CorrelationConfidence => Observation?.Interpretation.Evidence.ToString();
+
+    public void AddEvidence(HookObservation observation, TranscriptRelationshipKind relationship)
+    {
+        Evidence.Add(new TranscriptEvidence(observation, relationship));
+        OnPropertyChanged(nameof(HasEvidence));
+    }
+
+    // Records that a hook arrived and became the canonical primary for a node
+    // that a transcript row had created first.
+    public void MarkPromotedFromTranscript()
+    {
+        _promotedFromTranscript = true;
+        OnPropertyChanged(nameof(WasPromotedFromTranscript));
+    }
+
+    public bool WasPromotedFromTranscript => _promotedFromTranscript;
 
     public bool IsSession => Kind == TreeNodeKind.Session;
 
@@ -157,7 +195,7 @@ public sealed class TreeNodeViewModel : ObservableObject
     // foreground on the selection highlight so they stay readable when selected.
     public bool UsesLightForegroundWhenSelected =>
         IsAgentThought || IsParallelWave || IsToolBatchGroup || IsStop || IsCompaction ||
-        IsPermission || IsPermissionDenied;
+        IsPermission || IsPermissionDenied || IsTranscriptSourced;
 
     // The full assistant/thinking text, shown as a hover tooltip. The engine
     // decides which observations expose hover text (assistant/thinking output).

@@ -28,7 +28,8 @@ public sealed class HookObservation
         string? sourceFilePath,
         ObservationInterpretation interpretation,
         int? spawningProcessId,
-        string? spawningProcessName)
+        string? spawningProcessName,
+        ObservationProvenance? provenance = null)
     {
         EventId = eventId;
         ObservedAtUtc = observedAtUtc;
@@ -46,6 +47,43 @@ public sealed class HookObservation
         Interpretation = interpretation;
         SpawningProcessId = spawningProcessId;
         SpawningProcessName = spawningProcessName;
+        Provenance = provenance;
+    }
+
+    // Builds a transcript-sourced observation from an already-parsed native
+    // fragment payload and its interpretation. The payload is stored untouched,
+    // exactly like a hook payload; provenance records the file coordinates used
+    // for deduplication and durable replay.
+    public static HookObservation CreateTranscriptFragment(
+        HookProvider provider,
+        HookSurface surface,
+        JsonElement fragmentPayload,
+        string rawEventName,
+        DateTimeOffset observedAtUtc,
+        ObservationInterpretation interpretation,
+        ObservationProvenance provenance)
+    {
+        JsonElement payload = fragmentPayload.Clone();
+        WorkspaceContext workspace = ResolveWorkspace(payload, provider);
+        string displayJson = FormatForDisplay(payload);
+        double? durationMs = ReadDouble(payload, "duration_ms") ?? ReadDouble(payload, "duration");
+
+        return new HookObservation(
+            Guid.NewGuid(),
+            observedAtUtc,
+            payload,
+            provider,
+            surface,
+            ObservationSourceKind.TranscriptFile,
+            rawEventName,
+            workspace,
+            displayJson,
+            durationMs,
+            provenance.CapturedPath ?? provenance.NormalizedPath,
+            interpretation,
+            spawningProcessId: null,
+            spawningProcessName: null,
+            provenance);
     }
 
     private static long _ingestionCounter;
@@ -117,6 +155,14 @@ public sealed class HookObservation
     public int? SpawningProcessId { get; }
 
     public string? SpawningProcessName { get; }
+
+    // File coordinates for a transcript-sourced observation; null for hooks.
+    public ObservationProvenance? Provenance { get; }
+
+    public bool IsTranscriptSourced => SourceKind == ObservationSourceKind.TranscriptFile;
+
+    // True for a transcript fragment that only enriches a canonical hook node.
+    public bool IsEnrichmentOnly => Interpretation.EnrichmentOnly;
 
     public string? ToolUseId => Interpretation.ToolCallId;
 

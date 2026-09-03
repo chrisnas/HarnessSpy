@@ -121,6 +121,41 @@ chronological order.
   resolved via `NtQueryInformationProcess`), alongside the environment
   allowlist above.
 
+## Transcript source (implemented)
+
+Provider-owned agent transcript JSONL is ingested as a secondary source
+alongside hooks. Hooks remain the ordering and summary authority; transcript
+rows enrich a matching hook node or, when nothing matches, appear as their own
+transcript-only node (thinking, assistant messages, unmatched tools, subagent
+content).
+
+- Discovery: a transcript path carried by any hook (`transcript_path`,
+  `agent_transcript_path`, `transcriptPath`) registers the file in
+  `TranscriptSessionRegistry`. Synthetic health-check sessions are excluded and
+  only paths supplied by accepted local hooks are read.
+- Ingestion: `ObservationIngestionCoordinator` serializes hooks, replay, and
+  transcript rows through one loop. `JsonLineFileTailer` reads only complete,
+  newline-terminated rows using a byte-offset `TranscriptReadCursor`, tolerating
+  partial lines, truncation/replacement (new file generation), and shared
+  read/write/delete access.
+- Durable capture: every accepted raw row is copied into a per-session sidecar
+  under `Payloads/_transcripts/<scoped-session>/` (`source-*.jsonl` +
+  `manifest.json`) before its projection is emitted, so replay survives
+  aggressive provider cleanup. `TranscriptBindingJournal` records the finalized
+  correlation decisions in `bindings.jsonl`.
+- Parsing: per-provider `ITranscriptDialectParser` implementations preserve
+  exact native names and attach `ObservationProvenance`; interpretation reuses
+  the shared `HookObservation` model and traits.
+- Reconciliation: `ObservationReconciler` is hook-first. Exact ids (Claude
+  `tool_use.id`, Copilot `toolCallId`, `agent_id`) attach immediately; Cursor
+  matches by tool signature and occurrence. Provenance dedupe makes re-tailing
+  idempotent, and a late hook can promote a transcript-first node.
+- Per-harness extraction contracts: [Transcripts_Cursor.md](Transcripts_Cursor.md),
+  [Transcripts_Claude.md](Transcripts_Claude.md),
+  [Transcripts_Copilot.md](Transcripts_Copilot.md).
+- Capability gates: Cursor subagents and Copilot VS Code Local remain
+  hooks-only until a real transcript contract is verified.
+
 ## Follow-up: Copilot observation sources (not implemented)
 
 Reserve explicit surface/source ids for these; record contracts and order.

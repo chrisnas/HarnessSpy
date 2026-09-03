@@ -1,0 +1,4 @@
+{"type":"fork-context-ref","parentSessionId":"s1","agentId":"a1","parentLastUuid":"u3"}
+{"type":"user","isSidechain":true,"agentId":"a1","promptId":"pa1","uuid":"su1","message":{"role":"user","content":[{"type":"text","text":"explore the tree"}]}}
+{"type":"assistant","isSidechain":true,"agentId":"a1","promptId":"pa1","uuid":"su2","parentUuid":"su1","message":{"role":"assistant","content":[{"type":"tool_use","id":"st1","name":"Grep","input":{"pattern":"foo"}}]}}
+{"type":"user","isSidechain":true,"agentId":"a1","promptId":"pa1","uuid":"su3","parentUuid":"su2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"st1","content":"3 matches"}]},"toolUseResult":{"stdout":"3 matches","stderr":"","interrupted":false}}

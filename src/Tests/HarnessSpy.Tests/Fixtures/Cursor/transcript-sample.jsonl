@@ -1,0 +1,7 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Mon</timestamp>\n<user_query>\n/demo-skill analyze the repo\n</user_query>\n<manually_attached_skills>\nname: demo-skill\nPath: C:/skills/demo-skill/SKILL.md\n</manually_attached_skills>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I'll read the entry point then search for usages."},{"type":"tool_use","name":"Read","input":{"path":"C:/Repo/src/App.cs"}},{"type":"tool_use","name":"Glob","input":{"glob_pattern":"**/*.cs"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"GetDynamicTools","input":{"namespace":"user-pstacks"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"CallDynamicTool","input":{"namespace":"user-pstacks","toolName":"get_parallel_stacks"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"StrReplace","input":{"path":"C:/Repo/src/App.cs","old_string":"a","new_string":"b"}},{"type":"tool_use","name":"TodoWrite","input":{"todos":[]}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Done. The change is applied."}]}}
+{"type":"turn_ended","status":"success"}

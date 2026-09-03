@@ -365,6 +365,16 @@ public sealed class ClaudeParityTests
     }
 
     [Fact]
+    public void PermissionRequestHeaderAppendsSuggestionTypesAfterToolName()
+    {
+        HookObservation observation = Claude(
+            """{"hook_event_name":"PermissionRequest","session_id":"s1","prompt_id":"p1","cwd":"C:\\Repo","tool_name":"Bash","tool_input":{"command":"ls"},"permission_suggestions":[{"type":"addRules"},{"type":"acceptEdits"}]}""",
+            "2026-08-20T12:00:02Z");
+
+        Assert.Equal("Bash \u00b7 addRules, acceptEdits", observation.Interpretation.HeaderDetail);
+    }
+
+    [Fact]
     public void PermissionPromptNotificationUsesPermissionTone()
     {
         HookObservation observation = Claude(

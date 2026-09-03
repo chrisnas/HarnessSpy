@@ -130,4 +130,27 @@ public sealed record ObservationInterpretation
     public bool IsAbortedStop { get; init; }
 
     public bool HasTokenCounts { get; init; }
+
+    // Transcript file references extracted from a hook payload (transcript_path,
+    // agent_transcript_path, transcriptPath). Empty for events that carry none.
+    public IReadOnlyList<TranscriptReference> TranscriptReferences { get; init; } = [];
+
+    // How confident this interpretation's correlation is. Exact ids stay
+    // Observed; heuristic transcript matches downgrade to Heuristic/Ambiguous.
+    public InferenceEvidence Evidence { get; init; } = InferenceEvidence.Observed;
+
+    // True for a transcript-sourced observation that only enriches a canonical
+    // hook node and must never become a separate timeline node.
+    public bool EnrichmentOnly { get; init; }
+
+    // True when this observation must not contribute to session/turn summary
+    // counts (metadata rows, propagated snapshots, transcript duplicates).
+    public bool ExcludeFromSummary { get; init; }
+
+    // Skill lifecycle evidence carried by this observation, when any.
+    public SkillEvidence? Skill { get; init; }
+
+    // Typed usage measurements with explicit scope/behaviour so summaries never
+    // double-count snapshots.
+    public IReadOnlyList<UsageMeasurement> UsageMeasurements { get; init; } = [];
 }

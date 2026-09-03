@@ -46,6 +46,8 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
             ParticipatesInDerivedTurns = true
         };
 
+        b.TranscriptReferences = TranscriptReferences(payload);
+
         switch (name)
         {
             case "sessionStart":
@@ -225,6 +227,23 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
         }
 
         return b.Build();
+    }
+
+    // Copilot CLI exposes the session transcript on agentStop (and, when
+    // present, sessionEnd) via transcriptPath at
+    // %USERPROFILE%\.copilot\session-state\<sessionId>\events.jsonl.
+    private static IReadOnlyList<TranscriptReference> TranscriptReferences(JsonElement payload)
+    {
+        if (RuntimeJson.String(payload, "transcriptPath") is not string path)
+        {
+            return [];
+        }
+
+        return [new TranscriptReference(
+            string.Empty,
+            path,
+            TranscriptFileRole.Main,
+            DialectIds.CopilotCliTranscript)];
     }
 
     // Marks an interpretation as an MCP call. The server name is only attached

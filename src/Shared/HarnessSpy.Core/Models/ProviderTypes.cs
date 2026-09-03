@@ -29,7 +29,12 @@ public enum ObservationSourceKind
     // keep replaying correctly.
     ProtocolStream,
     OpenTelemetry,
-    CloudApi
+    CloudApi,
+
+    // Provider-owned agent transcript JSONL (Cursor/Claude/Copilot CLI) tailed
+    // and durably captured as a secondary source. Appended last to keep the
+    // ordinals of persisted v2 captures stable.
+    TranscriptFile
 }
 
 public enum AgentRuntimeKind
