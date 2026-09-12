@@ -1,10 +1,11 @@
 # HarnessSpy
 
-HarnessSpy is a .NET 10 Windows solution for observing agent hook activity from
-Cursor, Claude Code, GitHub Copilot CLI, and VS Code agent hooks.
+HarnessSpy is a .NET 10 Windows solution for observing agent hook activity and
+browsing file-backed local session history from Cursor, Claude Code, GitHub
+Copilot CLI, and VS Code agent hooks.
 
 The implementation is independent from the reference POC under
-`..\CursorSpy\POC`. It does not reference or modify that tree.
+[`../POC`](../POC). It does not reference or modify that tree.
 
 ## Projects
 
@@ -22,24 +23,57 @@ The implementation is independent from the reference POC under
 - `Shared/HarnessSpy.Wpf`: the shared workspace/session/turn tree, summaries,
   search, inspector, replay, deletion, and application host.
 - `Apps/*Spy.App`: three thin WPF composition roots.
+- `Apps/SessionViewer`: file-backed Cursor, Claude Code, and Copilot CLI
+  history grouped by workspace, with manual refresh and filesystem watching.
+  It does not require hooks or start provider SDK runtimes while refreshing.
 - `Hooks/*Spy.Hook`: three short-lived fail-open hook executables.
 - `Tests/HarnessSpy.Tests`: parity, provider, replay, pipe, process, and future
   agent-contract tests.
 
 ## Build and test
 
+From the repository root:
+
 ```powershell
-dotnet build C:\dev\research\AI\HarnessSpy\src\HarnessSpy.sln
-dotnet test C:\dev\research\AI\HarnessSpy\src\HarnessSpy.sln
+dotnet build src/HarnessSpy.sln
+dotnet test src/HarnessSpy.sln
 ```
 
 Run one viewer before invoking its hook:
 
 ```powershell
-dotnet run --project C:\dev\research\AI\HarnessSpy\src\Apps\CursorSpy.App
-dotnet run --project C:\dev\research\AI\HarnessSpy\src\Apps\ClaudeSpy.App
-dotnet run --project C:\dev\research\AI\HarnessSpy\src\Apps\CopilotSpy.App
+dotnet run --project src/Apps/CursorSpy.App
+dotnet run --project src/Apps/ClaudeSpy.App
+dotnet run --project src/Apps/CopilotSpy.App
 ```
+
+Run the passive local-history viewer independently of the hook applications:
+
+```powershell
+dotnet run --project src/Apps/SessionViewer
+```
+
+SessionViewer reads provider-owned files directly:
+
+- Cursor transcript JSONL and read-only Desktop `state.vscdb`
+  ([source and reconstruction details](../docs/session_cursor.md)).
+- Claude Code project, index, recovery, and subagent files
+  ([source and reconstruction details](../docs/session_claude.md)).
+- Copilot CLI `events.jsonl` and `workspace.yaml`, with legacy JSONL fallback
+  ([source and reconstruction details](../docs/session_copilot.md)).
+
+It also discovers provider plan files (`%USERPROFILE%\.cursor\plans\*.plan.md`,
+`%USERPROFILE%\.claude\plans\*.md`, and Copilot `session-state\<id>\plan.md`) and
+binds them to the session and turn that created them only on explicit path,
+explicit session directory, or a unique structured-content match. Plans that
+cannot be safely bound appear under a top-level **Orphan Plans** root grouped by
+provider then workspace. Each plan node shows a stateless count of distinct,
+source-observed content updates (the count is what the current provider files and
+transcripts expose, not a guaranteed lifetime history), with a `partial` marker
+when an edit is proven but its resulting body is opaque.
+
+It watches those stores for changes and also provides a manual Refresh action.
+Session activation is always user-triggered and separate from catalog refresh.
 
 The viewers use separate current-user-only pipes:
 

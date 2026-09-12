@@ -191,11 +191,19 @@ public sealed class TreeNodeViewModel : ObservableObject
     public bool IsPermissionDenied =>
         Observation?.Interpretation.Role == ObservationRole.PermissionDenied;
 
+    // A node carries skill evidence when a skill was read, invoked, or attached:
+    // Claude's "Skill" tool or a SKILL.md read (SkillName), and Cursor's
+    // manually-attached skill (Interpretation.Skill). Keyed on evidence, not
+    // event type, so the hint is uniform across providers.
+    public bool IsSkill =>
+        Observation?.SkillName is not null ||
+        Observation?.Interpretation.Skill is not null;
+
     // Bold coloured node labels (blue/purple/orange/green/red) need a light
     // foreground on the selection highlight so they stay readable when selected.
     public bool UsesLightForegroundWhenSelected =>
         IsAgentThought || IsParallelWave || IsToolBatchGroup || IsStop || IsCompaction ||
-        IsPermission || IsPermissionDenied || IsTranscriptSourced;
+        IsPermission || IsPermissionDenied || IsTranscriptSourced || IsSkill;
 
     // The full assistant/thinking text, shown as a hover tooltip. The engine
     // decides which observations expose hover text (assistant/thinking output).

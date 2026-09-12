@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Shared\HarnessSpy.Core\HarnessSpy.Core.csproj" />
+    <ProjectReference Include="..\..\Shared\HarnessSpy.Wpf\HarnessSpy.Wpf.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <ApplicationIcon>SessionViewer.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="SessionViewer.png"
+              Link="Assets\SessionViewer.png" />
+    <Resource Include="Folder32.png"
+              Link="Assets\Folder32.png" />
+    <Resource Include="Folder256.png"
+              Link="Assets\Folder256.png" />
+    <Resource Include="..\CursorSpy.App\CursorSpy.png"
+              Link="Assets\Cursor.png" />
+    <Resource Include="..\ClaudeSpy.App\ClaudeSpy.png"
+              Link="Assets\Claude.png" />
+    <Resource Include="..\CopilotSpy.App\CopilotSpy.png"
+              Link="Assets\Copilot.png" />
+    <Resource Include="..\CursorSpy.App\CursorSpy.ico"
+              Link="Assets\Cursor.ico" />
+    <Resource Include="..\ClaudeSpy.App\ClaudeSpy.ico"
+              Link="Assets\Claude.ico" />
+    <Resource Include="..\CopilotSpy.App\CopilotSpy.ico"
+              Link="Assets\Copilot.ico" />
+  </ItemGroup>
+
+</Project>

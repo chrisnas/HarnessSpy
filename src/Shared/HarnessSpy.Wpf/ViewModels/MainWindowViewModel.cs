@@ -47,6 +47,7 @@ public sealed class MainWindowViewModel : ObservableObject
     private IReadOnlyList<PayloadField> _selectedFields = [];
     private TreeNodeViewModel? _selectedNode;
     private string _searchQuery = string.Empty;
+    private bool _searchHookNamesOnly;
     private string _searchStatus = string.Empty;
     private string _statusText = "Waiting for hook activity.";
     private bool _isLoadingReplay;
@@ -109,6 +110,21 @@ public sealed class MainWindowViewModel : ObservableObject
         set
         {
             if (SetProperty(ref _searchQuery, value))
+            {
+                ClearSearchMatch();
+            }
+        }
+    }
+
+    // When enabled, the Find box only matches each observation's hook event
+    // name (the payload's hook_event_name), ignoring field names, field values,
+    // and the raw payload.
+    public bool SearchHookNamesOnly
+    {
+        get => _searchHookNamesOnly;
+        set
+        {
+            if (SetProperty(ref _searchHookNamesOnly, value))
             {
                 ClearSearchMatch();
             }
@@ -1357,6 +1373,11 @@ public sealed class MainWindowViewModel : ObservableObject
             return null;
         }
 
+        if (SearchHookNamesOnly)
+        {
+            return FindNextHookNameMatch(nodes, previous);
+        }
+
         NodeSearchMatch? match = _currentSearchMatch is null
             ? FindFirstMatch(nodes, previous)
             : FindNextMatch(nodes, _currentSearchMatch, previous);
@@ -1371,6 +1392,88 @@ public sealed class MainWindowViewModel : ObservableObject
         SearchStatus = match.Node.Header;
         return match;
     }
+
+    // Cycles, in tree order, through the observations whose hook event name
+    // contains the query. Used when "hook names only" is enabled so the search
+    // never descends into field names, field values, or the raw payload.
+    private NodeSearchMatch? FindNextHookNameMatch(List<TreeNodeViewModel> nodes, bool previous)
+    {
+        List<TreeNodeViewModel> matches = nodes
+            .Where(node => HookNameContains(node, SearchQuery))
+            .ToList();
+        if (matches.Count == 0)
+        {
+            _currentSearchMatch = null;
+            SearchStatus = "No match.";
+            return null;
+        }
+
+        int currentIndex = _currentSearchMatch is null
+            ? -1
+            : matches.IndexOf(_currentSearchMatch.Node);
+
+        int nextIndex;
+        if (currentIndex >= 0)
+        {
+            nextIndex = previous
+                ? (currentIndex - 1 + matches.Count) % matches.Count
+                : (currentIndex + 1) % matches.Count;
+        }
+        else
+        {
+            nextIndex = FindNearestHookNameMatchIndex(nodes, matches, previous);
+        }
+
+        TreeNodeViewModel node = matches[nextIndex];
+        int hookNameIndex = node.Observation!.HookEventName
+            .IndexOf(SearchQuery, StringComparison.OrdinalIgnoreCase);
+        NodeSearchMatch match = new(
+            node,
+            NodeSearchTarget.NodeName,
+            0,
+            Math.Max(0, hookNameIndex),
+            SearchQuery.Length);
+        _currentSearchMatch = match;
+        SearchStatus = match.Node.Header;
+        return match;
+    }
+
+    // Picks the match nearest to the current selection so the first Find after
+    // a query change starts from where the user is, mirroring the full-payload
+    // search's start-from-selection behaviour.
+    private int FindNearestHookNameMatchIndex(
+        List<TreeNodeViewModel> nodes,
+        List<TreeNodeViewModel> matches,
+        bool previous)
+    {
+        int startIndex = GetSearchStartIndex(nodes, previous);
+        if (previous)
+        {
+            for (int index = matches.Count - 1; index >= 0; index--)
+            {
+                if (nodes.IndexOf(matches[index]) <= startIndex)
+                {
+                    return index;
+                }
+            }
+
+            return matches.Count - 1;
+        }
+
+        for (int index = 0; index < matches.Count; index++)
+        {
+            if (nodes.IndexOf(matches[index]) >= startIndex)
+            {
+                return index;
+            }
+        }
+
+        return 0;
+    }
+
+    private static bool HookNameContains(TreeNodeViewModel node, string query) =>
+        node.Observation?.HookEventName
+            .Contains(query, StringComparison.OrdinalIgnoreCase) == true;
 
     private NodeSearchMatch? FindFirstMatch(List<TreeNodeViewModel> nodes, bool previous)
     {

@@ -34,7 +34,8 @@ internal static class ToolClassifier
             "webfetch" or "websearch" or "web_fetch" or "web_search" =>
                 CanonicalToolKind.Web,
             "askuserquestion" or "ask_user" => CanonicalToolKind.UserInteraction,
-            "todowrite" or "update_todo" => CanonicalToolKind.Task,
+            "todowrite" or "update_todo" or "createplan" or "updateplan" =>
+                CanonicalToolKind.Task,
             _ => CanonicalToolKind.Unknown
         };
     }

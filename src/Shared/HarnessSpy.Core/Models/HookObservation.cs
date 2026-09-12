@@ -198,7 +198,9 @@ public sealed class HookObservation
         ? Interpretation.TargetFilePaths
         : TargetFilePath is string path ? [path] : [];
 
-    public string? SkillName => TryGetSkillName(TargetFilePath);
+    public string? SkillName =>
+        TryGetSkillName(TargetFilePath) ??
+        TryGetInvokedSkillName(ToolName, Payload);
 
     public IReadOnlyList<string> SlashCommands => TryGetSlashCommands(PromptText);
 
@@ -555,6 +557,24 @@ public sealed class HookObservation
         string? directory = Path.GetDirectoryName(filePath.Replace('/', Path.DirectorySeparatorChar));
         string? name = Path.GetFileName(directory);
         return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+
+    // A skill invocation is the authoritative signal that a skill actually ran,
+    // independent of any SKILL.md file read. Claude Code surfaces it as the
+    // "Skill" tool whose arguments name the activated skill (tool_name == "Skill"
+    // with tool_input.skill == "<name>"). Live hooks nest the arguments under
+    // "tool_input"; a transcript-sourced tool_use block uses "input".
+    public static string? TryGetInvokedSkillName(string? toolName, JsonElement payload)
+    {
+        if (!string.Equals(toolName, "Skill", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        string? skill =
+            RuntimeJson.ToolInputString(payload, "tool_input", "skill", "skillName", "skill_name") ??
+            RuntimeJson.ToolInputString(payload, "input", "skill", "skillName", "skill_name");
+        return string.IsNullOrWhiteSpace(skill) ? null : skill.Trim();
     }
 
     public static IReadOnlyList<string> TryGetSlashCommands(string? promptText)

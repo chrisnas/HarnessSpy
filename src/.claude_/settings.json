@@ -1,0 +1,541 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "HARNESS_SPY_HOST": "claude-code",
+    "HARNESS_SPY_RUNTIME_ID": "claude-code"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "SessionStart",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "SessionStart"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Setup": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "Setup",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "Setup"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe", 
+            "args": [
+              "--event",
+              "UserPromptSubmit",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "UserPromptSubmit"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "UserPromptExpansion",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "UserPromptExpansion"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PreToolUse",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PreToolUse"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PermissionRequest",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PermissionRequest"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PermissionDenied",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PermissionDenied"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostToolUse",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PostToolUse"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostToolUseFailure",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PostToolUseFailure"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostToolBatch",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PostToolBatch"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "Notification",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "Notification"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "SubagentStart",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "SubagentStart"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "SubagentStop",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "SubagentStop"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "TaskCreated",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "TaskCreated"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "TaskCompleted",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "TaskCompleted"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "Stop",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "Stop"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "StopFailure",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "StopFailure"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "TeammateIdle",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "TeammateIdle"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "InstructionsLoaded",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "InstructionsLoaded"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "ConfigChange",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "ConfigChange"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "CwdChanged",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "CwdChanged"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "DirectoryAdded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "DirectoryAdded",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "DirectoryAdded"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "WorktreeRemove",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "WorktreeRemove"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PreCompact",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PreCompact"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostCompact",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PostCompact"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "SessionEnd",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "SessionEnd"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreModelSwitch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PreModelSwitch",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PreModelSwitch"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\github\\chrisnas\\HarnessSpy\\src\\Hooks\\ClaudeSpy.Hook\\bin\\Release\\net10.0\\ClaudeSpy.Hook.exe",
+            "args": [
+              "--event",
+              "PostModelSwitch",
+              "--source",
+              "claude-safe",
+              "--hook",
+              "PostModelSwitch"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
