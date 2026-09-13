@@ -401,6 +401,11 @@
                                 <DataTrigger Binding="{Binding IsAgentResponse}" Value="True">
                                     <Setter Property="FontWeight" Value="Bold" />
                                 </DataTrigger>
+                                <DataTrigger Binding="{Binding IsSkill}" Value="True">
+                                    <Setter Property="FontStyle" Value="Italic" />
+                                    <Setter Property="FontWeight" Value="Bold" />
+                                    <Setter Property="Foreground" Value="#3730A3" />
+                                </DataTrigger>
                                 <DataTrigger Binding="{Binding IsStop}" Value="True">
                                     <Setter Property="Foreground" Value="#E67E22" />
                                 </DataTrigger>
@@ -525,6 +530,10 @@
                                 Click="FindNext_Click"
                                 Content="Next" />
                     </Grid>
+                    <CheckBox Margin="0,0,0,8"
+                              VerticalAlignment="Center"
+                              Content="Hook names only"
+                              IsChecked="{Binding SearchHookNamesOnly}" />
                     <ProgressBar Height="4"
                                  Margin="0,0,0,6"
                                  IsIndeterminate="True"

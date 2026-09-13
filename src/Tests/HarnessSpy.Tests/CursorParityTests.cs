@@ -1391,6 +1391,37 @@ public sealed class NodeSummaryTests
     }
 
     [Theory]
+    // Live-hook shape: PreToolUse with tool_name=Skill and tool_input.skill.
+    [InlineData(
+        """{"tool_name":"Skill","tool_input":{"skill":"dotnet-memory-analysis","args":"look for leaks"}}""",
+        "Skill",
+        "dotnet-memory-analysis")]
+    // tool_input can arrive as a JSON-encoded string.
+    [InlineData(
+        """{"tool_name":"Skill","tool_input":"{\"skill\":\"windbg-bridge\"}"}""",
+        "Skill",
+        "windbg-bridge")]
+    // Transcript-sourced tool_use block nests the arguments under "input".
+    [InlineData(
+        """{"tool_name":"Skill","input":{"skill":"canvas"}}""",
+        "Skill",
+        "canvas")]
+    // A different tool that merely happens to carry a skill argument is ignored.
+    [InlineData("""{"tool_name":"Read","tool_input":{"skill":"canvas"}}""", "Read", null)]
+    // The Skill tool with no skill argument yields nothing.
+    [InlineData("""{"tool_name":"Skill","tool_input":{"args":"x"}}""", "Skill", null)]
+    public void TryGetInvokedSkillNameReadsSkillTool(
+        string payloadJson,
+        string toolName,
+        string? expected)
+    {
+        using JsonDocument document = JsonDocument.Parse(payloadJson);
+        Assert.Equal(
+            expected,
+            HookObservation.TryGetInvokedSkillName(toolName, document.RootElement));
+    }
+
+    [Theory]
     [InlineData("/dotnet-memory-analysis look at C:\\dump for leaks", "/dotnet-memory-analysis")]
     [InlineData("  /loop 5m do the thing", "/loop")]
     [InlineData("/split-to-prs", "/split-to-prs")]
@@ -1748,6 +1779,69 @@ public sealed class NodeSummaryTests
         NodeSearchMatch result = Assert.IsType<NodeSearchMatch>(match);
         Assert.Same(compactNode, result.Node);
         Assert.Equal(NodeSearchTarget.NodeName, result.Target);
+    }
+
+    [Fact]
+    public void FindNextHookNamesOnlyMatchesHookNameAndIgnoresFieldsAndHeaderDetail()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"sessionStart","conversation_id":"conv-1","workspace_roots":["C:\\Repo"]}"""));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeSubmitPrompt","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"prompt":"hello needle"}"""));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"preCompact","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"trigger":"manual"}"""));
+
+        TreeNodeViewModel turn = Assert.Single(
+            Assert.Single(Assert.Single(viewModel.Roots).Children).Children,
+            child => child.Kind == TreeNodeKind.Generation);
+        TreeNodeViewModel compactNode = turn.Children[1];
+
+        viewModel.SearchHookNamesOnly = true;
+
+        // The hook name itself matches, as a node-name hit.
+        viewModel.SearchQuery = "preCompact";
+        NodeSearchMatch result = Assert.IsType<NodeSearchMatch>(
+            viewModel.FindNext(previous: false));
+        Assert.Same(compactNode, result.Node);
+        Assert.Equal(NodeSearchTarget.NodeName, result.Target);
+
+        // A field value ("needle" in the prompt) is no longer searched.
+        viewModel.SearchQuery = "needle";
+        Assert.Null(viewModel.FindNext(previous: false));
+
+        // Header detail derived from the payload ("manual" trigger) is skipped
+        // too, since it is not part of the hook name.
+        viewModel.SearchQuery = "manual";
+        Assert.Null(viewModel.FindNext(previous: false));
+    }
+
+    [Fact]
+    public void FindNextHookNamesOnlyCyclesThroughMatchingHooks()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"sessionStart","conversation_id":"conv-1","workspace_roots":["C:\\Repo"]}"""));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeSubmitPrompt","conversation_id":"conv-1","generation_id":"gen-1","workspace_roots":["C:\\Repo"],"prompt":"one"}"""));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"beforeSubmitPrompt","conversation_id":"conv-1","generation_id":"gen-2","workspace_roots":["C:\\Repo"],"prompt":"two"}"""));
+
+        TreeNodeViewModel session = Assert.Single(Assert.Single(viewModel.Roots).Children);
+        TreeNodeViewModel turn1Prompt = Assert
+            .Single(session.Children, child => child.TurnNumber == 1)
+            .Children[0];
+        TreeNodeViewModel turn2Prompt = Assert
+            .Single(session.Children, child => child.TurnNumber == 2)
+            .Children[0];
+
+        viewModel.SearchHookNamesOnly = true;
+        viewModel.SearchQuery = "beforeSubmitPrompt";
+
+        Assert.Same(turn1Prompt, viewModel.FindNext(previous: false)?.Node);
+        Assert.Same(turn2Prompt, viewModel.FindNext(previous: false)?.Node);
+        Assert.Same(turn1Prompt, viewModel.FindNext(previous: false)?.Node);
+        Assert.Same(turn2Prompt, viewModel.FindNext(previous: true)?.Node);
     }
 
     private static HookObservation ParsePayload(string payloadJson, string observedAtUtc = "2026-08-20T12:00:00Z")

@@ -118,6 +118,8 @@ public sealed class CountedDurationRow
 
     public string CountText => $"\u00d7{Count}";
 
+    public bool HasDuration => DurationMs > 0;
+
     public string DurationText =>
         DurationMs > 0
             ? HookObservation.FormatDuration(TimeSpan.FromMilliseconds(DurationMs))

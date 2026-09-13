@@ -1,0 +1,9 @@
+id: copilot-session
+cwd: C:\repo
+git_root: C:\repo
+repository: chrisnas/HarnessSpy
+branch: main
+name: Inspect two files
+client_name: github/cli
+created_at: 2026-09-05T08:00:00Z
+updated_at: 2026-09-05T08:00:08Z

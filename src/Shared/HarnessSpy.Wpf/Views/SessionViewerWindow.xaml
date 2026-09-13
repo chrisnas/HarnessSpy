@@ -1,0 +1,968 @@
+<Window x:Class="HarnessSpy.Wpf.Views.SessionViewerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:models="clr-namespace:HarnessSpy.Core.Models;assembly=HarnessSpy.Core"
+        xmlns:viewModels="clr-namespace:HarnessSpy.Wpf.ViewModels"
+        xmlns:converters="clr-namespace:HarnessSpy.Wpf.Converters"
+        mc:Ignorable="d"
+        Title="SessionViewer"
+        Height="780"
+        Width="1280"
+        MinHeight="560"
+        MinWidth="900"
+        Background="White"
+        Foreground="#24292F"
+        WindowStartupLocation="CenterScreen"
+        Icon="pack://application:,,,/SessionViewer;component/Assets/SessionViewer.png"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+        <converters:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter" />
+
+        <DrawingImage x:Key="PlanIconImage">
+            <DrawingImage.Drawing>
+                <DrawingGroup>
+                    <GeometryDrawing Brush="#8250DF"
+                                     Geometry="M4,1 L11,1 L14,4 L14,19 L4,19 Z" />
+                    <GeometryDrawing Brush="#DAD2F5"
+                                     Geometry="M11,1 L11,4 L14,4 Z" />
+                    <GeometryDrawing Brush="White">
+                        <GeometryDrawing.Geometry>
+                            <GeometryGroup>
+                                <RectangleGeometry Rect="6,7 6,1.4" />
+                                <RectangleGeometry Rect="6,10 6,1.4" />
+                                <RectangleGeometry Rect="6,13 4,1.4" />
+                            </GeometryGroup>
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                </DrawingGroup>
+            </DrawingImage.Drawing>
+        </DrawingImage>
+
+        <Style x:Key="SectionHeaderStyle" TargetType="TextBlock">
+            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#24292F" />
+        </Style>
+
+        <DataTemplate x:Key="KpiChipTemplate" DataType="{x:Type viewModels:KpiItem}">
+            <Border MinWidth="88"
+                    Margin="0,0,8,8"
+                    Padding="10,6"
+                    CornerRadius="4"
+                    BorderThickness="1">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="#F6F8FA" />
+                        <Setter Property="BorderBrush" Value="#D0D7DE" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                <Setter Property="Background" Value="#FFEBE9" />
+                                <Setter Property="BorderBrush" Value="#CF222E" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel>
+                    <TextBlock FontSize="11"
+                               Foreground="#57606A"
+                               Text="{Binding Label}" />
+                    <TextBlock FontSize="15"
+                               FontWeight="SemiBold"
+                               TextWrapping="Wrap"
+                               Text="{Binding Value}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                        <Setter Property="Foreground" Value="#CF222E" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <Style x:Key="SummarySectionHeader" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+
+        <DataTemplate x:Key="CountedDurationRowTemplate" DataType="{x:Type viewModels:CountedDurationRow}">
+            <Grid Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="44" />
+                    <ColumnDefinition Width="108" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="1"
+                           Margin="8,0,8,0"
+                           Foreground="#57606A"
+                           Text="{Binding CountText}"
+                           TextAlignment="Right" />
+                <TextBlock Grid.Column="2"
+                           Foreground="#57606A"
+                           Text="{Binding DurationText}"
+                           TextAlignment="Right"
+                           Visibility="{Binding HasDuration, Converter={StaticResource BooleanToVisibilityConverter}}" />
+            </Grid>
+        </DataTemplate>
+
+        <Style x:Key="SummaryRowsItemsControl" TargetType="ItemsControl">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="ItemTemplate" Value="{StaticResource CountedDurationRowTemplate}" />
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="ContentPresenter">
+                        <Setter Property="HorizontalAlignment" Value="Stretch" />
+                    </Style>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <DataTemplate x:Key="NodeSummaryTooltipTemplate">
+            <StackPanel MinWidth="320">
+                <ItemsControl ItemTemplate="{StaticResource KpiChipTemplate}"
+                              ItemsSource="{Binding Kpis}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                </ItemsControl>
+
+                <StackPanel Margin="0,4,0,0"
+                            Visibility="{Binding HasSkills, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Skills" />
+                    <ItemsControl ItemsSource="{Binding Skills}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Margin="0,0,6,4"
+                                        Padding="8,2"
+                                        Background="#EEF2FF"
+                                        BorderBrush="#C7D2FE"
+                                        BorderThickness="1"
+                                        CornerRadius="10">
+                                    <TextBlock FontSize="12"
+                                               Foreground="#3730A3"
+                                               Text="{Binding}" />
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasCommands, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Commands" />
+                    <ItemsControl ItemsSource="{Binding Commands}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Margin="0,0,6,4"
+                                        Padding="8,2"
+                                        Background="#ECFDF5"
+                                        BorderBrush="#A7F3D0"
+                                        BorderThickness="1"
+                                        CornerRadius="10">
+                                    <TextBlock FontSize="12"
+                                               FontFamily="Consolas"
+                                               Foreground="#065F46"
+                                               Text="{Binding}" />
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasThoughts, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Agent thoughts" />
+                    <ItemsControl Style="{StaticResource SummaryRowsItemsControl}"
+                                  ItemsSource="{Binding Thoughts}" />
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasMcp, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="MCP" />
+                    <ItemsControl Style="{StaticResource SummaryRowsItemsControl}"
+                                  ItemsSource="{Binding McpCalls}" />
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasTools, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tools" />
+                    <ItemsControl Style="{StaticResource SummaryRowsItemsControl}"
+                                  ItemsSource="{Binding Tools}" />
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Orientation="Horizontal"
+                            Visibility="{Binding HasCompactions, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Compactions" />
+                    <TextBlock Margin="8,0,0,0"
+                               Foreground="#57606A"
+                               Text="{Binding CompactionText}" />
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasTokens, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tokens" />
+                    <TextBlock Text="{Binding TokenLine}" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasReadFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File reads" />
+                    <ItemsControl ItemsSource="{Binding ReadFiles}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding FileName}"
+                                           ToolTip="{Binding FullPath}"
+                                           TextTrimming="CharacterEllipsis" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasWrittenFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File writes" />
+                    <ItemsControl ItemsSource="{Binding WrittenFiles}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding FileName}"
+                                           ToolTip="{Binding FullPath}"
+                                           TextTrimming="CharacterEllipsis" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasDeletedFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File deletes" />
+                    <ItemsControl ItemsSource="{Binding DeletedFiles}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding FileName}"
+                                           ToolTip="{Binding FullPath}"
+                                           TextTrimming="CharacterEllipsis" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasSubagents, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Subagents" />
+                    <ItemsControl ItemsSource="{Binding Subagents}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type viewModels:SubagentSummary}">
+                                <StackPanel Margin="0,0,0,6">
+                                    <TextBlock Text="{Binding Header}" />
+                                    <TextBlock Foreground="#57606A"
+                                               Text="{Binding TaskPreview}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding HasTaskPreview, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </StackPanel>
+        </DataTemplate>
+
+        <Style x:Key="InspectorGridStyle" TargetType="DataGrid">
+            <Setter Property="AutoGenerateColumns" Value="False" />
+            <Setter Property="BorderBrush" Value="#D0D7DE" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CanUserAddRows" Value="False" />
+            <Setter Property="CanUserDeleteRows" Value="False" />
+            <Setter Property="CanUserReorderColumns" Value="False" />
+            <Setter Property="CanUserResizeRows" Value="False" />
+            <Setter Property="AlternatingRowBackground" Value="#F6F8FA" />
+            <Setter Property="RowBackground" Value="White" />
+            <Setter Property="GridLinesVisibility" Value="None" />
+            <Setter Property="HeadersVisibility" Value="Column" />
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="RowHeaderWidth" Value="0" />
+            <Setter Property="SelectionMode" Value="Single" />
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+        </Style>
+
+        <HierarchicalDataTemplate DataType="{x:Type viewModels:SessionTreeNodeViewModel}"
+                                  ItemsSource="{Binding Children}">
+            <Grid Background="Transparent"
+                  ToolTipService.IsEnabled="{Binding HasSimpleTooltip}"
+                  ToolTipService.ShowDuration="60000"
+                  ToolTipService.InitialShowDelay="350">
+                <Grid.ToolTip>
+                    <ToolTip MaxWidth="600">
+                        <TextBlock MaxWidth="560"
+                                   Text="{Binding HoverText}"
+                                   TextWrapping="Wrap" />
+                    </ToolTip>
+                </Grid.ToolTip>
+
+                <!-- Interactive, scrollable summary popup for session and turn
+                     nodes, mirroring the xxxSpy dashboard hover: the pointer can
+                     move onto it and use the inner scroll bar because it is a
+                     Popup, not a self-dismissing ToolTip. -->
+                <Popup Placement="Mouse"
+                       PlacementTarget="{Binding ElementName=DashboardRowPanel}"
+                       AllowsTransparency="True"
+                       PopupAnimation="Fade"
+                       StaysOpen="True">
+                    <Border MaxWidth="560"
+                            Padding="10"
+                            Background="White"
+                            BorderBrush="#D0D7DE"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            SnapsToDevicePixels="True"
+                            TextElement.Foreground="#24292F"
+                            MouseEnter="DashboardContent_MouseEnter"
+                            MouseLeave="DashboardContent_MouseLeave">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8"
+                                              Opacity="0.3"
+                                              ShadowDepth="2"
+                                              Color="#000000" />
+                        </Border.Effect>
+                        <ScrollViewer MinWidth="360"
+                                      MaxHeight="560"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto">
+                            <ContentControl Content="{Binding NodeSummary}"
+                                            ContentTemplate="{StaticResource NodeSummaryTooltipTemplate}" />
+                        </ScrollViewer>
+                    </Border>
+                </Popup>
+
+                <StackPanel x:Name="DashboardRowPanel"
+                            Orientation="Horizontal"
+                            Background="Transparent"
+                            MouseEnter="DashboardRow_MouseEnter"
+                            MouseLeave="DashboardRow_MouseLeave">
+                    <Image Width="16"
+                           Height="16"
+                           Margin="0,0,6,0"
+                           VerticalAlignment="Center">
+                        <Image.Style>
+                            <Style TargetType="Image">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSession}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsFolder}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsWorkspace}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.Cursor}">
+                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Cursor.png" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.ClaudeCode}">
+                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Claude.png" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.GitHubCopilot}">
+                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Copilot.png" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsOrphanPlansRoot}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsPlanGroup}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsPlan}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Setter Property="Source" Value="{StaticResource PlanIconImage}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Image.Style>
+                    </Image>
+
+                    <TextBlock Margin="0,0,4,0"
+                               FontWeight="Bold"
+                               Text="{Binding HeaderPrefix}"
+                               VerticalAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="#57606A" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HeaderPrefix}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsParallelGroup}" Value="True">
+                                        <Setter Property="Foreground" Value="#8250DF" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                        <Setter Property="Foreground" Value="White" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <TextBlock MaxWidth="520"
+                               Text="{Binding Header}"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsFolder}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground" Value="#57606A" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsWorkspace}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsOpenSession}" Value="True">
+                                        <Setter Property="FontWeight" Value="Bold" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsTurn}" Value="True">
+                                        <Setter Property="FontWeight" Value="Bold" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsThinking}" Value="True">
+                                        <Setter Property="Foreground" Value="#1F6FEB" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsResponse}" Value="True">
+                                        <Setter Property="Foreground" Value="#1F6FEB" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsMcp}" Value="True">
+                                        <Setter Property="Foreground" Value="#1A7F37" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsParallelGroup}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground" Value="#8250DF" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsPlan}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground" Value="#8250DF" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsPlanActivity}" Value="True">
+                                        <Setter Property="Foreground" Value="#8250DF" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsOrphanPlansRoot}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground" Value="#8250DF" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsPlanGroup}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground" Value="#57606A" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsSkill}" Value="True">
+                                        <Setter Property="FontStyle" Value="Italic" />
+                                        <Setter Property="FontWeight" Value="Bold" />
+                                        <Setter Property="Foreground" Value="#3730A3" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsFailure}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground" Value="#CF222E" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                        <Setter Property="Foreground" Value="White" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <Border Margin="8,0,0,0"
+                            Padding="6,1"
+                            CornerRadius="8"
+                            VerticalAlignment="Center">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Background" Value="#F6F8FA" />
+                                <Setter Property="BorderBrush" Value="#D0D7DE" />
+                                <Setter Property="BorderThickness" Value="1" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSession}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsOpenSession}" Value="True">
+                                        <Setter Property="Background" Value="#DAFBE1" />
+                                        <Setter Property="BorderBrush" Value="#2DA44E" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBlock FontSize="10"
+                                   FontWeight="SemiBold">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Text" Value="Closed" />
+                                    <Setter Property="Foreground" Value="#57606A" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsOpenSession}" Value="True">
+                                            <Setter Property="Text" Value="Open" />
+                                            <Setter Property="Foreground" Value="#1A7F37" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Border>
+
+                    <TextBlock Margin="8,0,0,0"
+                               FontStyle="Italic"
+                               Text="{Binding Summary}"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="#57606A" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Summary}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                        <Setter Property="Foreground" Value="White" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
+        </HierarchicalDataTemplate>
+
+        <Style TargetType="{x:Type TreeViewItem}">
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+            <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+            <Setter Property="Padding" Value="1" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="500" MinWidth="360" />
+            <ColumnDefinition Width="5" />
+            <ColumnDefinition Width="*" MinWidth="420" />
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0"
+                BorderBrush="#D0D7DE"
+                BorderThickness="1"
+                CornerRadius="4">
+            <DockPanel>
+                <Grid DockPanel.Dock="Top" Margin="10,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               VerticalAlignment="Center"
+                               FontWeight="SemiBold"
+                               Text="Provider sessions" />
+                    <Grid Grid.Column="1"
+                          Margin="10,0,0,0"
+                          VerticalAlignment="Center">
+                        <ToggleButton x:Name="HarnessFilterToggle"
+                                      MinWidth="150"
+                                      Padding="8,4"
+                                      HorizontalContentAlignment="Stretch"
+                                      Background="White"
+                                      BorderBrush="#D0D7DE"
+                                      BorderThickness="1"
+                                      ToolTip="Choose which harnesses appear in the tree">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           Text="{Binding HarnessFilterSummary}" />
+                                <Path Grid.Column="1"
+                                      Margin="8,0,0,0"
+                                      VerticalAlignment="Center"
+                                      Data="M 0 0 L 4 4 L 8 0 Z"
+                                      Fill="#57606A" />
+                            </Grid>
+                        </ToggleButton>
+                        <Popup IsOpen="{Binding IsChecked, ElementName=HarnessFilterToggle, Mode=TwoWay}"
+                               PlacementTarget="{Binding ElementName=HarnessFilterToggle}"
+                               Placement="Bottom"
+                               StaysOpen="False"
+                               AllowsTransparency="True">
+                            <Border Margin="0,2,0,0"
+                                    MinWidth="150"
+                                    Padding="6"
+                                    Background="White"
+                                    BorderBrush="#D0D7DE"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    SnapsToDevicePixels="True">
+                                <ItemsControl ItemsSource="{Binding ProviderFilters}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <CheckBox Margin="4,3"
+                                                      Content="{Binding DisplayName}"
+                                                      IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <Button Grid.Column="3"
+                            MinWidth="82"
+                            Margin="8,0,0,0"
+                            Padding="10,4"
+                            Click="Refresh_Click"
+                            Content="Refresh">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="IsEnabled" Value="True" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsRefreshing}" Value="True">
+                                        <Setter Property="IsEnabled" Value="False" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </Grid>
+
+                <StackPanel DockPanel.Dock="Bottom" Margin="10,6,10,8">
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   Text="Find" />
+                        <TextBox x:Name="SearchTextBox"
+                                 Grid.Column="1"
+                                 Margin="0,0,8,0"
+                                 VerticalContentAlignment="Center"
+                                 KeyDown="SearchTextBox_KeyDown"
+                                 Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Grid.Column="2"
+                                MinWidth="72"
+                                Margin="0,0,6,0"
+                                Click="FindPrevious_Click"
+                                Content="Previous" />
+                        <Button Grid.Column="3"
+                                MinWidth="52"
+                                Click="FindNext_Click"
+                                Content="Next" />
+                    </Grid>
+
+                    <CheckBox Margin="0,0,0,8"
+                              VerticalAlignment="Center"
+                              Content="Hook names only"
+                              IsChecked="{Binding SearchHookNamesOnly}" />
+
+                    <ProgressBar Height="4"
+                                 Margin="0,0,0,6"
+                                 IsIndeterminate="True"
+                                 Visibility="{Binding IsRefreshing, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    <TextBlock Foreground="#57606A"
+                               Text="{Binding StatusText}"
+                               TextWrapping="Wrap" />
+                    <TextBlock Margin="0,3,0,0"
+                               FontSize="11"
+                               Foreground="#57606A"
+                               Text="{Binding SearchStatus}" />
+                    <Border Margin="0,6,0,0"
+                            Padding="8"
+                            Background="#FFF8C5"
+                            BorderBrush="#D4A72C"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Visibility="{Binding HasWarnings, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock MaxHeight="90"
+                                   Foreground="#633C01"
+                                   Text="{Binding WarningText}"
+                                   TextTrimming="CharacterEllipsis"
+                                   TextWrapping="Wrap"
+                                   ToolTip="{Binding WarningText}" />
+                    </Border>
+                </StackPanel>
+
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition x:Name="FavoritesRow" Height="0" MinHeight="0" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" MinHeight="80" />
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0"
+                               Visibility="{Binding HasFavorites, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock DockPanel.Dock="Top"
+                                   Margin="10,4,10,2"
+                                   FontWeight="SemiBold"
+                                   Foreground="#57606A"
+                                   Text="Favorites" />
+                        <TreeView x:Name="FavoritesTreeView"
+                                  Padding="4"
+                                  BorderThickness="0"
+                                  ContextMenuOpening="FavoritesTreeView_ContextMenuOpening"
+                                  ItemsSource="{Binding FavoriteRoots}"
+                                  SelectedItemChanged="TreeView_SelectedItemChanged">
+                            <TreeView.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem x:Name="OpenFavoriteMenuItem"
+                                              Header="Open Session"
+                                              Click="OpenSession_Click" />
+                                    <MenuItem Header="Remove from favorites"
+                                              Click="RemoveFromFavorites_Click" />
+                                </ContextMenu>
+                            </TreeView.ContextMenu>
+                        </TreeView>
+                    </DockPanel>
+
+                    <GridSplitter Grid.Row="1"
+                                  Height="5"
+                                  HorizontalAlignment="Stretch"
+                                  Background="#EEF1F4"
+                                  ResizeBehavior="PreviousAndNext"
+                                  ResizeDirection="Rows"
+                                  Visibility="{Binding HasFavorites, Converter={StaticResource BooleanToVisibilityConverter}}" />
+
+                    <TreeView x:Name="SessionTreeView"
+                              Grid.Row="2"
+                              Padding="4"
+                              BorderThickness="0"
+                              ContextMenuOpening="TreeView_ContextMenuOpening"
+                              ItemsSource="{Binding Roots}"
+                              SelectedItemChanged="TreeView_SelectedItemChanged">
+                        <TreeView.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem x:Name="OpenSessionMenuItem"
+                                          Header="Open Session"
+                                          Click="OpenSession_Click" />
+                                <MenuItem x:Name="GoToPlanMenuItem"
+                                          Header="Go to plan"
+                                          Click="GoToPlan_Click" />
+                                <MenuItem x:Name="AddToFavoritesMenuItem"
+                                          Header="Add to favorites"
+                                          Click="AddToFavorites_Click" />
+                            </ContextMenu>
+                        </TreeView.ContextMenu>
+                    </TreeView>
+                </Grid>
+            </DockPanel>
+        </Border>
+
+        <GridSplitter Grid.Column="1"
+                      Width="5"
+                      HorizontalAlignment="Stretch"
+                      Background="#EEF1F4" />
+
+        <Grid Grid.Column="2">
+            <Border Padding="28"
+                    BorderBrush="#D0D7DE"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Visibility="{Binding HasSelection, Converter={StaticResource InverseBooleanToVisibilityConverter}}">
+                <StackPanel HorizontalAlignment="Center"
+                            VerticalAlignment="Center">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               Foreground="#57606A"
+                               Text="Select a workspace, session, turn, event, or plan" />
+                    <TextBlock Margin="0,8,0,0"
+                               HorizontalAlignment="Center"
+                               Foreground="#8C959F"
+                               Text="Normalized fields, raw source, and provenance appear here." />
+                </StackPanel>
+            </Border>
+
+            <DockPanel Visibility="{Binding HasSelection, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <Border DockPanel.Dock="Top"
+                        Margin="0,0,0,10"
+                        Padding="12,10"
+                        Background="#F6F8FA"
+                        BorderBrush="#D0D7DE"
+                        BorderThickness="1"
+                        CornerRadius="4">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid Grid.Column="0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Image Grid.Column="0"
+                                   Width="28"
+                                   Height="28"
+                                   Margin="0,0,10,0"
+                                   VerticalAlignment="Center"
+                                   Source="pack://application:,,,/SessionViewer;component/Assets/Folder256.png"
+                                   Visibility="{Binding SelectedNode.IsWorkspace, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock FontSize="17"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding SelectedNode.Header}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Margin="0,3,0,0"
+                                           Foreground="#57606A"
+                                           Text="{Binding SelectedNode.Summary}" />
+                            </StackPanel>
+                        </Grid>
+                        <Button Grid.Column="1"
+                                MinWidth="100"
+                                Margin="12,0,0,0"
+                                Padding="10,4"
+                                Click="OpenSelectedSession_Click"
+                                Content="Open Session"
+                                IsEnabled="{Binding CanOpenSelectedSession}" />
+                    </Grid>
+                </Border>
+
+                <ItemsControl DockPanel.Dock="Top"
+                              Margin="0,0,0,2"
+                              ItemTemplate="{StaticResource KpiChipTemplate}"
+                              ItemsSource="{Binding SelectedNode.NodeSummary.Kpis}"
+                              Visibility="{Binding SelectedNode.HasNodeSummary, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                </ItemsControl>
+
+                <TabControl>
+                    <TabItem Header="Normalized details">
+                        <DataGrid Margin="8"
+                                  ItemsSource="{Binding SelectedNode.Details}"
+                                  Style="{StaticResource InspectorGridStyle}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Field"
+                                                    Binding="{Binding Name}"
+                                                    Width="190" />
+                                <DataGridTemplateColumn Header="Value" Width="*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Margin="4,2"
+                                                       Text="{Binding Value}"
+                                                       TextWrapping="Wrap" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </TabItem>
+
+                    <TabItem Header="Raw source">
+                        <Grid Margin="8">
+                            <TextBox AcceptsReturn="True"
+                                     AcceptsTab="True"
+                                     FontFamily="Consolas"
+                                     FontSize="13"
+                                     Foreground="#444C56"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     IsReadOnly="True"
+                                     Text="{Binding SelectedNode.RawSource, Mode=OneWay}"
+                                     TextWrapping="NoWrap"
+                                     VerticalScrollBarVisibility="Auto" />
+                            <TextBlock Margin="12"
+                                       Foreground="#8C959F"
+                                       IsHitTestVisible="False"
+                                       Text="No raw source is associated with this node."
+                                       Visibility="{Binding SelectedNode.HasRawSource, Converter={StaticResource InverseBooleanToVisibilityConverter}}" />
+                        </Grid>
+                    </TabItem>
+
+                    <TabItem Header="Plan revisions">
+                        <Grid Margin="8">
+                            <DataGrid ItemsSource="{Binding SelectedNode.Plan.Revisions}"
+                                      Style="{StaticResource InspectorGridStyle}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="#"
+                                                        Binding="{Binding Sequence}"
+                                                        Width="40" />
+                                    <DataGridTextColumn Header="Kind"
+                                                        Binding="{Binding Kind}"
+                                                        Width="90" />
+                                    <DataGridTextColumn Header="Captured (UTC)"
+                                                        Binding="{Binding CapturedAtUtc}"
+                                                        Width="170" />
+                                    <DataGridTextColumn Header="Materialized"
+                                                        Binding="{Binding IsMaterialized}"
+                                                        Width="90" />
+                                    <DataGridTextColumn Header="Content hash"
+                                                        Binding="{Binding NormalizedContentHash}"
+                                                        Width="*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock Margin="12"
+                                       Foreground="#8C959F"
+                                       IsHitTestVisible="False"
+                                       Text="Select a plan to see its observed revisions."
+                                       Visibility="{Binding SelectedNode.IsPlan, Converter={StaticResource InverseBooleanToVisibilityConverter}}" />
+                        </Grid>
+                    </TabItem>
+
+                    <TabItem Header="Provenance">
+                        <Grid Margin="8">
+                            <DataGrid ItemsSource="{Binding SelectedNode.Provenance}"
+                                      Style="{StaticResource InspectorGridStyle}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Field"
+                                                        Binding="{Binding Name}"
+                                                        Width="190" />
+                                    <DataGridTemplateColumn Header="Value" Width="*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Margin="4,2"
+                                                           FontFamily="Consolas"
+                                                           Text="{Binding Value}"
+                                                           TextWrapping="Wrap" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock Margin="12"
+                                       Foreground="#8C959F"
+                                       IsHitTestVisible="False"
+                                       Text="No source provenance is associated with this node."
+                                       Visibility="{Binding SelectedNode.HasProvenance, Converter={StaticResource InverseBooleanToVisibilityConverter}}" />
+                        </Grid>
+                    </TabItem>
+                </TabControl>
+            </DockPanel>
+        </Grid>
+    </Grid>
+</Window>

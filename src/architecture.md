@@ -80,8 +80,10 @@ chronological order.
 - Claude: `session_id` is the session key, `prompt_id` the exact turn key;
   events without `prompt_id` stay session-scoped. Tools pair by scoped
   `tool_use_id`; permissions attach by `tool_use_id`; subagents scope by
-  `agent_id`; batches use `PostToolBatch.tool_calls`. Requires Claude Code
-  `2.1.196+`.
+  `agent_id`; batches use `PostToolBatch.tool_calls`. A `Skill` tool call
+  (`tool_input.skill`, or `input.skill` in the transcript) is recognised as a
+  skill invocation, so skill usage is captured even when no `SKILL.md` file is
+  read. Requires Claude Code `2.1.196+`.
 - Copilot CLI: the configured event key is the native identity; native tool
   names are preserved; turns are derived (`userPromptSubmitted`..`agentStop`)
   with `userPromptTransformed` nested under its `userPromptSubmitted`. There is
@@ -120,6 +122,77 @@ chronological order.
   spawned the hook console app (`SpawningProcessId`/`SpawningProcessName`,
   resolved via `NtQueryInformationProcess`), alongside the environment
   allowlist above.
+
+## SessionViewer file-backed catalog
+
+`SessionViewer` is a separate WPF application for passive local history. It
+does not listen on a named pipe, require hook configuration, read HarnessSpy
+hook payloads, or activate an SDK runtime during refresh.
+
+```mermaid
+flowchart LR
+    CursorFiles[Cursor JSONL and SQLite] --> CatalogSources[ISessionCatalogSource]
+    ClaudeFiles[Claude project JSONL] --> CatalogSources
+    CopilotFiles[Copilot events and workspace] --> CatalogSources
+    CatalogSources --> Catalog[SessionCatalogCoordinator]
+    ProcessProbes[Read-only process probes] --> Catalog
+    FileWatchers[FileSystemWatcher and refresh] --> Catalog
+    Catalog --> Projector[Session tree projector]
+    Projector --> SessionUi[SessionViewer WPF tree and inspector]
+```
+
+The catalog stores provider-native session, turn, event, tool, and relationship
+identities with raw source provenance. `Observed`, `Corroborated`, `Derived`,
+`Heuristic`, `Opaque`, `Ambiguous`, and `Unavailable` remain distinct evidence
+states. Unknown records stay available in the inspector even when no semantic
+projection exists.
+
+Skill evidence is carried per node with its lifecycle stage (`Available`,
+`Attached`, `Loaded`, `Invoked`, `ExecutionCorroborated`) and source path, so an
+offered skill is never shown as one that ran. The shared tree renders any
+skill-bearing node in bold italic indigo as a lightweight, provider-neutral
+hint, keyed on evidence presence rather than a specific stage or event type.
+
+Plan artifacts are a parallel, provider-neutral catalog joined to the sessions.
+Each provider source emits unbound `SessionPlanArtifact` files plus turn-scoped
+`SessionPlanActivity` evidence in a `SessionPlanCatalogFragment`. After the
+session merger assigns final catalog IDs, `SessionPlanCatalogAssembler`
+reconstructs a stateless distinct-content revision timeline and binds each plan
+to a session/turn only on explicit path, explicit session directory, or a unique
+structured-content match; conflicting or absent evidence leaves the plan an
+orphan rather than guessing. Bound plans render under their session; unbound
+plans render under a top-level Orphan Plans root grouped by provider then
+workspace. Plan markdown changes are watched (`*.md`) and folded into the catalog
+fingerprint so a plan edit republishes the tree.
+
+Provider sources:
+
+- Cursor: current/legacy main and child transcript JSONL plus read-only Desktop
+  `state.vscdb`/WAL and workspace manifests
+  ([details](../docs/session_cursor.md)).
+- Claude Code: main/recovery project JSONL, nested subagent JSONL/metadata, and
+  optional `sessions-index.json`, honoring `CLAUDE_CONFIG_DIR`
+  ([details](../docs/session_claude.md)).
+- Copilot CLI: current `events.jsonl` + `workspace.yaml`, with legacy flat
+  JSONL fallback, honoring `COPILOT_HOME`
+  ([details](../docs/session_copilot.md)).
+
+The viewer uses direct files as its required source. Cursor has no suitable
+public .NET SDK for Desktop history; Claude's session SDK would require a
+Node/Python sidecar; and starting Copilot's .NET SDK runtime would violate the
+strict passive-refresh boundary. Optional SDK enrichers remain a separate
+future source kind.
+
+Cursor and Claude open state requires positive process/session evidence; file
+recency and deletion are never sufficient. Copilot's source projector also
+derives a provisional state from the order of `session.start`, `session.resume`,
+and `session.shutdown`. When process probes return any hints, the shared
+correlator replaces that provisional state with exact/unique-workspace process
+evidence or `Closed`. If every probe returns no hints, the current
+implementation leaves the Copilot event-tail state intact; consumers must not
+treat that fallback as proof that a terminal still exists. Watcher changes are
+debounced and backed by a periodic rescan because Windows filesystem
+notifications can be lost.
 
 ## Transcript source (implemented)
 

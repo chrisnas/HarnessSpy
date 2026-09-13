@@ -1,0 +1,4 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>inspect the project</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"thinking","thinking":"I should inspect two areas."},{"type":"tool_use","name":"Read","input":{"path":"C:/repo/a.cs"}},{"type":"tool_use","name":"Glob","input":{"glob_pattern":"**/*.cs"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"The project has two relevant areas."}]}}
+{"type":"turn_ended","status":"success"}

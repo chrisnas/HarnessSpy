@@ -27,6 +27,7 @@
   <ItemGroup>
     <None Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\**\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\**\*.yaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
