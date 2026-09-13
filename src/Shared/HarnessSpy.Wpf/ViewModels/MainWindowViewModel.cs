@@ -349,6 +349,9 @@ public sealed class MainWindowViewModel : ObservableObject
             case ObservationRole.PermissionRequest:
                 return TryNestPermissionRequest(observation, observationNode, generationNode);
 
+            case ObservationRole.Notification:
+                return TryNestPermissionNotification(observation, observationNode, generationNode);
+
             case ObservationRole.CompactionEnd:
                 return TryNestCompaction(observation, observationNode, generationNode);
 
@@ -530,8 +533,40 @@ public sealed class MainWindowViewModel : ObservableObject
         TreeNodeViewModel observationNode,
         TreeNodeViewModel generationNode)
     {
+        // Copilot CLI's permission name/shape diverges from its request, so it
+        // matches by shared signal rather than the tool-name + tool_input path
+        // Claude and Cursor use (whose permission and request names align).
         TreeNodeViewModel? preNode =
-            FindInFlightPreByPermissionSignature(generationNode, observation);
+            observation.Interpretation.MatchStrategy == ToolCallMatchStrategy.PermissionSignature
+                ? FindInFlightPreByCopilotSignature(generationNode, observation)
+                : FindInFlightPreByPermissionSignature(generationNode, observation);
+        if (preNode is null)
+        {
+            return false;
+        }
+
+        preNode.Children.Add(observationNode);
+        preNode.IsExpanded = true;
+        return true;
+    }
+
+    // A permission-prompt notification is raised while its tool request is still
+    // open and names the same call in free text ("Run command: <cmd>",
+    // "Edit file: <path>"), so it reads as a child of that request. Only the
+    // Copilot CLI marks its permission notifications for this signature match;
+    // other providers' notifications carry no match strategy and stay at turn
+    // level, exactly as before.
+    private bool TryNestPermissionNotification(
+        HookObservation observation,
+        TreeNodeViewModel observationNode,
+        TreeNodeViewModel generationNode)
+    {
+        if (observation.Interpretation.MatchStrategy != ToolCallMatchStrategy.PermissionSignature)
+        {
+            return false;
+        }
+
+        TreeNodeViewModel? preNode = FindInFlightPreByCopilotSignature(generationNode, observation);
         if (preNode is null)
         {
             return false;
@@ -834,6 +869,25 @@ public sealed class MainWindowViewModel : ObservableObject
             child => ToolCorrelationMatcher.ScoreGenericToolCall(
                 child.Observation!,
                 permissionObservation));
+    }
+
+    // Copilot CLI supplies no tool-use id and spells the same call differently
+    // across events, so a permission prompt / notification attaches to the
+    // in-flight request whose shared signal (target file, shell command, or
+    // canonical arguments) uniquely matches. A tie leaves the prompt a sibling
+    // rather than asserting a false relationship, mirroring the id-reuse handling.
+    private static TreeNodeViewModel? FindInFlightPreByCopilotSignature(
+        TreeNodeViewModel generationNode,
+        HookObservation reference)
+    {
+        List<TreeNodeViewModel> candidates =
+            EnumerateInFlightPreNodes(generationNode).ToList();
+
+        return SelectUniqueBest(
+            candidates,
+            child => ToolCorrelationMatcher.ScoreCopilotCallReference(
+                child.Observation!,
+                reference));
     }
 
     // Copilot CLI supplies no tool-use id, so a completion nests under the

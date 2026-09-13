@@ -130,6 +130,9 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.EventKind = CanonicalEventKind.PermissionRequested;
                 b.Direction = ObservationDirection.Input;
                 b.Tone = ObservationTone.Permission;
+                // No tool-use id and a divergent name/shape from the request, so
+                // it nests by shared signal rather than tool-name equality.
+                b.MatchStrategy = ToolCallMatchStrategy.PermissionSignature;
                 // The "<server>/<tool>" form here teaches the session its MCP
                 // split; keep the permission tone rather than the MCP tone.
                 ApplyMcp(b, _mcp.RegisterFromSlashName(sessionId, toolName), applyMcpTone: false);
@@ -141,10 +144,12 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.Role = ObservationRole.Notification;
                 b.EventKind = CanonicalEventKind.Notification;
                 // A permission prompt is a user-blocking approval request, so it
-                // is highlighted like the other permission events.
+                // is highlighted like the other permission events and attaches to
+                // the request it is asking about (by shared file/command signal).
                 if (RuntimeJson.String(payload, "notification_type") == "permission_prompt")
                 {
                     b.Tone = ObservationTone.Permission;
+                    b.MatchStrategy = ToolCallMatchStrategy.PermissionSignature;
                 }
 
                 // "Use MCP tool: <server>/<tool>" also teaches the session split.

@@ -151,7 +151,15 @@ public enum ToolCallMatchStrategy
     // Surfaces without a tool-use id (Copilot CLI) pair a tool completion to its
     // request by tool name and canonical arguments, falling back to arrival
     // order when several identical calls are in flight.
-    ToolSignature
+    ToolSignature,
+
+    // A permission prompt or permission-prompt notification on a surface without
+    // a tool-use id (Copilot CLI), whose tool name is spelled differently from
+    // the request ("server/tool" vs "server-tool", "edit" vs "apply_patch") and
+    // whose input arrives in a different shape ("toolInput"/message vs
+    // "toolArgs"). It attaches to the in-flight request name-agnostically, by the
+    // strongest signal they share: target file, shell command, or canonical args.
+    PermissionSignature
 }
 
 // The kind of inner execution/file hook, used only for summary categorisation.

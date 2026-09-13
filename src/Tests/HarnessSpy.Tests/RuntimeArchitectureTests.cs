@@ -79,6 +79,79 @@ public sealed class RuntimeArchitectureTests
     }
 
     [Fact]
+    public void CommittedCopilotVsCodeExampleMatchesVsCodeCatalog()
+    {
+        string vscode = File.ReadAllText(ConfigPath("Copilot", "vscode-hooks.example.json"));
+        Assert.Equal(
+            CopilotHookCatalog.VsCodeLocalEvents.OrderBy(x => x, StringComparer.Ordinal),
+            CopilotSettingsGenerator.ReadRegisteredEvents(vscode).OrderBy(x => x, StringComparer.Ordinal));
+        Assert.Contains(CopilotSettingsGenerator.ExecutablePlaceholder, vscode, StringComparison.Ordinal);
+        Assert.DoesNotContain("C:\\dev\\research", vscode, StringComparison.Ordinal);
+
+        // The committed example must match what the generator produces today.
+        Assert.Equal(
+            CopilotSettingsGenerator.GenerateVsCode(CopilotSettingsGenerator.ExecutablePlaceholder)
+                .ReplaceLineEndings("\n"),
+            vscode.ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void GenerateVsCodeUsesVsCodeSchemaAndRuntimeId()
+    {
+        string json = CopilotSettingsGenerator.GenerateVsCode(
+            CopilotSettingsGenerator.ExecutablePlaceholder);
+
+        // Exactly the eight PascalCase VS Code events, nothing renamed.
+        Assert.Equal(
+            CopilotHookCatalog.VsCodeLocalEvents.OrderBy(x => x, StringComparer.Ordinal),
+            CopilotSettingsGenerator.ReadRegisteredEvents(json).OrderBy(x => x, StringComparer.Ordinal));
+
+        // VS Code command schema: the cross-platform "command" field and
+        // "timeout" (seconds), never the CLI's "powershell"/"timeoutSec".
+        Assert.Contains("\"command\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"timeout\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("powershell", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("timeoutSec", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("copilot-cli-camel", json, StringComparison.Ordinal);
+
+        // VS Code runs the "command" value through PowerShell on Windows, so it
+        // must use the call operator + single-quoted path ("& '<exe>' ..."). A
+        // bare quoted path ("\"<exe>\" ...") is parsed as a string literal and
+        // never executes, so the hook silently never fires.
+        Assert.Contains(
+            "& '" + CopilotSettingsGenerator.ExecutablePlaceholder + "'",
+            json,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "\\\"" + CopilotSettingsGenerator.ExecutablePlaceholder,
+            json,
+            StringComparison.Ordinal);
+
+        // The authoritative routing key that sends these to the VS Code engine.
+        Assert.Contains("vscode-agent-hooks", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"HARNESS_SPY_RUNTIME_ID\": \"github-copilot\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void VsCodeProfileRuntimeIdRoutesToVsCodeEngine()
+    {
+        // The generated env id is what the detector uses (authoritative), so a
+        // VS Code profile must resolve to the VS Code Local surface under the
+        // shared Copilot provider profile.
+        HookRuntimeDetector detector = new();
+        using JsonDocument payload = JsonDocument.Parse(
+            """{"hook_event_name":"PreToolUse","session_id":"s1","tool_use_id":"t1"}""");
+
+        HookSurface detected = detector.Detect(
+            ProviderProfile.Copilot,
+            payload.RootElement,
+            new Dictionary<string, string?> { ["HARNESS_SPY_RUNTIME_ID"] = "vscode-agent-hooks" });
+
+        Assert.Equal(HookSurface.VsCodeAgentHooks, detected);
+        Assert.True(detector.IsAccepted(ProviderProfile.Copilot, detected));
+    }
+
+    [Fact]
     public void LateArrivingEventIsReinsertedInChronologicalOrder()
     {
         MainWindowViewModel viewModel = new();

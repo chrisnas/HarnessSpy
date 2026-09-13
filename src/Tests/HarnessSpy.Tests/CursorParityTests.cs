@@ -1406,6 +1406,16 @@ public sealed class NodeSummaryTests
         """{"tool_name":"Skill","input":{"skill":"canvas"}}""",
         "Skill",
         "canvas")]
+    // Copilot CLI shape: tool_name=skill (lowercase) with the id under toolArgs.
+    [InlineData(
+        """{"toolName":"skill","toolArgs":{"skill":"dotnet-memory-analysis"}}""",
+        "skill",
+        "dotnet-memory-analysis")]
+    // Copilot toolArgs can also arrive as a JSON-encoded string.
+    [InlineData(
+        """{"toolName":"skill","toolArgs":"{\"skill\":\"windbg-bridge\"}"}""",
+        "skill",
+        "windbg-bridge")]
     // A different tool that merely happens to carry a skill argument is ignored.
     [InlineData("""{"tool_name":"Read","tool_input":{"skill":"canvas"}}""", "Read", null)]
     // The Skill tool with no skill argument yields nothing.

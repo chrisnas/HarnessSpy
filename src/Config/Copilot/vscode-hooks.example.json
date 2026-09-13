@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event SessionStart --source vscode-local --hook SessionStart --runtime github-copilot --dialect vscode-local",
+        "cwd": ".",
+        "timeout": 5,
+        "env": {
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "vscode-agent-hooks"
+        }
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "command": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event UserPromptSubmit --source vscode-local --hook UserPromptSubmit --runtime github-copilot --dialect vscode-local",
+        "cwd": ".",
+        "timeout": 5,
+        "env": {
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "vscode-agent-hooks"
+        }
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event PreToolUse --source vscode-local --hook PreToolUse --runtime github-copilot --dialect vscode-local",
+        "cwd": ".",
+        "timeout": 5,
+        "env": {
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "vscode-agent-hooks"
+        }
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event PostToolUse --source vscode-local --hook PostToolUse --runtime github-copilot --dialect vscode-local",
+        "cwd": ".",
+        "timeout": 5,
+        "env": {
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "vscode-agent-hooks"
+        }
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "command": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event PreCompact --source vscode-local --hook PreCompact --runtime github-copilot --dialect vscode-local",
+        "cwd": ".",
+        "timeout": 5,
+        "env": {
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "vscode-agent-hooks"
+        }
+      }
+    ],
+    "SubagentStart": [
+      {
+        "type": "command",
+        "command": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event SubagentStart --source vscode-local --hook SubagentStart --runtime github-copilot --dialect vscode-local",
+        "cwd": ".",
+        "timeout": 5,
+        "env": {
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "vscode-agent-hooks"
+        }
+      }
+    ],
+    "SubagentStop": [
+      {
+        "type": "command",
+        "command": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event SubagentStop --source vscode-local --hook SubagentStop --runtime github-copilot --dialect vscode-local",
+        "cwd": ".",
+        "timeout": 5,
+        "env": {
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "vscode-agent-hooks"
+        }
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "& '<COPILOTSPY_HOOK_EXECUTABLE>' --event Stop --source vscode-local --hook Stop --runtime github-copilot --dialect vscode-local",
+        "cwd": ".",
+        "timeout": 5,
+        "env": {
+          "HARNESS_SPY_HOST": "github-copilot",
+          "HARNESS_SPY_RUNTIME_ID": "vscode-agent-hooks"
+        }
+      }
+    ]
+  }
+}

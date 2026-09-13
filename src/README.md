@@ -144,6 +144,25 @@ CLI hook events (version `1`). Regenerate it with the installer path:
 CopilotSpy.Hook.exe --generate-settings <out> <CopilotSpy.Hook.exe>
 ```
 
+`Config\Copilot\vscode-hooks.example.json` registers the eight VS Code Local
+Preview events (PascalCase). Regenerate it with:
+
+```powershell
+CopilotSpy.Hook.exe --generate-vs-settings <out> <CopilotSpy.Hook.exe>
+```
+
+The two profiles use different schemas and must not share a file or folder. The
+CLI profile uses camelCase events, the `powershell` command field, `timeoutSec`,
+and `HARNESS_SPY_RUNTIME_ID=github-copilot`. The VS Code profile uses PascalCase
+events, the cross-platform `command` field, `timeout`, and
+`HARNESS_SPY_RUNTIME_ID=vscode-agent-hooks` (the authoritative id that routes
+observations to the VS Code engine). Install the CLI file where the CLI reads it
+(`.github\hooks\` or `%USERPROFILE%\.copilot\hooks\`) and the VS Code file in a
+VS Code-only location such as `.vscode\hooks\`, registered through the
+`chat.hookFilesLocations` setting. Keeping the VS Code profile out of
+`.github\hooks\` prevents the CLI — which also reads that shared folder — from
+firing and mislabelling its PascalCase entries.
+
 Copilot CLI passes the configured event name and an explicit runtime/dialect id
 to the hook because native CLI payloads omit `hook_event_name`. The CLI can also
 emit a VS Code-compatible PascalCase/snake_case dialect; that dialect keeps CLI

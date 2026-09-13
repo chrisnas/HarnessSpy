@@ -183,6 +183,35 @@ public sealed class CopilotParityTests
     }
 
     [Fact]
+    public void CliSkillToolInfersSkillFromToolArgsAndMarksNode()
+    {
+        // Copilot exposes skills through the "skill" tool, carrying the id in its
+        // native toolArgs.skill. The pre/postToolUse nodes must resolve as skill
+        // usage so they render with the shared bold-italic-indigo skill styling.
+        HookObservation pre = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","toolName":"skill","toolArgs":{"skill":"dotnet-memory-analysis"}}""",
+            "preToolUse");
+
+        Assert.Equal("skill", pre.ToolName);
+        Assert.Equal("dotnet-memory-analysis", pre.SkillName);
+
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(pre);
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel skillNode = Assert.Single(turn.Children, child => child.IsSkill);
+        Assert.Equal("skill", skillNode.Observation!.ToolName);
+        Assert.Contains("dotnet-memory-analysis", turn.NodeSummary!.Skills);
+    }
+
+    [Fact]
     public void CliIdenticalToolCallsPairInArrivalOrder()
     {
         MainWindowViewModel viewModel = new();
@@ -435,6 +464,153 @@ public sealed class CopilotParityTests
         NodeSummary summary = OnlyTurn(viewModel).NodeSummary!;
         Assert.Equal("src/App.cs", Assert.Single(summary.WrittenFiles).FullPath);
     }
+
+    [Fact]
+    public void CliParallelMcpPermissionsAttachToTheirRequestByArguments()
+    {
+        // Two identical-name MCP calls are in flight at once; their permissions
+        // arrive out of order and in the "<server>/<tool>" spelling, so only the
+        // argument set can bind each permission to the right request.
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","toolName":"dotnet-dstrings-get_duplicated_strings","toolArgs":{"dumpPath":"d.dmp","countThreshold":32}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":3,"cwd":"C:\\Repo","toolName":"dotnet-dstrings-get_duplicated_strings","toolArgs":{"dumpPath":"d.dmp","countThreshold":128}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":4,"cwd":"C:\\Repo","toolName":"dotnet-dstrings/get_duplicated_strings","toolInput":{"dumpPath":"d.dmp","countThreshold":128}}""",
+            "permissionRequest"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":5,"cwd":"C:\\Repo","toolName":"dotnet-dstrings/get_duplicated_strings","toolInput":{"dumpPath":"d.dmp","countThreshold":32}}""",
+            "permissionRequest"));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        List<TreeNodeViewModel> preNodes = turn.Children
+            .Where(child => child.Observation?.HookEventName == "preToolUse")
+            .ToList();
+        Assert.Equal(2, preNodes.Count);
+        foreach (TreeNodeViewModel pre in preNodes)
+        {
+            TreeNodeViewModel permission = Assert.Single(
+                pre.Children,
+                child => child.Observation?.HookEventName == "permissionRequest");
+            Assert.Equal(
+                Threshold(pre.Observation!, "toolArgs"),
+                Threshold(permission.Observation!, "toolInput"));
+        }
+    }
+
+    [Fact]
+    public void CliEditPermissionAndNotificationAttachAcrossNameAndShapeDifferences()
+    {
+        // The request is apply_patch (its file lives in a raw patch string), the
+        // permission is "edit" with a structured file_path, and the notification
+        // only names the file in free text; the shared file binds all three.
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","toolName":"apply_patch","toolArgs":"*** Begin Patch\n*** Update File: SUMMARY.md\n@@\n-old\n+new\n*** End Patch\n"}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":3,"cwd":"C:\\Repo","toolName":"edit","toolInput":{"file_path":"C:\\Repo\\SUMMARY.md","diff":"..."}}""",
+            "permissionRequest"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":4,"cwd":"C:\\Repo","message":"Edit file: C:\\Repo\\SUMMARY.md","title":"Permission needed","notification_type":"permission_prompt"}""",
+            "notification"));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel pre = Assert.Single(
+            turn.Children,
+            child => child.Observation?.HookEventName == "preToolUse");
+        Assert.Contains(pre.Children, child => child.Observation?.HookEventName == "permissionRequest");
+        Assert.Contains(pre.Children, child => child.Observation?.HookEventName == "notification");
+    }
+
+    [Fact]
+    public void CliRunCommandNotificationAttachesToShellRequestDespiteEmbeddedPath()
+    {
+        // "Run command: <cmd>" carries a Windows path inside the command, which
+        // must not be mistaken for a file target and must still bind by command.
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","toolName":"powershell","toolArgs":{"command":"dotnet-dstrings 'C:\\d\\x.dmp' -c 32 -s 10"}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":3,"cwd":"C:\\Repo","message":"Run command: dotnet-dstrings 'C:\\d\\x.dmp' -c 32 -s 10","title":"Permission needed","notification_type":"permission_prompt"}""",
+            "notification"));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel pre = Assert.Single(
+            turn.Children,
+            child => child.Observation?.HookEventName == "preToolUse");
+        Assert.Equal(
+            "notification",
+            Assert.Single(pre.Children).Observation!.HookEventName);
+    }
+
+    [Fact]
+    public void CliNonPermissionNotificationStaysAtTurnLevel()
+    {
+        MainWindowViewModel viewModel = new();
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":1,"cwd":"C:\\Repo","prompt":"go"}""",
+            "userPromptSubmitted"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":2,"cwd":"C:\\Repo","toolName":"powershell","toolArgs":{"command":"git status"}}""",
+            "preToolUse"));
+        viewModel.AddObservation(ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":3,"cwd":"C:\\Repo","message":"Agent is idle","title":"Idle","notification_type":"agent_idle"}""",
+            "notification"));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        Assert.Contains(turn.Children, child => child.Observation?.HookEventName == "notification");
+        TreeNodeViewModel pre = Assert.Single(
+            turn.Children,
+            child => child.Observation?.HookEventName == "preToolUse");
+        Assert.DoesNotContain(pre.Children, child => child.Observation?.HookEventName == "notification");
+    }
+
+    private static int Threshold(HookObservation observation, string argsKey) =>
+        observation.Payload.GetProperty(argsKey).GetProperty("countThreshold").GetInt32();
 
     private static CorrelationQuality GetBaselineQuality(HookObservation observation)
     {

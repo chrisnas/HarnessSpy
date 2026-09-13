@@ -562,8 +562,10 @@ public sealed class HookObservation
     // A skill invocation is the authoritative signal that a skill actually ran,
     // independent of any SKILL.md file read. Claude Code surfaces it as the
     // "Skill" tool whose arguments name the activated skill (tool_name == "Skill"
-    // with tool_input.skill == "<name>"). Live hooks nest the arguments under
-    // "tool_input"; a transcript-sourced tool_use block uses "input".
+    // with tool_input.skill == "<name>"); GitHub Copilot uses the same "skill"
+    // tool but carries the id in its native "toolArgs.skill". Live hooks nest the
+    // arguments under "tool_input"/"toolArgs"; a transcript-sourced tool_use block
+    // uses "input".
     public static string? TryGetInvokedSkillName(string? toolName, JsonElement payload)
     {
         if (!string.Equals(toolName, "Skill", StringComparison.OrdinalIgnoreCase))
@@ -573,7 +575,8 @@ public sealed class HookObservation
 
         string? skill =
             RuntimeJson.ToolInputString(payload, "tool_input", "skill", "skillName", "skill_name") ??
-            RuntimeJson.ToolInputString(payload, "input", "skill", "skillName", "skill_name");
+            RuntimeJson.ToolInputString(payload, "input", "skill", "skillName", "skill_name") ??
+            RuntimeJson.ToolInputString(payload, "toolArgs", "skill", "skillName", "skill_name");
         return string.IsNullOrWhiteSpace(skill) ? null : skill.Trim();
     }
 

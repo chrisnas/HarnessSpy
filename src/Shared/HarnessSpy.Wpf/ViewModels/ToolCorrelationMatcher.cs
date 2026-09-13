@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text;
 using System.Text.Json;
 using HarnessSpy.Core.Models;
@@ -41,6 +42,222 @@ internal static class ToolCorrelationMatcher
         }
 
         return CanonicalizeToolInput(value);
+    }
+
+    // Copilot CLI has no tool-use id, and its permission prompt / permission
+    // notification spell the same call differently from the request
+    // ("<server>/<tool>" vs "<server>-<tool>", "edit" vs "apply_patch") and carry
+    // their input in a different shape ("toolInput"/message vs "toolArgs"). So a
+    // prompt is matched to its request name-agnostically, by the strongest signal
+    // they share: target file name, then shell command, then canonical arguments.
+    // Returns a positive score on agreement and NoMatch when they share no signal
+    // or disagree, so SelectUniqueBest can pick a single owner (or none).
+    public static int ScoreCopilotCallReference(
+        HookObservation candidatePre,
+        HookObservation reference)
+    {
+        CopilotSignature pre = ReadCopilotSignature(candidatePre);
+        CopilotSignature other = ReadCopilotSignature(reference);
+
+        if (pre.FileName is not null && other.FileName is not null)
+        {
+            return StringComparer.OrdinalIgnoreCase.Equals(pre.FileName, other.FileName)
+                ? 100
+                : NoMatch;
+        }
+
+        if (pre.Command is not null && other.Command is not null)
+        {
+            return StringComparer.Ordinal.Equals(
+                NormalizeCommand(pre.Command),
+                NormalizeCommand(other.Command))
+                ? 100
+                : NoMatch;
+        }
+
+        if (pre.Args is not null && other.Args is not null)
+        {
+            return StringComparer.Ordinal.Equals(pre.Args, other.Args) ? 100 : NoMatch;
+        }
+
+        return NoMatch;
+    }
+
+    private readonly record struct CopilotSignature(string? FileName, string? Command, string? Args);
+
+    private static readonly string[] CopilotArgKeys = ["toolArgs", "toolInput", "tool_input"];
+
+    private static readonly string[] PatchFileVerbs =
+        ["Update File:", "Add File:", "Delete File:", "Move to:"];
+
+    private static readonly string[] CommandMessagePrefixes =
+        ["Run command:", "Execute command:"];
+
+    private static readonly string[] PathMessagePrefixes =
+    [
+        "Path permission needed:", "Edit file:", "Read file:", "View file:",
+        "Create file:", "Write file:", "Write to file:", "Delete file:"
+    ];
+
+    private static CopilotSignature ReadCopilotSignature(HookObservation observation)
+    {
+        JsonElement payload = observation.Payload;
+
+        string? filePath = ReadCopilotFilePath(payload);
+        string? command = ReadCopilotArgString(payload, "command");
+        string? args = ReadCopilotArgsObject(payload);
+
+        // A permission-prompt notification carries no structured input, only a
+        // message such as "Run command: <cmd>", "Edit file: <path>", or
+        // "Path permission needed: <path>".
+        if (filePath is null && command is null && args is null)
+        {
+            (string? messageFile, string? messageCommand) =
+                ParseNotificationMessage(ReadString(payload, "message"));
+            filePath = messageFile;
+            command = messageCommand;
+        }
+
+        string? fileName = string.IsNullOrEmpty(filePath)
+            ? null
+            : Path.GetFileName(filePath.Replace('/', '\\'));
+        return new CopilotSignature(fileName, command, args);
+    }
+
+    // Copilot input arrives under "toolArgs" (request/completion) or "toolInput"
+    // (permission), either as an object or a JSON-encoded string.
+    private static bool TryReadCopilotArgs(JsonElement payload, out JsonElement args)
+    {
+        args = default;
+        if (payload.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        foreach (string key in CopilotArgKeys)
+        {
+            if (!payload.TryGetProperty(key, out JsonElement value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.Object)
+            {
+                args = value;
+                return true;
+            }
+
+            if (value.ValueKind == JsonValueKind.String &&
+                TryParseJsonContainer(value.GetString(), out JsonDocument? nested) &&
+                nested is not null)
+            {
+                using (nested)
+                {
+                    args = nested.RootElement.Clone();
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static string? ReadCopilotArgString(JsonElement payload, string name) =>
+        TryReadCopilotArgs(payload, out JsonElement args) && args.ValueKind == JsonValueKind.Object
+            ? ReadString(args, name)
+            : null;
+
+    private static string? ReadCopilotArgsObject(JsonElement payload) =>
+        TryReadCopilotArgs(payload, out JsonElement args) && args.ValueKind == JsonValueKind.Object
+            ? Canonicalize(args)
+            : null;
+
+    private static string? ReadCopilotFilePath(JsonElement payload)
+    {
+        string? structured =
+            ReadCopilotArgString(payload, "file_path") ??
+            ReadCopilotArgString(payload, "path");
+        if (structured is not null)
+        {
+            return structured;
+        }
+
+        // apply_patch delivers its edit as a raw patch string whose header names
+        // the file (e.g. "*** Update File: relative/path").
+        if (payload.ValueKind == JsonValueKind.Object)
+        {
+            foreach (string key in CopilotArgKeys)
+            {
+                if (payload.TryGetProperty(key, out JsonElement value) &&
+                    value.ValueKind == JsonValueKind.String &&
+                    ExtractPatchFilePath(value.GetString()) is string patchFile)
+                {
+                    return patchFile;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractPatchFilePath(string? patch)
+    {
+        if (string.IsNullOrEmpty(patch))
+        {
+            return null;
+        }
+
+        foreach (string verb in PatchFileVerbs)
+        {
+            int verbIndex = patch.IndexOf(verb, StringComparison.Ordinal);
+            if (verbIndex < 0)
+            {
+                continue;
+            }
+
+            int start = verbIndex + verb.Length;
+            int newline = patch.IndexOf('\n', start);
+            string path = (newline < 0 ? patch[start..] : patch[start..newline]).Trim();
+            if (path.Length > 0)
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    // Extracts the referenced command or file from a permission-prompt
+    // notification message. Classification is by prefix, because a "Run command:"
+    // value routinely embeds a Windows path that would otherwise look like a file.
+    private static (string? File, string? Command) ParseNotificationMessage(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return (null, null);
+        }
+
+        foreach (string prefix in CommandMessagePrefixes)
+        {
+            if (message.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                string command = message[prefix.Length..].Trim();
+                return (null, command.Length == 0 ? null : command);
+            }
+        }
+
+        foreach (string prefix in PathMessagePrefixes)
+        {
+            if (message.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                string rest = message[prefix.Length..].Trim();
+                int comma = rest.IndexOf(',');
+                string first = (comma >= 0 ? rest[..comma] : rest).Trim();
+                return (first.Length == 0 ? null : first, null);
+            }
+        }
+
+        return (null, null);
     }
 
     public static int ScoreShellExecution(
