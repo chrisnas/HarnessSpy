@@ -9,7 +9,11 @@ namespace HarnessSpy.Core.Sources;
 // last-seen value forward to the assistant rows that follow it.
 public static class TranscriptRowScanner
 {
-    public readonly record struct RowMeta(DateTimeOffset? Timestamp, string? TurnId);
+    public readonly record struct RowMeta(
+        DateTimeOffset? Timestamp,
+        string? TurnId,
+        string? InteractionId,
+        string? RecordType);
 
     public static RowMeta Read(string raw)
     {
@@ -22,7 +26,14 @@ public static class TranscriptRowScanner
                 return default;
             }
 
-            return new RowMeta(ReadTimestamp(root), ReadTurnId(root));
+            JsonElement? data = ReadData(root);
+            return new RowMeta(
+                ReadTimestamp(root),
+                ReadIdentifier(root, "promptId", "prompt_id", "turnId") ??
+                    ReadIdentifier(data, "promptId", "prompt_id", "turnId"),
+                ReadIdentifier(root, "interactionId", "interaction_id") ??
+                    ReadIdentifier(data, "interactionId", "interaction_id"),
+                ReadIdentifier(root, "type"));
         }
         catch (JsonException)
         {
@@ -58,15 +69,41 @@ public static class TranscriptRowScanner
         return null;
     }
 
-    private static string? ReadTurnId(JsonElement root)
+    private static JsonElement? ReadData(JsonElement root)
     {
-        foreach (string name in new[] { "promptId", "prompt_id", "turnId" })
+        if (root.TryGetProperty("data", out JsonElement data) &&
+            data.ValueKind == JsonValueKind.Object)
         {
-            if (root.TryGetProperty(name, out JsonElement value) &&
-                value.ValueKind == JsonValueKind.String &&
+            return data;
+        }
+
+        return null;
+    }
+
+    private static string? ReadIdentifier(JsonElement? element, params string[] names)
+    {
+        if (element is not JsonElement valueContainer ||
+            valueContainer.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (string name in names)
+        {
+            if (!valueContainer.TryGetProperty(name, out JsonElement value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.String &&
                 !string.IsNullOrWhiteSpace(value.GetString()))
             {
                 return value.GetString();
+            }
+
+            if (value.ValueKind == JsonValueKind.Number)
+            {
+                return value.GetRawText();
             }
         }
 

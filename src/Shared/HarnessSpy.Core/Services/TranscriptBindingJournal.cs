@@ -5,13 +5,14 @@ using HarnessSpy.Core.Models;
 
 namespace HarnessSpy.Core.Services;
 
-// Records the finalized projection decision for each reconciled transcript
-// fragment so heuristic (especially Cursor) correlation is reproducible in
-// exact replay and is never silently re-derived. Written to
-// <sidecar>/bindings.jsonl. A provisional binding is rewritten when finalized.
+// Records the projection decision observed while live transcript rows are
+// reconciled. Written to <sidecar>/bindings.jsonl as a diagnostic audit trail.
+// The manifest records which versions captured the audit; replay deliberately
+// reinterprets raw rows with the current code, so this journal is not a replay
+// instruction stream.
 public sealed class TranscriptBindingJournal
 {
-    public const int ReconcilerVersion = 1;
+    public const int ReconcilerVersion = 2;
 
     private readonly TranscriptCaptureStore _captureStore;
     private readonly object _gate = new();

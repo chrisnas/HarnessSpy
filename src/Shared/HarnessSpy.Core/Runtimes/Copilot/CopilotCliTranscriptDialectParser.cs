@@ -7,7 +7,7 @@ using HarnessSpy.Core.Sources;
 namespace HarnessSpy.Core.Runtimes.Copilot;
 
 // Parses Copilot CLI session-state events.jsonl (schema v1, verified against
-// Copilot 1.0.81/1.0.82). Every row is {type,data,id,timestamp,parentId}.
+// Copilot 1.0.81/1.0.82/1.0.86). Every row is {type,data,id,timestamp,parentId}.
 // MCP metadata is authoritative here (mcpServerName/mcpToolName/toolCallId and
 // permission kind "mcp"); reasoning is opaque. Unknown event types are ignored
 // as nodes but still durably captured by the coordinator.
@@ -25,14 +25,17 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
 
         string? id = RuntimeJson.String(row, "id");
         string? parentId = RuntimeJson.String(row, "parentId");
+        RowIdentity identity = new(
+            Identifier(data, "turnId", "turn_id"),
+            Identifier(data, "interactionId", "interaction_id"));
 
         return type switch
         {
-            "assistant.message" => AssistantMessage(line, data, id, parentId),
-            "tool.execution_start" => [ToolExecution(line, data, id, parentId, start: true)],
-            "tool.execution_complete" => [ToolExecution(line, data, id, parentId, start: false)],
-            "permission.requested" => [Permission(line, data, id, parentId, requested: true)],
-            "permission.completed" => [Permission(line, data, id, parentId, requested: false)],
+            "assistant.message" => AssistantMessage(line, data, id, parentId, identity),
+            "tool.execution_start" => [ToolExecution(line, data, id, parentId, identity, start: true)],
+            "tool.execution_complete" => [ToolExecution(line, data, id, parentId, identity, start: false)],
+            "permission.requested" => [Permission(line, data, id, parentId, identity, requested: true)],
+            "permission.completed" => [Permission(line, data, id, parentId, identity, requested: false)],
             _ => []
         };
     }
@@ -41,7 +44,8 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         TranscriptLine line,
         JsonElement data,
         string? id,
-        string? parentId)
+        string? parentId,
+        RowIdentity identity)
     {
         List<HookObservation> observations = [];
         int index = 0;
@@ -49,7 +53,7 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         if (RuntimeJson.String(data, "reasoningOpaque") is not null ||
             RuntimeJson.String(data, "encryptedContent") is not null)
         {
-            observations.Add(OpaqueReasoning(line, index++, id, parentId));
+            observations.Add(OpaqueReasoning(line, index++, id, parentId, identity));
         }
 
         if (data.TryGetProperty("toolRequests", out JsonElement toolRequests) &&
@@ -57,24 +61,30 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         {
             foreach (JsonElement request in toolRequests.EnumerateArray())
             {
-                observations.Add(ToolRequest(line, request, index++, id, parentId));
+                observations.Add(ToolRequest(line, request, index++, id, parentId, identity));
             }
         }
 
         if (RuntimeJson.String(data, "content") is string content &&
             RuntimeJson.String(data, "phase") is "final_answer")
         {
-            observations.Add(FinalAnswer(line, content, index++, id, parentId));
+            observations.Add(FinalAnswer(line, content, index++, id, parentId, identity));
         }
 
         return observations;
     }
 
-    private HookObservation OpaqueReasoning(TranscriptLine line, int index, string? id, string? parentId)
+    private HookObservation OpaqueReasoning(
+        TranscriptLine line,
+        int index,
+        string? id,
+        string? parentId,
+        RowIdentity identity)
     {
         var builder = new InterpretationBuilder("assistant.reasoning")
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
             Role = ObservationRole.AgentThought,
             EventKind = CanonicalEventKind.AssistantThought,
             Tone = ObservationTone.Thought,
@@ -85,7 +95,12 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
 
         JsonObject payload = new() { ["type"] = "assistant.reasoning", ["opaque"] = true };
         return Emit(line, payload, builder.Build(), line.Provenance(
-            index, TranscriptCompleteness.Complete, id, parentId));
+            index,
+            TranscriptCompleteness.Complete,
+            id,
+            parentId,
+            identity.NativeTurnId,
+            identity.InteractionId));
     }
 
     private HookObservation ToolRequest(
@@ -93,18 +108,26 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         JsonElement request,
         int index,
         string? id,
-        string? parentId)
+        string? parentId,
+        RowIdentity identity)
     {
         string toolName = RuntimeJson.String(request, "name") ?? "tool";
         string? toolCallId = RuntimeJson.String(request, "toolCallId");
         string? mcpServer = RuntimeJson.String(request, "mcpServerName");
+        string? targetFilePath = RuntimeJson.ToolInputString(
+            request,
+            "arguments",
+            "path",
+            "file_path");
 
         var builder = new InterpretationBuilder(toolName)
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
             ToolName = toolName,
             ToolCallId = toolCallId,
             McpServerName = mcpServer,
+            TargetFilePath = targetFilePath,
             Role = ObservationRole.ToolRequest,
             EventKind = CanonicalEventKind.ToolRequested,
             Direction = ObservationDirection.None,
@@ -120,7 +143,13 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
 
         JsonObject payload = CloneToObject(request);
         return Emit(line, payload, builder.Build(), line.Provenance(
-            index, TranscriptCompleteness.Complete, id, parentId, toolCallId: toolCallId));
+            index,
+            TranscriptCompleteness.Complete,
+            id,
+            parentId,
+            identity.NativeTurnId,
+            identity.InteractionId,
+            toolCallId));
     }
 
     private HookObservation ToolExecution(
@@ -128,15 +157,17 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         JsonElement data,
         string? id,
         string? parentId,
+        RowIdentity identity,
         bool start)
     {
         string? toolCallId = RuntimeJson.String(data, "toolCallId");
-        string? toolName = RuntimeJson.String(data, "name");
+        string? toolName = RuntimeJson.String(data, "toolName", "name");
         string? mcpServer = RuntimeJson.String(data, "mcpServerName");
 
         var builder = new InterpretationBuilder(start ? "tool.execution_start" : "tool.execution_complete")
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
             ToolName = toolName,
             ToolCallId = toolCallId,
             McpServerName = mcpServer,
@@ -144,6 +175,10 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
             Direction = start ? ObservationDirection.Input : ObservationDirection.Output,
             ToolKind = mcpServer is null ? ToolKind(toolName) : CanonicalToolKind.Mcp,
             Tone = mcpServer is null ? ObservationTone.Normal : ObservationTone.Mcp,
+            HeaderDetail = JoinNonEmpty(
+                toolName,
+                mcpServer,
+                RuntimeJson.String(data, "mcpToolName")),
             Evidence = InferenceEvidence.Observed,
             EnrichmentOnly = true,
             ExcludeFromSummary = true
@@ -151,7 +186,13 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
 
         JsonObject payload = CloneToObject(data);
         return Emit(line, payload, builder.Build(), line.Provenance(
-            0, TranscriptCompleteness.Complete, id, parentId, toolCallId: toolCallId));
+            0,
+            TranscriptCompleteness.Complete,
+            id,
+            parentId,
+            identity.NativeTurnId,
+            identity.InteractionId,
+            toolCallId));
     }
 
     private HookObservation Permission(
@@ -159,17 +200,21 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         JsonElement data,
         string? id,
         string? parentId,
+        RowIdentity identity,
         bool requested)
     {
         string? kind = requested
             ? RuntimeJson.NestedString(data, "permissionRequest", "kind")
             : RuntimeJson.String(data, "kind");
         string? server = RuntimeJson.NestedString(data, "permissionRequest", "serverName");
+        string? toolCallId = ReadToolCallId(data);
         bool isMcp = string.Equals(kind, "mcp", StringComparison.OrdinalIgnoreCase) || IsMcpApproval(data);
 
         var builder = new InterpretationBuilder(requested ? "permission.requested" : "permission.completed")
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
+            ToolCallId = toolCallId,
             Role = requested ? ObservationRole.PermissionRequest : ObservationRole.Generic,
             EventKind = requested ? CanonicalEventKind.PermissionRequested : CanonicalEventKind.ProviderSpecific,
             Direction = requested ? ObservationDirection.Input : ObservationDirection.Output,
@@ -183,7 +228,13 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
 
         JsonObject payload = CloneToObject(data);
         return Emit(line, payload, builder.Build(), line.Provenance(
-            0, TranscriptCompleteness.Complete, id, parentId));
+            0,
+            TranscriptCompleteness.Complete,
+            id,
+            parentId,
+            identity.NativeTurnId,
+            identity.InteractionId,
+            toolCallId));
     }
 
     private HookObservation FinalAnswer(
@@ -191,11 +242,13 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         string content,
         int index,
         string? id,
-        string? parentId)
+        string? parentId,
+        RowIdentity identity)
     {
         var builder = new InterpretationBuilder("assistant.message")
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
             Role = ObservationRole.AgentResponse,
             EventKind = CanonicalEventKind.AssistantMessage,
             Direction = ObservationDirection.None,
@@ -207,7 +260,66 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
 
         JsonObject payload = new() { ["type"] = "assistant.message", ["content"] = content };
         return Emit(line, payload, builder.Build(), line.Provenance(
-            index, TranscriptCompleteness.Complete, id, parentId));
+            index,
+            TranscriptCompleteness.Complete,
+            id,
+            parentId,
+            identity.NativeTurnId,
+            identity.InteractionId));
+    }
+
+    private static string? ReadToolCallId(JsonElement data)
+    {
+        string? direct = RuntimeJson.String(data, "toolCallId", "tool_call_id", "callId");
+        if (direct is not null)
+        {
+            return direct;
+        }
+
+        foreach (string container in new[] { "permissionRequest", "promptRequest", "result" })
+        {
+            string? nested = RuntimeJson.NestedString(
+                data,
+                container,
+                "toolCallId",
+                "tool_call_id",
+                "callId");
+            if (nested is not null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? Identifier(JsonElement element, params string[] names)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (string name in names)
+        {
+            if (!element.TryGetProperty(name, out JsonElement value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(value.GetString()))
+            {
+                return value.GetString();
+            }
+
+            if (value.ValueKind == JsonValueKind.Number)
+            {
+                return value.GetRawText();
+            }
+        }
+
+        return null;
     }
 
     private static bool IsMcpApproval(JsonElement data) =>
@@ -233,4 +345,8 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         const int maxLength = 60;
         return oneLine.Length <= maxLength ? oneLine : oneLine[..maxLength].TrimEnd() + "\u2026";
     }
+
+    private readonly record struct RowIdentity(
+        string? NativeTurnId,
+        string? InteractionId);
 }

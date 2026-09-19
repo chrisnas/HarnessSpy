@@ -1,4 +1,5 @@
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Services;
 using HarnessSpy.Core.Sources;
 
 namespace HarnessSpy.Tests;
@@ -109,6 +110,7 @@ public sealed class TranscriptParserTests
         Assert.Equal("dotnet-dstrings", request.McpServerName);
         Assert.Equal(CanonicalToolKind.Mcp, request.ToolKind);
         Assert.Equal("call_1", request.ToolUseId);
+        Assert.Equal("transcript-derived-1", request.GenerationId);
 
         // The flattened <server>-<tool> name is never split on the hyphen.
         Assert.Equal("dotnet-dstrings-get_duplicated_strings", request.ToolName);
@@ -117,6 +119,35 @@ public sealed class TranscriptParserTests
             o.Interpretation.Role == ObservationRole.AgentThought &&
             o.Interpretation.Evidence == InferenceEvidence.Opaque);
         Assert.Contains(observations, o => o.Interpretation.Role == ObservationRole.PermissionRequest);
+    }
+
+    [Fact]
+    public void CopilotParserReadsVersion1086ExecutionAndPermissionFields()
+    {
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CopilotCliTranscript);
+
+        HookObservation execution = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"tool.execution_start","id":"e1","parentId":"p1","data":{"turnId":"4","interactionId":"i1","toolCallId":"call_1","toolName":"powershell","arguments":{"command":"dotnet test"}}}""",
+            "derived-1")));
+        Assert.Equal("powershell", execution.ToolName);
+        Assert.Equal(CanonicalToolKind.Shell, execution.ToolKind);
+        Assert.Equal("call_1", execution.ToolUseId);
+        Assert.Equal("derived-1", execution.GenerationId);
+        Assert.Equal("4", execution.Provenance!.TurnId);
+        Assert.Equal("i1", execution.Provenance.InteractionId);
+
+        HookObservation requested = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"permission.requested","id":"e2","parentId":"e1","data":{"turnId":"4","interactionId":"i1","permissionRequest":{"kind":"shell","toolCallId":"call_1"}}}""",
+            "derived-1")));
+        Assert.Equal("call_1", requested.ToolUseId);
+        Assert.Equal("derived-1", requested.GenerationId);
+
+        HookObservation completed = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"permission.completed","id":"e3","parentId":"e2","data":{"turnId":"4","interactionId":"i1","toolCallId":"call_1","kind":"approved"}}""",
+            "derived-1")));
+        Assert.Equal("call_1", completed.ToolUseId);
+        Assert.Equal("derived-1", completed.GenerationId);
     }
 
     [Fact]
@@ -184,6 +215,30 @@ public sealed class TranscriptParserTests
             "{\"type\":\"assistant\",\"timestamp\":\"2026-08-30T15:29:05Z\"}");
         Assert.Null(assistant.TurnId);
         Assert.NotNull(assistant.Timestamp);
+
+        TranscriptRowScanner.RowMeta copilot = TranscriptRowScanner.Read(
+            """{"type":"assistant.message","timestamp":"2026-09-19T09:21:19Z","data":{"turnId":"4","interactionId":"i1"}}""");
+        Assert.Equal("assistant.message", copilot.RecordType);
+        Assert.Equal("4", copilot.TurnId);
+        Assert.Equal("i1", copilot.InteractionId);
+        Assert.NotNull(copilot.Timestamp);
+    }
+
+    [Fact]
+    public void CopilotTurnTrackerGroupsModelStepsByUserInteraction()
+    {
+        TranscriptTurnTracker tracker = new(DialectIds.CopilotCliTranscript);
+
+        string? first = tracker.Observe(TranscriptRowScanner.Read(
+            """{"type":"user.message","data":{"turnId":"0","interactionId":"i1"}}"""));
+        string? laterStep = tracker.Observe(TranscriptRowScanner.Read(
+            """{"type":"assistant.message","data":{"turnId":"16","interactionId":"i1"}}"""));
+        string? second = tracker.Observe(TranscriptRowScanner.Read(
+            """{"type":"user.message","data":{"turnId":"0","interactionId":"i2"}}"""));
+
+        Assert.Equal("transcript-interaction:i1", first);
+        Assert.Equal(first, laterStep);
+        Assert.Equal("transcript-interaction:i2", second);
     }
 
     [Fact]
@@ -203,6 +258,7 @@ public sealed class TranscriptParserTests
         string? agentId = null)
     {
         ITranscriptDialectParser parser = TranscriptDialectParserRegistry.Resolve(dialectId);
+        TranscriptTurnTracker turnTracker = new(dialectId);
         List<HookObservation> observations = [];
         int lineNumber = 1;
         foreach (string raw in File.ReadAllLines(fixturePath))
@@ -212,6 +268,7 @@ public sealed class TranscriptParserTests
                 continue;
             }
 
+            TranscriptRowScanner.RowMeta metadata = TranscriptRowScanner.Read(raw);
             observations.AddRange(parser.Parse(new TranscriptLine(
                 raw,
                 fixturePath,
@@ -224,7 +281,9 @@ public sealed class TranscriptParserTests
                 dialectId,
                 $"{provider}:{surface}:s1",
                 "s1",
-                agentId)));
+                agentId,
+                ObservedAtUtc: metadata.Timestamp,
+                TurnHint: turnTracker.Observe(metadata))));
             lineNumber++;
         }
 
@@ -233,6 +292,21 @@ public sealed class TranscriptParserTests
 
     private static TranscriptLine Line(string raw, HookProvider provider, HookSurface surface, string dialectId) =>
         new(raw, "C:/t.jsonl", 0, 1, 1, TranscriptFileRole.Main, provider, surface, dialectId, $"{provider}:{surface}:s1", "s1");
+
+    private static TranscriptLine CopilotLine(string raw, string turnHint) =>
+        new(
+            raw,
+            "C:/events.jsonl",
+            0,
+            1,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            DialectIds.CopilotCliTranscript,
+            "GitHubCopilot:CopilotCli:c1",
+            "c1",
+            TurnHint: turnHint);
 
     private static string Fixture(string provider, string file) =>
         Path.Combine(AppContext.BaseDirectory, "Fixtures", provider, file);

@@ -28,13 +28,11 @@ public sealed class TranscriptFileBinding
 
     public required TranscriptReadCursor Cursor { get; init; }
 
+    public required TranscriptTurnTracker TurnTracker { get; init; }
+
     public EnrichmentCaptureState CaptureState { get; set; } = EnrichmentCaptureState.None;
 
     public bool DiscoveredWhilePresent { get; init; }
-
-    // The most recent turn id seen in this file, carried forward to rows that
-    // omit it (Claude stamps the turn id only on user rows).
-    public string? LastTurnId { get; set; }
 }
 
 // Extracts transcript references from any hook (not just session start) and
@@ -94,6 +92,7 @@ public sealed class TranscriptSessionRegistry
                     AgentId = reference.AgentId,
                     SourceId = SourceIdFor(reference),
                     Cursor = new TranscriptReadCursor(normalized),
+                    TurnTracker = new TranscriptTurnTracker(reference.DialectId),
                     DiscoveredWhilePresent = File.Exists(normalized)
                 };
 

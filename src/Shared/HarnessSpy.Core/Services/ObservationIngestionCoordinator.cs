@@ -53,7 +53,7 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
     }
 
     public ValueTask IngestHookAsync(HookObservation hook, CancellationToken cancellationToken) =>
-        _work.Writer.WriteAsync(new WorkItem(hook, null, null), cancellationToken);
+        _work.Writer.WriteAsync(new WorkItem(hook, null), cancellationToken);
 
     private async Task ProcessLoopAsync(CancellationToken cancellationToken)
     {
@@ -65,9 +65,9 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
                 {
                     await ProcessHookAsync(hook, cancellationToken).ConfigureAwait(false);
                 }
-                else if (item.Binding is TranscriptFileBinding binding && item.Line is TranscriptRawLine line)
+                else if (item.Binding is TranscriptFileBinding binding)
                 {
-                    await ProcessTranscriptLineAsync(binding, line, cancellationToken).ConfigureAwait(false);
+                    await DrainBindingAsync(binding, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -83,8 +83,31 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
             foreach (TranscriptFileBinding discovered in _registry.RegisterFromHook(hook))
             {
                 // Backfill immediately, especially for short-lived subagent files.
-                await DrainBindingAsync(discovered, cancellationToken).ConfigureAwait(false);
+                // Process the discovered history before the boundary hook (for
+                // Copilot this is agentStop) closes signature correlation state.
+                await DrainBindingAsync(
+                    discovered,
+                    cancellationToken).ConfigureAwait(false);
                 WriteManifest(discovered);
+            }
+
+            if (hook.Provider == HookProvider.GitHubCopilot &&
+                hook.Surface == HookSurface.CopilotCli &&
+                hook.Interpretation.Role is
+                    ObservationRole.TurnStop or ObservationRole.SessionEnd)
+            {
+                // The path is normally already registered after the first
+                // turn. Pull its final complete rows before the stop clears
+                // fallback signature candidates; the next 200 ms poll would be
+                // too late and could detach the final tool lifecycle.
+                foreach (TranscriptFileBinding binding in _registry.ActiveFiles()
+                    .Where(binding =>
+                        binding.ScopedSessionId == hook.ProviderScopedSessionId))
+                {
+                    await DrainBindingAsync(
+                        binding,
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
@@ -109,10 +132,7 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
             TranscriptCompleteness.Complete);
 
         TranscriptRowScanner.RowMeta meta = TranscriptRowScanner.Read(line.Raw);
-        if (meta.TurnId is string turnId)
-        {
-            binding.LastTurnId = turnId;
-        }
+        string? turnHint = binding.TurnTracker.Observe(meta);
 
         TranscriptLine transcriptLine = new(
             line.Raw,
@@ -132,8 +152,9 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
             // one (Claude ISO-8601, Copilot epoch ms); otherwise fall back to
             // capture time so rows without a native clock still stay grouped.
             ObservedAtUtc: meta.Timestamp,
-            // Carry the last-seen turn id forward to rows that omit it.
-            TurnHint: binding.LastTurnId);
+            // Claude carries its last prompt id forward. Copilot maps every
+            // model/tool step in one interaction to the hook tree's derived-N.
+            TurnHint: turnHint);
 
         ITranscriptDialectParser parser = TranscriptDialectParserRegistry.Resolve(binding.DialectId);
         foreach (HookObservation observation in parser.Parse(transcriptLine))
@@ -155,7 +176,9 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
                 await Task.Delay(_pollInterval, cancellationToken).ConfigureAwait(false);
                 foreach (TranscriptFileBinding binding in _registry.ActiveFiles())
                 {
-                    await DrainBindingAsync(binding, cancellationToken).ConfigureAwait(false);
+                    await _work.Writer.WriteAsync(
+                        new WorkItem(null, binding),
+                        cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -164,19 +187,21 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
         }
     }
 
-    // Reads all currently-complete rows from a file and enqueues them. Guarded
-    // per cursor so discovery backfill and the poll loop never race the offset.
-    private async Task DrainBindingAsync(TranscriptFileBinding binding, CancellationToken cancellationToken)
+    // Runs only on the serialized process loop. Polling enqueues a drain request
+    // rather than advancing the cursor itself, so a boundary hook can never
+    // overtake rows that were read but not yet reconciled.
+    private async Task DrainBindingAsync(
+        TranscriptFileBinding binding,
+        CancellationToken cancellationToken)
     {
-        IReadOnlyList<TranscriptRawLine> lines;
-        lock (binding.Cursor)
-        {
-            lines = JsonLineFileTailer.ReadNewLines(binding.Cursor);
-        }
-
+        IReadOnlyList<TranscriptRawLine> lines =
+            JsonLineFileTailer.ReadNewLines(binding.Cursor);
         foreach (TranscriptRawLine line in lines)
         {
-            await _work.Writer.WriteAsync(new WorkItem(null, binding, line), cancellationToken).ConfigureAwait(false);
+            await ProcessTranscriptLineAsync(
+                binding,
+                line,
+                cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -186,7 +211,7 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
             binding.ScopedSessionId,
             binding.DialectId,
             binding.Cursor.NormalizedPath,
-            ParserVersion: 1,
+            ParserVersion: 2,
             TranscriptBindingJournal.ReconcilerVersion,
             binding.CaptureState,
             [binding.SourceId],
@@ -221,6 +246,5 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
 
     private readonly record struct WorkItem(
         HookObservation? Hook,
-        TranscriptFileBinding? Binding,
-        TranscriptRawLine? Line);
+        TranscriptFileBinding? Binding);
 }

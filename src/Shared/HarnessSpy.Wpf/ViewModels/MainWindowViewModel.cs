@@ -182,6 +182,7 @@ public sealed class MainWindowViewModel : ObservableObject
 
             int added = 0;
             int skipped = 0;
+            List<HookObservation> acceptedHooks = [];
             foreach (HookObservation observation in observations)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -192,30 +193,34 @@ public sealed class MainWindowViewModel : ObservableObject
                     continue;
                 }
 
-                foreach (ObservationChange change in _replayReconciler.Reconcile(observation))
-                {
-                    ApplyObservationChange(change);
-                }
-
+                acceptedHooks.Add(observation);
                 added++;
             }
 
             // Rehydrate transcript nodes from the durable sidecar so a restart
             // or folder replay shows the same transcript content it did live,
-            // even after the provider deleted the original files. All hooks are
-            // reconciled first, so transcript tool rows nest under their hooks.
-            int transcriptRows = 0;
-            foreach (HookObservation transcript in _transcriptReplayLoader.Load(folder))
+            // even after the provider deleted the original files. Merge both
+            // streams by provider time so turn-stop boundaries close only after
+            // the transcript activity they delimit; symmetric reconciliation
+            // still handles either side arriving a little earlier.
+            IReadOnlyList<HookObservation> transcripts =
+                _transcriptReplayLoader.Load(folder);
+            HookObservation[] replayStream = acceptedHooks
+                .Concat(transcripts)
+                .OrderBy(observation => observation.EffectiveTimestamp)
+                .ThenBy(observation => observation.IsTranscriptSourced ? 1 : 0)
+                .ThenBy(observation => observation.IngestionOrdinal)
+                .ToArray();
+            foreach (HookObservation observation in replayStream)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                foreach (ObservationChange change in _replayReconciler.Reconcile(transcript))
+                foreach (ObservationChange change in _replayReconciler.Reconcile(observation))
                 {
                     ApplyObservationChange(change);
                 }
-
-                transcriptRows++;
             }
 
+            int transcriptRows = transcripts.Count;
             string transcriptSuffix = transcriptRows == 0
                 ? string.Empty
                 : $" plus {transcriptRows} transcript record(s)";
@@ -256,7 +261,7 @@ public sealed class MainWindowViewModel : ObservableObject
         // even when Cursor stamps them with a generation_id.
         // Turn-scoped events group beneath a generation node so each prompt
         // reads as one collapsible block.
-        string? effectiveGenerationId = ResolveGenerationId(observation);
+        string? effectiveGenerationId = ResolveGenerationId(observation, sessionNode);
         if (effectiveGenerationId is null || observation.IsSessionLifecycle || observation.IsTabHook)
         {
             InsertChronologically(sessionNode.Children, CreateObservationNode(observation));
@@ -268,11 +273,23 @@ public sealed class MainWindowViewModel : ObservableObject
             observation,
             sessionNode,
             effectiveGenerationId);
+        if (!observation.IsTranscriptSourced &&
+            observation.Provider == HookProvider.GitHubCopilot &&
+            observation.Surface == HookSurface.CopilotCli &&
+            observation.Interpretation.Role == ObservationRole.PromptSubmitted)
+        {
+            MergePendingCopilotTranscriptTurns(
+                sessionNode,
+                generationNode,
+                observation.EffectiveTimestamp);
+        }
+
         TreeNodeViewModel observationNode = CreateObservationNode(observation);
 
         // Try to nest this observation under an in-flight parent.
         if (TryNestUnderParent(observation, observationNode, generationNode))
         {
+            ReorderSessionChildren(sessionNode);
             generationNode.IsExpanded = true;
             generationNode.RecomputeGeneration();
             sessionNode.RecomputeSession();
@@ -287,6 +304,7 @@ public sealed class MainWindowViewModel : ObservableObject
         // Track new in-flight pre nodes for later pairing.
         TrackInFlightNode(observation, observationNode, generationNode);
 
+        ReorderSessionChildren(sessionNode);
         generationNode.RecomputeGeneration();
         sessionNode.RecomputeSession();
 
@@ -298,8 +316,18 @@ public sealed class MainWindowViewModel : ObservableObject
         }
     }
 
-    private string? ResolveGenerationId(HookObservation observation)
+    private string? ResolveGenerationId(
+        HookObservation observation,
+        TreeNodeViewModel sessionNode)
     {
+        if (observation.IsTranscriptSourced &&
+            observation.Provider == HookProvider.GitHubCopilot &&
+            observation.Surface == HookSurface.CopilotCli &&
+            FindHookTurnByTimestamp(sessionNode, observation.EffectiveTimestamp) is string hookTurn)
+        {
+            return hookTurn;
+        }
+
         if (observation.GenerationId is not null)
         {
             return observation.GenerationId;
@@ -324,6 +352,125 @@ public sealed class MainWindowViewModel : ObservableObject
         }
 
         return _activeDerivedTurns.GetValueOrDefault(sessionKey);
+    }
+
+    private static string? FindHookTurnByTimestamp(
+        TreeNodeViewModel sessionNode,
+        DateTimeOffset timestamp)
+    {
+        List<(TreeNodeViewModel Node, DateTimeOffset Start, DateTimeOffset? Stop)> turns = [];
+        foreach (TreeNodeViewModel generation in sessionNode.Children.Where(
+            child => child.Kind == TreeNodeKind.Generation && child.GenerationId is not null))
+        {
+            HookObservation[] hooks = DescendantObservations(generation)
+                .Where(observation => !observation.IsTranscriptSourced)
+                .ToArray();
+            DateTimeOffset? start = hooks
+                .Where(observation =>
+                    observation.Interpretation.Role == ObservationRole.PromptSubmitted)
+                .Select(observation => (DateTimeOffset?)observation.EffectiveTimestamp)
+                .Min();
+            if (start is null)
+            {
+                continue;
+            }
+
+            DateTimeOffset? stop = hooks
+                .Where(observation => observation.IsStop)
+                .Select(observation => (DateTimeOffset?)observation.EffectiveTimestamp)
+                .Max();
+            turns.Add((generation, start.Value, stop));
+        }
+
+        turns.Sort((left, right) => left.Start.CompareTo(right.Start));
+        for (int index = 0; index < turns.Count; index++)
+        {
+            (TreeNodeViewModel node, DateTimeOffset start, DateTimeOffset? stop) = turns[index];
+            DateTimeOffset? nextStart = index + 1 < turns.Count
+                ? turns[index + 1].Start
+                : null;
+            DateTimeOffset upperBound = nextStart ??
+                (stop?.AddSeconds(5) ?? DateTimeOffset.MaxValue);
+            if (timestamp >= start && timestamp < upperBound)
+            {
+                return node.GenerationId;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<HookObservation> DescendantObservations(
+        TreeNodeViewModel node)
+    {
+        foreach (TreeNodeViewModel child in node.Children)
+        {
+            if (child.Observation is HookObservation observation)
+            {
+                yield return observation;
+            }
+
+            foreach (HookObservation nested in DescendantObservations(child))
+            {
+                yield return nested;
+            }
+        }
+    }
+
+    private void MergePendingCopilotTranscriptTurns(
+        TreeNodeViewModel sessionNode,
+        TreeNodeViewModel hookTurn,
+        DateTimeOffset promptTimestamp)
+    {
+        DateTimeOffset latestPendingTimestamp = promptTimestamp.AddSeconds(30);
+        TreeNodeViewModel[] pendingTurns = sessionNode.Children
+            .Where(node =>
+                node.Kind == TreeNodeKind.Generation &&
+                !ReferenceEquals(node, hookTurn) &&
+                node.GenerationId?.StartsWith(
+                    "transcript-",
+                    StringComparison.Ordinal) == true)
+            .Select(node => new
+            {
+                Node = node,
+                Observations = DescendantObservations(node).ToArray()
+            })
+            .Where(candidate =>
+                candidate.Observations.Length > 0 &&
+                candidate.Observations.All(observation => observation.IsTranscriptSourced))
+            .Select(candidate => new
+            {
+                candidate.Node,
+                FirstTimestamp = candidate.Observations.Min(
+                    observation => observation.EffectiveTimestamp)
+            })
+            .Where(candidate =>
+                candidate.FirstTimestamp >= promptTimestamp &&
+                candidate.FirstTimestamp <= latestPendingTimestamp)
+            .OrderBy(candidate => candidate.FirstTimestamp)
+            // One prompt opens exactly one interaction. If several transcript
+            // interactions accumulated while hook delivery lagged, leave the
+            // later ones pending for their own prompt instead of collapsing all.
+            .Take(1)
+            .Select(candidate => candidate.Node)
+            .ToArray();
+
+        foreach (TreeNodeViewModel pendingTurn in pendingTurns)
+        {
+            foreach (TreeNodeViewModel child in pendingTurn.Children.ToArray())
+            {
+                pendingTurn.Children.Remove(child);
+                InsertChronologically(hookTurn.Children, child);
+            }
+
+            sessionNode.Children.Remove(pendingTurn);
+            _generationNodes.Remove(pendingTurn.Key);
+        }
+
+        if (pendingTurns.Length > 0)
+        {
+            ReorderSessionChildren(sessionNode);
+        }
     }
 
     // Attempts to nest the observation under an in-flight parent (matching
@@ -1365,8 +1512,9 @@ public sealed class MainWindowViewModel : ObservableObject
 
         node = new TreeNodeViewModel(generationKey, $"Turn {turnNumber}", TreeNodeKind.Generation)
         {
-            TurnNumber = turnNumber
+            GenerationId = generationId
         };
+        node.SetTurnNumber(turnNumber);
 
         _generationNodes.Add(generationKey, node);
         sessionNode.Children.Add(node);
@@ -2154,9 +2302,10 @@ public sealed class MainWindowViewModel : ObservableObject
                     !ReferenceEquals(hookNode, transcriptNode))
                 {
                     ReparentUnder(hookNode, transcriptNode);
-                    hookNode.AddEvidence(
-                        change.Observation,
-                        TranscriptRelationshipKind.HookInvocationEvidence);
+                    if (transcriptNode.Observation is HookObservation transcriptEvidence)
+                    {
+                        hookNode.AddEvidence(transcriptEvidence, change.Relationship);
+                    }
                 }
 
                 break;
@@ -2175,7 +2324,18 @@ public sealed class MainWindowViewModel : ObservableObject
         List<TreeNodeViewModel>? path = TreeNodeViewModel.FindAncestorPath(Roots, child);
         if (path is { Count: >= 2 })
         {
-            path[^2].Children.Remove(child);
+            TreeNodeViewModel formerParent = path[^2];
+            formerParent.Children.Remove(child);
+            if (formerParent.Kind == TreeNodeKind.Generation &&
+                formerParent.Children.Count == 0 &&
+                path.Count >= 3)
+            {
+                TreeNodeViewModel sessionNode = path[^3];
+                sessionNode.Children.Remove(formerParent);
+                _generationNodes.Remove(formerParent.Key);
+                ReorderSessionChildren(sessionNode);
+                sessionNode.RecomputeSession();
+            }
         }
 
         InsertChronologically(parent.Children, child);
@@ -2201,6 +2361,31 @@ public sealed class MainWindowViewModel : ObservableObject
         }
 
         children.Add(node);
+    }
+
+    private static void ReorderSessionChildren(TreeNodeViewModel sessionNode)
+    {
+        List<TreeNodeViewModel> sorted = sessionNode.Children.ToList();
+        sorted.Sort((left, right) => Compare(SortKey(left), SortKey(right)));
+
+        for (int targetIndex = 0; targetIndex < sorted.Count; targetIndex++)
+        {
+            TreeNodeViewModel target = sorted[targetIndex];
+            int currentIndex = sessionNode.Children.IndexOf(target);
+            if (currentIndex != targetIndex)
+            {
+                sessionNode.Children.Move(currentIndex, targetIndex);
+            }
+        }
+
+        int turnNumber = 1;
+        foreach (TreeNodeViewModel child in sessionNode.Children)
+        {
+            if (child.Kind == TreeNodeKind.Generation)
+            {
+                child.SetTurnNumber(turnNumber++);
+            }
+        }
     }
 
     // A node's chronological key: its own observation, or the earliest

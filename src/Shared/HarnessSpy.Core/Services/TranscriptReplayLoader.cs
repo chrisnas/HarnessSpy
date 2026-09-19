@@ -94,9 +94,7 @@ public sealed class TranscriptReplayLoader
             return;
         }
 
-        // Carry the last-seen turn id forward across rows (Claude stamps it
-        // only on user rows) so replayed assistant fragments join the right turn.
-        string? lastTurnId = null;
+        TranscriptTurnTracker turnTracker = new(manifest.DialectId);
         foreach (string wrapper in lines)
         {
             if (string.IsNullOrWhiteSpace(wrapper))
@@ -105,7 +103,7 @@ public sealed class TranscriptReplayLoader
             }
 
             HookObservation[] parsed = ParseCapturedRow(
-                wrapper, manifest, provider, surface, role, agentId, parser, ref lastTurnId);
+                wrapper, manifest, provider, surface, role, agentId, parser, turnTracker);
             observations.AddRange(parsed);
         }
     }
@@ -118,7 +116,7 @@ public sealed class TranscriptReplayLoader
         TranscriptFileRole role,
         string? agentId,
         ITranscriptDialectParser parser,
-        ref string? lastTurnId)
+        TranscriptTurnTracker turnTracker)
     {
         try
         {
@@ -140,10 +138,7 @@ public sealed class TranscriptReplayLoader
             long generation = root.TryGetProperty("generation", out JsonElement g) && g.TryGetInt64(out long gv) ? gv : 1;
 
             TranscriptRowScanner.RowMeta meta = TranscriptRowScanner.Read(raw);
-            if (meta.TurnId is string turnId)
-            {
-                lastTurnId = turnId;
-            }
+            string? turnHint = turnTracker.Observe(meta);
 
             TranscriptLine line = new(
                 raw,
@@ -161,7 +156,7 @@ public sealed class TranscriptReplayLoader
                 CapturedPath: path,
                 ContractVersion: manifest.ContractVersion,
                 ObservedAtUtc: meta.Timestamp,
-                TurnHint: lastTurnId);
+                TurnHint: turnHint);
 
             return [.. parser.Parse(line)];
         }

@@ -38,7 +38,7 @@ SessionViewer source and reconstruction contract.
 ## Contract version
 
 - Producer: `copilot-agent`, schema version `1`.
-- Verified versions: Copilot `1.0.81` and `1.0.82`.
+- Verified versions: Copilot `1.0.81`, `1.0.82`, and `1.0.86`.
 - Dialect id: `copilot-cli-events-v1`.
 - Envelope: every row is `{ type, data, id, timestamp, parentId }`.
 
@@ -62,17 +62,17 @@ SessionViewer source and reconstruction contract.
 | Concern | Hook | Transcript | Match |
 |---------|------|------------|-------|
 | Session | `sessionId` | parser uses the `TranscriptLine.NativeSessionId` supplied by discovery; it does not read `data.sessionId` | scoped identity supplied by the registry |
-| Turn | derived (`userPromptSubmitted`..`agentStop`) | the hook-side parser does not project `turnId`/`interactionId` | no turn reconciliation |
-| Tool call | often absent | `toolCallId` on projected tool records | exact only if the hook also has that ID; otherwise signature/FIFO for tool requests |
+| Turn | derived (`userPromptSubmitted`..`agentStop`) | `interactionId` spans the user interaction; native `turnId` identifies one model/tool step | timestamp alignment joins captured hook turns; unmatched history keeps a namespaced `transcript-interaction:*` key; native `turnId` remains provenance |
+| Tool call | often absent | `toolCallId` on projected tool records | exact shared ID, or canonical-argument signature for the request followed by an exact transcript-ID alias |
 | Record chain | - | `id`/`parentId` | chronological link only |
 
 ## Extraction-to-hook mapping
 
 | Transcript record | Target | Reconciliation key |
 |-------------------|--------|--------------------|
-| `assistant.message.toolRequests[]` | evidence on a matching canonical pre-tool request, otherwise standalone tool node | exact shared ID, else provider-scoped tool signature/FIFO |
-| `tool.execution_start`/`complete` | evidence on the canonical pre-tool request when an exact shared ID exists | `toolCallId`; execution rows do not signature-match |
-| `permission.requested`/`completed` | standalone permission node | no tool-call or `parentId` reconciliation is implemented |
+| `assistant.message.toolRequests[]` | evidence on a matching canonical pre-tool request, otherwise standalone tool node pending late-hook promotion | exact shared ID, else provider-scoped canonical-argument signature |
+| `tool.execution_start`/`complete` | evidence on the canonical pre-tool request, or on a pending transcript request until its hook arrives | `toolCallId` learned from the matched request |
+| `permission.requested`/`completed` | evidence on the matching tool request when `toolCallId` is present; otherwise standalone permission node | direct or nested `toolCallId` |
 | `reasoningOpaque`/`encryptedContent` | transcript-only opaque thought node | none |
 | `assistant.message.content` (final answer) | transcript-only assistant message | none |
 | `session.shutdown.tokenDetails` | no hook-side dashboard projection | raw capture only; SessionViewer handles it separately |
@@ -80,13 +80,22 @@ SessionViewer source and reconstruction contract.
 ## Provider-specific semantics
 
 - The hook-side parser reads `mcpServerName` and `toolCallId` on tool
-  requests/executions. It uses `mcpToolName` only in the display header and
+  requests/executions. Copilot 1.0.86 execution rows use `toolName`; older
+  rows used `name`, and both are accepted. It uses `mcpToolName` only in the display header and
   does not populate structured `McpToolName`; `toolTitle` is not read. For
-  permissions it recognizes `permissionRequest.kind:"mcp"` and nested approval
-  kind. Flat hyphenated names are never split.
+  permissions it recognizes `permissionRequest.kind:"mcp"`, nested approval
+  kind, and direct or nested tool-call ids. Flat hyphenated names are never split.
 - `assistant.message.toolRequests[]` is expanded into one transcript
   observation per request. Each request independently attempts exact-ID or
-  signature/FIFO correlation with a canonical pre-tool hook.
+  canonical-argument correlation with a canonical pre-tool hook. The signature
+  normalizes the complete `arguments`/`toolArgs`/`tool_input`/`input` value so
+  parallel shell calls do not depend on arrival-order FIFO.
+- `user.message` starts one namespaced transcript interaction. Every following
+  assistant model step remains in that interaction until the next user message.
+  The WPF projection aligns it to a captured hook-derived turn by timestamp;
+  unmatched historical interactions remain separate and cannot collide with a
+  process-local `derived-N`. Copilot's native `turnId` resets for each
+  interaction and is not a tree generation id.
 - In the verified hook-enrichment fixture, reasoning is opaque. The hook-side
   parser does not extract `reasoningTokens` or any other usage from Copilot
   transcript rows. SessionViewer supports usage extraction and also supports
@@ -116,8 +125,7 @@ ids are present. Fixtures must be redacted.
 ## Known unknowns / unverified
 
 The verified hook-enrichment fixtures do not establish subagent execution,
-skill execution, compaction, `postToolUseFailure`, `errorOccurred`, multi-turn
-work after the first discovered path, or any VS Code Local
+skill execution, compaction, `postToolUseFailure`, `errorOccurred`, or any VS Code Local
 transcript/SDK/OTel pointer. SessionViewer has capability-based handlers for
 `subagent.*`, `skill.*`, and event names containing `compact`, but those
 handlers do not turn an unverified provider schema into a guaranteed contract.

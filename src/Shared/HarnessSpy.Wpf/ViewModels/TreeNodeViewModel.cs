@@ -84,7 +84,12 @@ public sealed class TreeNodeViewModel : ObservableObject
 
     // 1-based position of this turn within its session; only meaningful for
     // generation nodes.
-    public int TurnNumber { get; init; }
+    public int TurnNumber { get; private set; }
+
+    // Stable generation key within the owning session. Hook-native turns use
+    // their native id; derived hook turns use derived-N; transcript-only
+    // interactions use a namespaced fallback.
+    public string? GenerationId { get; init; }
 
     public HookObservation? Observation { get; }
 
@@ -220,6 +225,17 @@ public sealed class TreeNodeViewModel : ObservableObject
     public void MarkHasReplayFiles()
     {
         HasReplayFiles = true;
+    }
+
+    public void SetTurnNumber(int turnNumber)
+    {
+        if (Kind != TreeNodeKind.Generation || TurnNumber == turnNumber)
+        {
+            return;
+        }
+
+        TurnNumber = turnNumber;
+        RecomputeGeneration();
     }
 
     // Rebuilds the turn label (from the prompt, once seen) and the summary
