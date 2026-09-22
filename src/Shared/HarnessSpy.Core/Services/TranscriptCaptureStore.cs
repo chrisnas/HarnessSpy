@@ -98,6 +98,37 @@ public sealed class TranscriptCaptureStore
                 string directory = SidecarDirectory(scopedSessionId);
                 Directory.CreateDirectory(directory);
                 string file = Path.Combine(directory, "manifest.json");
+                if (File.Exists(file))
+                {
+                    try
+                    {
+                        TranscriptSessionManifest? existing =
+                            JsonSerializer.Deserialize<TranscriptSessionManifest>(
+                                File.ReadAllText(file),
+                                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                        if (existing is not null)
+                        {
+                            manifest = manifest with
+                            {
+                                ContractVersion =
+                                    manifest.ContractVersion ??
+                                    existing.ContractVersion,
+                                CaptureState = MergeCaptureState(
+                                    existing.CaptureState,
+                                    manifest.CaptureState),
+                                SourceFiles = existing.SourceFiles
+                                    .Concat(manifest.SourceFiles)
+                                    .Distinct(StringComparer.Ordinal)
+                                    .Order(StringComparer.Ordinal)
+                                    .ToArray()
+                            };
+                        }
+                    }
+                    catch (JsonException)
+                    {
+                    }
+                }
+
                 string json = JsonSerializer.Serialize(
                     manifest,
                     new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true });
@@ -110,6 +141,31 @@ public sealed class TranscriptCaptureStore
         catch (UnauthorizedAccessException)
         {
         }
+    }
+
+    private static EnrichmentCaptureState MergeCaptureState(
+        EnrichmentCaptureState first,
+        EnrichmentCaptureState second)
+    {
+        if (first == EnrichmentCaptureState.MissedBeforeCapture ||
+            second == EnrichmentCaptureState.MissedBeforeCapture)
+        {
+            return EnrichmentCaptureState.MissedBeforeCapture;
+        }
+
+        if (first == EnrichmentCaptureState.BackfilledBeforeDeletion ||
+            second == EnrichmentCaptureState.BackfilledBeforeDeletion)
+        {
+            return EnrichmentCaptureState.BackfilledBeforeDeletion;
+        }
+
+        if (first == EnrichmentCaptureState.LiveCaptured ||
+            second == EnrichmentCaptureState.LiveCaptured)
+        {
+            return EnrichmentCaptureState.LiveCaptured;
+        }
+
+        return second != EnrichmentCaptureState.None ? second : first;
     }
 
     // Returns the set of already-captured (generation:offset) keys for a source

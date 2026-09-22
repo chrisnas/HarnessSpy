@@ -11,9 +11,10 @@ This contract describes the **hook-side transcript enrichment parser** used by
 the ClaudeSpy runtime. SessionViewer has a separate, broader passive-history
 pipeline:
 
-- `ClaudeTranscriptDialectParser` emits observations only for assistant and
-  user rows. Other row families remain durable source evidence but do not
-  become runtime tree nodes here.
+- `ClaudeTranscriptDialectParser` emits visible assistant thinking plus
+  tool evidence, and projects high-value `turn_duration`, `cost-state`, and
+  skill attachments as metadata-only turn/session evidence. Other row families
+  remain durable source evidence without timeline nodes.
 - SessionViewer uses `Sessions/Claude/ClaudeSessionCatalogBuilder.cs`. It reads
   main, recovery, and recursively nested subagent JSONL, optional
   `sessions-index.json`, and subagent `.meta.json` files.
@@ -48,10 +49,10 @@ SessionViewer source and reconstruction contract.
 | `assistant` | content blocks `thinking`, `text`, `tool_use` |
 | `user` | content blocks `text`, `tool_result` (+ structured `toolUseResult`) |
 | `mode`, `permission-mode`, `atis-latch`, `last-prompt`, `ai-title`, `agent-name`, `queue-operation`, `fork-context-ref` | metadata; durably captured, not turned into nodes |
-| `system` (`stop_hook_summary`, `turn_duration`, `away_summary`, `compact_boundary`) | metadata; captured |
-| `attachment` (`skill_listing`, `deferred_tools_delta`, `agent_listing_delta`, `file`, `edited_text_file`, `compact_file_reference`, `read_truncation_notice`, `plan_mode`, `plan_mode_exit`) | metadata; captured |
+| `system` subtype `turn_duration` | typed turn-scoped duration/accounting evidence; other system subtypes remain raw capture |
+| `attachment` subtype `skill_listing` / `skill_activated` | metadata-only `Available` / `Invoked` skill evidence; other attachment subtypes remain raw capture |
 | `file-history-snapshot`/`file-history-delta` | metadata; captured |
-| `cost-state` | raw metadata in the hook-side capture; SessionViewer separately selects the latest snapshot |
+| `cost-state` | metadata-only session snapshots for cost, lines, duration, and per-model usage; summary aggregation selects the latest final snapshot |
 
 Assistant content blocks: `thinking` (197), `tool_use` (363), `text` (113);
 user rows carry `tool_result` (363). Large sessions use one block per row and
@@ -72,12 +73,13 @@ link steps by `uuid`/`parentUuid`; multi-block rows are tolerated.
 | Transcript record | Target | Reconciliation key |
 |-------------------|--------|--------------------|
 | `thinking` block | transcript-only readable or opaque thought node | none (no hook counterpart) |
-| `text` block | transcript-only assistant message | none |
+| `text` block | metadata-only turn evidence, avoiding a duplicate of `MessageDisplay`/`Stop.last_assistant_message` | carried `promptId` |
 | `tool_use` block | evidence attached to the canonical pre-tool request | exact `tool_use.id` |
 | `tool_result` + `toolUseResult` | success/failure evidence attached to that same pre-tool request | exact `tool_use_id` |
-| assistant `usage` | typed measurements on a projected thinking fragment | source row/provenance dedupe |
-| `cost-state` | no hook-side observation node | raw capture only; SessionViewer handles it separately |
-| subagent transcript row | transcript observation carrying subagent-file provenance | no exact subagent reconciliation key is currently set by this parser |
+| assistant `usage` | typed measurements on the first projected assistant fragment, or hidden turn evidence when no block projects | source record plus typed snapshot/delta behavior |
+| `turn_duration` | metadata-only evidence on the owning turn | carried `promptId` |
+| `cost-state` | metadata-only session evidence and accounting rows | latest `FinalSnapshot` per metric |
+| subagent transcript row | evidence carrying `SubagentId`, attached to matching `SubagentStart` when available | exact `agent_id` from binding/row |
 
 ## Provider-specific semantics
 
@@ -86,35 +88,31 @@ link steps by `uuid`/`parentUuid`; multi-block rows are tolerated.
   `usage.output_tokens_details.thinking_tokens`. The parser also supports
   readable `thinking` text. SessionViewer additionally treats
   `redacted_thinking` as opaque even when no signature is available.
-- In the hook-side parser, assistant usage is read once per assistant row but
-  is currently attached to every projected `thinking` fragment. If a row has
-  no projected thinking block, that parser emits no usage measurement for the
-  row. SessionViewer is broader: it attaches usage to the first projected
-  assistant block (or a hidden usage event), deduplicates by message ID plus
-  usage JSON, and selects the latest `cost-state`.
-- Native `mcp__server__tool` names are preserved. The hook-side parser
-  classifies/tones the request as MCP but does not populate structured
-  `McpServerName`/`McpToolName` from attribution fields. SessionViewer does
-  split the native prefix and honors
-  `attributionMcpServer`/`attributionMcpTool`.
-- The hook-side parser currently marks a tool result failed only when
-  `toolUseResult.interrupted` is true. SessionViewer additionally recognizes
-  explicit error/success fields, denial state, and error payloads.
+- Assistant usage is read once per assistant row and attached to the first
+  projected block, or to metadata-only usage evidence when no block projects.
+  Source-record dedupe and typed behavior prevent repeated snapshots from being
+  summed.
+- Native `mcp__server__tool` names are preserved. Shared semantics split the
+  native prefix and honor `attributionMcpServer`/`attributionMcpTool` for both
+  live Spy and SessionViewer.
+- The shared Claude transcript semantics recognize interruption, explicit
+  error/success fields, denial state, and error payloads in both live Spy and
+  SessionViewer.
 - `deferred_tools_delta` is availability metadata, not an invocation.
 
 ## Skill / usage / opaque states
 
-- In the hook-enrichment runtime, attachment rows are retained as source
-  evidence but are not emitted as transcript nodes. In SessionViewer,
-  `skill_listing` produces `Available`, `skill_activated` produces `Invoked`,
-  and `attributionSkill`/`skill` on assistant content produces `Invoked`.
+- In the hook-enrichment runtime, `skill_listing` produces metadata-only
+  `Available`, `skill_activated` produces `Invoked`, and a `Skill` tool or
+  `attributionSkill`/`skill` on assistant content produces `Invoked`.
   Neither pipeline upgrades that evidence to `Loaded` or
   `ExecutionCorroborated` without a record that explicitly proves that stage.
-- The hook-side parser emits turn-scoped assistant token measurements only as
-  described above. SessionViewer additionally projects `turn_duration` and
-  session-scoped `cost-state`, with snapshot/delta behavior tracked explicitly.
-- Opaque states: an empty/redacted thinking block with a signature is Opaque;
-  readable thinking remains Observed. Deleted subagent transcripts are
+- The hook-side parser and SessionViewer both expose typed assistant usage,
+  turn duration, and session-scoped cost-state. Shared aggregation respects
+  request/turn/session scope and delta/cumulative/final behavior.
+- Opaque states: an empty thinking block with a signature and every
+  `redacted_thinking` block is Opaque; readable thinking remains Observed.
+  Deleted subagent transcripts are
   Unavailable (`MissedBeforeCapture`) in the hook-side capture pipeline.
 
 ## Privacy notes

@@ -25,4 +25,5 @@ public sealed record ObservationChange(
     ObservationChangeKind Kind,
     HookObservation Observation,
     Guid? TargetEventId = null,
-    TranscriptRelationshipKind Relationship = TranscriptRelationshipKind.EvidenceOf);
+    TranscriptRelationshipKind Relationship = TranscriptRelationshipKind.EvidenceOf,
+    InferenceEvidence BindingEvidence = InferenceEvidence.Observed);

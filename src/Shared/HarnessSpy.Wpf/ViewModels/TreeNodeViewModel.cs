@@ -16,7 +16,21 @@ public enum TreeNodeKind
 // evidence, with the relationship that ties them together.
 public sealed record TranscriptEvidence(
     HookObservation Observation,
-    TranscriptRelationshipKind Relationship);
+    TranscriptRelationshipKind Relationship,
+    InferenceEvidence BindingEvidence)
+{
+    public string Header =>
+        $"{Relationship} \u00b7 {Observation.HookEventName} \u00b7 {BindingEvidence}";
+
+    public IReadOnlyList<PayloadField> Details => Observation.DetailFields;
+
+    public string ReadableContent =>
+        Observation.SystemPrompt?.Text ?? string.Empty;
+
+    public bool HasReadableContent => ReadableContent.Length > 0;
+
+    public string RawPayload => Observation.DisplayJson;
+}
 
 public enum SessionStatus
 {
@@ -111,9 +125,15 @@ public sealed class TreeNodeViewModel : ObservableObject
     // badge so heuristic transcript matches are never presented as exact.
     public string? CorrelationConfidence => Observation?.Interpretation.Evidence.ToString();
 
-    public void AddEvidence(HookObservation observation, TranscriptRelationshipKind relationship)
+    public void AddEvidence(
+        HookObservation observation,
+        TranscriptRelationshipKind relationship,
+        InferenceEvidence bindingEvidence = InferenceEvidence.Observed)
     {
-        Evidence.Add(new TranscriptEvidence(observation, relationship));
+        Evidence.Add(new TranscriptEvidence(
+            observation,
+            relationship,
+            bindingEvidence));
         OnPropertyChanged(nameof(HasEvidence));
     }
 
@@ -196,6 +216,17 @@ public sealed class TreeNodeViewModel : ObservableObject
     public bool IsPermissionDenied =>
         Observation?.Interpretation.Role == ObservationRole.PermissionDenied;
 
+    public bool IsSystemPrompt =>
+        Observation?.Interpretation.Role == ObservationRole.SystemPrompt ||
+        Observation?.EventKind == CanonicalEventKind.SystemPromptSnapshot;
+
+    public string ReadableContent =>
+        Observation?.SystemPrompt?.Text ??
+        (IsSystemPrompt ? Observation?.Text : null) ??
+        string.Empty;
+
+    public bool HasReadableContent => ReadableContent.Length > 0;
+
     // A node carries skill evidence when a skill was read, invoked, or attached:
     // Claude's "Skill" tool or a SKILL.md read (SkillName), and Cursor's
     // manually-attached skill (Interpretation.Skill). Keyed on evidence, not
@@ -208,7 +239,8 @@ public sealed class TreeNodeViewModel : ObservableObject
     // foreground on the selection highlight so they stay readable when selected.
     public bool UsesLightForegroundWhenSelected =>
         IsAgentThought || IsParallelWave || IsToolBatchGroup || IsStop || IsCompaction ||
-        IsPermission || IsPermissionDenied || IsTranscriptSourced || IsSkill;
+        IsPermission || IsPermissionDenied || IsSystemPrompt ||
+        IsTranscriptSourced || IsSkill;
 
     // The full assistant/thinking text, shown as a hover tooltip. The engine
     // decides which observations expose hover text (assistant/thinking output).
@@ -248,7 +280,12 @@ public sealed class TreeNodeViewModel : ObservableObject
             return;
         }
 
-        NodeSummary = SummaryStrategies.Build(Children, isSession: false, turnCount: 0, abortedTurnCount: 0);
+        NodeSummary = SummaryStrategies.Build(
+            Children,
+            isSession: false,
+            turnCount: 0,
+            abortedTurnCount: 0,
+            Evidence);
         Summary = NodeSummary.Badge;
         Header = FindPrompt(Children) is string prompt
             ? $"Turn {TurnNumber} · {BuildPromptPreview(prompt)}"
@@ -278,7 +315,12 @@ public sealed class TreeNodeViewModel : ObservableObject
             }
         }
 
-        NodeSummary = SummaryStrategies.Build(Children, isSession: true, turnCount, abortedTurnCount);
+        NodeSummary = SummaryStrategies.Build(
+            Children,
+            isSession: true,
+            turnCount,
+            abortedTurnCount,
+            Evidence);
         Summary = NodeSummary.Badge;
 
         // Relabel the session with its opening prompt (like turn nodes) so the

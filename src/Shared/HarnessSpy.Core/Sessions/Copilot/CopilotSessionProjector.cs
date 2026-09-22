@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text.Json;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Runtimes;
 
 namespace HarnessSpy.Core.Sessions.Copilot;
 
@@ -63,6 +64,8 @@ internal sealed class CopilotEventSpec
     public string? PromptText { get; init; }
 
     public string? Text { get; init; }
+
+    public SystemPromptContent? SystemPrompt { get; init; }
 
     public string? Model { get; init; }
 
@@ -244,8 +247,10 @@ internal sealed class CopilotSessionProjector
     private readonly CopilotJsonValueReader _json;
     private readonly CopilotTimestampParser _timestampParser;
     private readonly CopilotToolSemantics _toolSemantics;
+    private readonly CopilotExecutionSemantics _executionSemantics;
     private readonly CopilotUsageExtractor _usageExtractor;
     private readonly CopilotMetadataValueFormatter _metadataFormatter;
+    private readonly SystemPromptTextNormalizer _systemPromptNormalizer = new();
     private readonly Dictionary<string, CopilotTurnBuilder> _turns =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _interactionTurns =
@@ -265,6 +270,7 @@ internal sealed class CopilotSessionProjector
         new(StringComparer.Ordinal);
     private readonly List<SessionSourceProvenance> _sources = [];
     private readonly List<SessionFileBinding> _files = [];
+    private readonly List<SessionEventRecord> _sessionEvents = [];
     private readonly List<SessionEventRecord> _pendingMainEvents = [];
     private readonly Dictionary<string, string?> _metadata =
         new(StringComparer.Ordinal);
@@ -301,6 +307,7 @@ internal sealed class CopilotSessionProjector
         _json = new CopilotJsonValueReader();
         _timestampParser = new CopilotTimestampParser();
         _toolSemantics = new CopilotToolSemantics(_json);
+        _executionSemantics = new CopilotExecutionSemantics(_json);
         _usageExtractor = new CopilotUsageExtractor(_json);
         _metadataFormatter = new CopilotMetadataValueFormatter();
 
@@ -600,6 +607,10 @@ internal sealed class CopilotSessionProjector
             LifecycleState = lifecycleState,
             LifecycleEvidence = lifecycleEvidence,
             Files = _files.ToArray(),
+            SessionEvents = _sessionEvents
+                .OrderBy(static item => item.TimestampUtc ?? DateTimeOffset.MinValue)
+                .ThenBy(static item => item.Order)
+                .ToArray(),
             Turns = turns,
             Metadata = new ReadOnlyDictionary<string, string?>(_metadata),
             Sources = sources
@@ -794,34 +805,68 @@ internal sealed class CopilotSessionProjector
             context.AgentId,
             allowCreate: false,
             preferredSyntheticPrefix: "system");
-        CopilotEventSpec messageSpec = new()
+        string? role = _json.String(context.Data, "role");
+        string? content = _json.Text(context.Data, "content");
+        SystemPromptContent? systemPrompt =
+            string.Equals(role, "system", StringComparison.Ordinal)
+                ? _systemPromptNormalizer.FromString(content)
+                : null;
+
+        if (systemPrompt is not null)
         {
-            NativeName = context.Type,
-            Role = ObservationRole.Message,
-            Direction = ObservationDirection.Input,
-            TurnId = nativeTurnId ?? turnId,
-            Text = _json.Text(context.Data, "content"),
-            Status = _json.String(context.Data, "role"),
-            AgentId = context.AgentId,
-            Evidence = turnId is null
-                ? InferenceEvidence.Derived
-                : InferenceEvidence.Observed,
-            ExcludeFromSummary = true
-        };
-        if (turnId is null)
+            _sessionEvents.Add(Materialize(
+                context,
+                new CopilotEventSpec
+                {
+                    NativeName = context.Type,
+                    Role = ObservationRole.SystemPrompt,
+                    EventKind = CanonicalEventKind.SystemPromptSnapshot,
+                    Direction = ObservationDirection.Input,
+                    TurnId = nativeTurnId ?? turnId,
+                    Text = systemPrompt.Text,
+                    SystemPrompt = systemPrompt,
+                    Status = role,
+                    AgentId = context.AgentId,
+                    Evidence = InferenceEvidence.Observed,
+                    ExcludeFromSummary = true
+                }));
+        }
+        else
         {
-            if (context.AgentId is null)
+            CopilotEventSpec messageSpec = new()
             {
-                _pendingMainEvents.Add(Materialize(context, messageSpec));
+                NativeName = context.Type,
+                Role = ObservationRole.Message,
+                Direction = ObservationDirection.Input,
+                TurnId = nativeTurnId ?? turnId,
+                Text = content,
+                Status = role,
+                AgentId = context.AgentId,
+                Evidence = turnId is null
+                    ? InferenceEvidence.Derived
+                    : InferenceEvidence.Observed,
+                ExcludeFromSummary = true
+            };
+            if (turnId is null)
+            {
+                if (context.AgentId is null)
+                {
+                    _pendingMainEvents.Add(Materialize(context, messageSpec));
+                }
+
+                return;
             }
 
-            return;
+            AddToTurn(
+                turnId,
+                context,
+                messageSpec);
         }
 
-        AddToTurn(
-            turnId,
-            context,
-            messageSpec);
+        if (turnId is null)
+        {
+            return;
+        }
 
         JsonElement? skills = _json.Array(context.Data, "skills", "availableSkills");
         if (skills is null)
@@ -1667,6 +1712,7 @@ internal sealed class CopilotSessionProjector
             McpToolName = spec.McpToolName,
             PromptText = spec.PromptText,
             Text = spec.Text,
+            SystemPrompt = spec.SystemPrompt,
             Model = spec.Model,
             Mode = spec.Mode,
             Status = spec.Status,
@@ -1970,43 +2016,7 @@ internal sealed class CopilotSessionProjector
         _json.String(data, "turnId", "turn_id");
 
     private string? ReadToolCallId(JsonElement data)
-    {
-        string? direct = _json.String(
-            data,
-            "toolCallId",
-            "tool_call_id",
-            "callId");
-        if (direct is not null)
-        {
-            return direct;
-        }
-
-        foreach (string nestedName in new[]
-        {
-            "permissionRequest",
-            "promptRequest",
-            "result"
-        })
-        {
-            JsonElement? nested = _json.Object(data, nestedName);
-            if (nested is null)
-            {
-                continue;
-            }
-
-            string? nestedId = _json.String(
-                nested.Value,
-                "toolCallId",
-                "tool_call_id",
-                "callId");
-            if (nestedId is not null)
-            {
-                return nestedId;
-            }
-        }
-
-        return null;
-    }
+        => _executionSemantics.ReadToolCallId(data);
 
     private string? ReadTask(JsonElement request)
     {
@@ -2040,19 +2050,7 @@ internal sealed class CopilotSessionProjector
     }
 
     private string? ReadResultText(JsonElement data)
-    {
-        JsonElement? result = _json.Object(data, "result");
-        string? resultText = result is null
-            ? null
-            : _json.Text(
-                result.Value,
-                "content",
-                "detailedContent",
-                "text",
-                "message");
-        return resultText ??
-            _json.Text(data, "content", "error", "message");
-    }
+        => _executionSemantics.ReadResultText(data);
 
     private string? ReadModelText(JsonElement data)
     {
@@ -2069,67 +2067,16 @@ internal sealed class CopilotSessionProjector
     }
 
     private string? ReadStatus(JsonElement data)
-    {
-        string? direct = _json.String(
-            data,
-            "status",
-            "kind",
-            "stopReason");
-        if (direct is not null)
-        {
-            return direct;
-        }
-
-        JsonElement? result = _json.Object(data, "result");
-        return result is null
-            ? null
-            : _json.String(result.Value, "kind", "status");
-    }
+        => _executionSemantics.ReadStatus(data);
 
     private double? ReadDuration(JsonElement data)
-    {
-        foreach (string name in new[]
-        {
-            "durationMs",
-            "modelCallDurationMs",
-            "totalApiDurationMs",
-            "endToEndLatencyMs",
-            "latencyMs"
-        })
-        {
-            double? value = _json.Number(data, name);
-            if (value is not null)
-            {
-                return Math.Max(0, value.Value);
-            }
-        }
-
-        return null;
-    }
+        => _executionSemantics.ReadDuration(data);
 
     private bool IsFailure(JsonElement data)
-    {
-        bool? success = _json.Boolean(data, "success");
-        if (success == false)
-        {
-            return true;
-        }
-
-        return HasNonNullProperty(data, "error") ||
-            ContainsFailureWord(ReadStatus(data));
-    }
+        => _executionSemantics.IsFailure(data);
 
     private bool IsAborted(JsonElement data)
-    {
-        if (_json.Boolean(data, "aborted", "cancelled", "canceled") == true)
-        {
-            return true;
-        }
-
-        string? status = ReadStatus(data);
-        return status?.Contains("abort", StringComparison.OrdinalIgnoreCase) == true ||
-            status?.Contains("cancel", StringComparison.OrdinalIgnoreCase) == true;
-    }
+        => _executionSemantics.IsAborted(data);
 
     private bool HasNonNullProperty(JsonElement data, string name)
     {

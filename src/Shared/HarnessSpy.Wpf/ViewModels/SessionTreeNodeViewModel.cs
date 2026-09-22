@@ -15,6 +15,8 @@ public enum SessionTreeNodeKind
     ParallelGroup,
     Plan,
     PlanActivity,
+    SystemPromptGroup,
+    SystemPrompt,
     OrphanPlansRoot,
     PlanGroup
 }
@@ -124,11 +126,14 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         bool wasMcp = IsMcp;
         bool wasFailure = IsFailure;
         bool wasSkill = IsSkill;
+        bool wasSystemPrompt = IsSystemPrompt;
         string oldHeaderPrefix = HeaderPrefix;
         bool hadHoverText = HasHoverText;
         bool hadSimpleTooltip = HasSimpleTooltip;
         bool hadNodeSummary = HasNodeSummary;
         bool hadDashboardHover = HasDashboardHover;
+        bool hadReadableContent = HasReadableContent;
+        string oldReadableContent = ReadableContent;
         bool hadRawSource = HasRawSource;
         bool hadProvenance = HasProvenance;
 
@@ -234,6 +239,21 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         NotifyIfChanged(nameof(IsMcp), wasMcp, IsMcp);
         NotifyIfChanged(nameof(IsFailure), wasFailure, IsFailure);
         NotifyIfChanged(nameof(IsSkill), wasSkill, IsSkill);
+        NotifyIfChanged(
+            nameof(IsSystemPrompt),
+            wasSystemPrompt,
+            IsSystemPrompt);
+        NotifyIfChanged(
+            nameof(HasReadableContent),
+            hadReadableContent,
+            HasReadableContent);
+        if (!string.Equals(
+            oldReadableContent,
+            ReadableContent,
+            StringComparison.Ordinal))
+        {
+            OnPropertyChanged(nameof(ReadableContent));
+        }
         if (!string.Equals(
             oldHeaderPrefix,
             HeaderPrefix,
@@ -314,13 +334,22 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
 
     public bool IsTurn => Kind == SessionTreeNodeKind.Turn;
 
-    public bool IsEvent => Kind == SessionTreeNodeKind.Event;
+    public bool IsEvent =>
+        Kind is SessionTreeNodeKind.Event or SessionTreeNodeKind.SystemPrompt;
 
     public bool IsParallelGroup => Kind == SessionTreeNodeKind.ParallelGroup;
 
     public bool IsPlan => Kind == SessionTreeNodeKind.Plan;
 
     public bool IsPlanActivity => Kind == SessionTreeNodeKind.PlanActivity;
+
+    public bool IsSystemPromptGroup =>
+        Kind == SessionTreeNodeKind.SystemPromptGroup;
+
+    public bool IsSystemPrompt =>
+        Kind == SessionTreeNodeKind.SystemPrompt ||
+        EventRecord?.Role == ObservationRole.SystemPrompt ||
+        EventRecord?.EventKind == CanonicalEventKind.SystemPromptSnapshot;
 
     public bool IsOrphanPlansRoot => Kind == SessionTreeNodeKind.OrphanPlansRoot;
 
@@ -337,6 +366,13 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
     // Session and turn nodes show the rich, scrollable summary in an
     // interactive popup (like the xxxSpy apps' dashboard hover).
     public bool HasDashboardHover => HasNodeSummary;
+
+    public string ReadableContent =>
+        EventRecord?.SystemPrompt?.Text ??
+        (IsSystemPrompt ? EventRecord?.Text : null) ??
+        string.Empty;
+
+    public bool HasReadableContent => ReadableContent.Length > 0;
 
     // Message-style nodes (responses, thoughts, tool output) show their full
     // text in a plain tooltip; dashboard nodes use the popup instead so the two
@@ -424,6 +460,7 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         if (Contains(Header, query) ||
             Contains(Summary, query) ||
             Contains(HoverText, query) ||
+            Contains(ReadableContent, query) ||
             Contains(RawSource, query))
         {
             return true;

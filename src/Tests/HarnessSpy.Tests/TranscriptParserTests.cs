@@ -33,21 +33,51 @@ public sealed class TranscriptParserTests
         HookObservation prompt = observations.First(o => o.Interpretation.Role == ObservationRole.PromptSubmitted);
         Assert.Equal("demo-skill", prompt.Interpretation.Skill!.SkillName);
         Assert.Equal(SkillEvidenceStage.Attached, prompt.Interpretation.Skill!.Stage);
+        Assert.Equal("C:/skills/demo-skill/SKILL.md", prompt.Interpretation.Skill!.SourcePath);
         Assert.Contains("/demo-skill", prompt.SlashCommands);
 
         // The dynamic-tool call is toned as MCP.
         HookObservation dynamicCall = observations.First(o => o.ToolName == "CallDynamicTool");
         Assert.Equal(CanonicalToolKind.Mcp, dynamicCall.ToolKind);
+        Assert.Equal("user-pstacks", dynamicCall.McpServerName);
+        Assert.Equal("get_parallel_stacks", dynamicCall.McpToolName);
+        Assert.True(dynamicCall.Interpretation.ExcludeFromSummary);
+        Assert.NotNull(dynamicCall.AssistantStepId);
 
         // Every fragment carries transcript provenance with the dialect.
         Assert.All(observations, o =>
         {
             Assert.True(o.IsTranscriptSourced);
             Assert.Equal(DialectIds.CursorTranscript, o.Provenance!.DialectId);
+            Assert.Equal("transcript-cursor-turn:1", o.GenerationId);
         });
 
         // The turn_ended row becomes a TurnStop.
         Assert.Contains(observations, o => o.Interpretation.Role == ObservationRole.TurnStop);
+    }
+
+    [Fact]
+    public void CursorParserDropsOpaqueRedactionPlaceholder()
+    {
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(
+                DialectIds.CursorTranscript);
+        IReadOnlyList<HookObservation> observations = parser.Parse(new TranscriptLine(
+            """{"role":"assistant","message":{"content":[{"type":"text","text":"[REDACTED]"},{"type":"tool_use","name":"Shell","input":{"command":"dotnet test"}}]}}""",
+            "C:/cursor.jsonl",
+            0,
+            1,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.Cursor,
+            HookSurface.CursorIde,
+            DialectIds.CursorTranscript,
+            "Cursor:CursorIde:c1",
+            "c1",
+            TurnHint: "transcript-cursor-turn:1"));
+
+        HookObservation tool = Assert.Single(observations);
+        Assert.Equal("Shell", tool.ToolName);
     }
 
     [Fact]
@@ -76,8 +106,11 @@ public sealed class TranscriptParserTests
         HookObservation toolResult = observations.First(o => o.Interpretation.Role == ObservationRole.ToolSuccess);
         Assert.Equal("t1", toolResult.ToolUseId);
 
-        // Metadata rows (mode, system, cost-state) do not create nodes.
-        Assert.DoesNotContain(observations, o => o.HookEventName is "mode" or "cost-state" or "turn_duration");
+        // High-value duration/accounting rows become metadata-only evidence;
+        // low-value mode rows remain raw capture only.
+        Assert.Contains(observations, o => o.HookEventName == "turn_duration" && o.IsMetadataOnly);
+        Assert.Contains(observations, o => o.HookEventName == "cost-state" && o.IsMetadataOnly);
+        Assert.DoesNotContain(observations, o => o.HookEventName == "mode");
     }
 
     [Fact]
@@ -94,6 +127,43 @@ public sealed class TranscriptParserTests
         HookObservation toolUse = observations.First(o =>
             o.Interpretation.Role == ObservationRole.ToolRequest && o.ToolName == "Grep");
         Assert.Equal("st1", toolUse.ToolUseId);
+    }
+
+    [Fact]
+    public void ClaudeParserProjectsReadableSystemPromptSnapshot()
+    {
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(
+                DialectIds.ClaudeTranscript);
+        TranscriptLine line = new(
+            """{"parentUuid":"parent-1","attachment":{"type":"prompt_snapshot","systemPrompt":["\n# First\r\nUse C:\\repo and regex \\\\d+\n","## Second\nKeep  two spaces"]},"type":"attachment","uuid":"snapshot-1","sessionId":"s1"}""",
+            "C:/claude.jsonl",
+            0,
+            1,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.ClaudeCode,
+            HookSurface.ClaudeCode,
+            DialectIds.ClaudeTranscript,
+            "ClaudeCode:ClaudeCode:s1",
+            "s1",
+            TurnHint: "prompt-1");
+
+        HookObservation snapshot = Assert.Single(parser.Parse(line));
+
+        Assert.Equal(ObservationRole.SystemPrompt, snapshot.Interpretation.Role);
+        Assert.Equal(
+            CanonicalEventKind.SystemPromptSnapshot,
+            snapshot.EventKind);
+        Assert.Equal(ObservationScope.Session, snapshot.Interpretation.Scope);
+        Assert.Equal(
+            "# First\nUse C:\\repo and regex \\\\d+\n\n" +
+            "## Second\nKeep  two spaces",
+            snapshot.Text);
+        Assert.Equal(2, snapshot.SystemPrompt!.PartCount);
+        Assert.Equal(64, snapshot.SystemPrompt.ContentHash.Length);
+        Assert.Equal("prompt-1", snapshot.Provenance!.TurnId);
+        Assert.Null(snapshot.Interpretation.HoverText);
     }
 
     [Fact]
@@ -119,6 +189,37 @@ public sealed class TranscriptParserTests
             o.Interpretation.Role == ObservationRole.AgentThought &&
             o.Interpretation.Evidence == InferenceEvidence.Opaque);
         Assert.Contains(observations, o => o.Interpretation.Role == ObservationRole.PermissionRequest);
+        Assert.Contains(
+            observations,
+            o =>
+                o.HookEventName == "permission.completed" &&
+                o.ToolKind == CanonicalToolKind.Mcp);
+    }
+
+    [Fact]
+    public void CopilotParserProjectsOnlyConversationSystemMessages()
+    {
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(
+                DialectIds.CopilotCliTranscript);
+        HookObservation snapshot = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"system.message","id":"system-1","data":{"role":"system","content":"\n# Copilot\r\nUse C:\\repo and regex \\\\d+\n","turnId":"1","interactionId":"i1"}}""",
+            "transcript-interaction:i1")));
+
+        Assert.Equal(ObservationRole.SystemPrompt, snapshot.Interpretation.Role);
+        Assert.Equal(
+            CanonicalEventKind.SystemPromptSnapshot,
+            snapshot.EventKind);
+        Assert.Equal(ObservationScope.Session, snapshot.Interpretation.Scope);
+        Assert.Equal(
+            "# Copilot\nUse C:\\repo and regex \\\\d+",
+            snapshot.Text);
+        Assert.Equal(1, snapshot.SystemPrompt!.PartCount);
+
+        IReadOnlyList<HookObservation> auxiliary = parser.Parse(CopilotLine(
+            """{"type":"model.messages_snapshot","id":"model-1","data":{"messages":[{"role":"system","content":"Generate a title"}]}}""",
+            "transcript-interaction:i1"));
+        Assert.Empty(auxiliary);
     }
 
     [Fact]
@@ -148,6 +249,81 @@ public sealed class TranscriptParserTests
             "derived-1")));
         Assert.Equal("call_1", completed.ToolUseId);
         Assert.Equal("derived-1", completed.GenerationId);
+
+        HookObservation aborted = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"tool.execution_complete","id":"e4","data":{"turnId":"4","interactionId":"i1","toolCallId":"call_1","toolName":"powershell","status":"cancelled"}}""",
+            "derived-1")));
+        Assert.Equal(ObservationRole.ToolFailure, aborted.Interpretation.Role);
+        Assert.Equal("cancelled", aborted.Status);
+    }
+
+    [Fact]
+    public void ClaudeEnrichmentFixtureProjectsSkillsDurationAndAccounting()
+    {
+        List<HookObservation> observations = ParseFixture(
+            DialectIds.ClaudeTranscript,
+            HookProvider.ClaudeCode,
+            HookSurface.ClaudeCode,
+            Fixture("ClaudeCode", "transcript-enrichment-sample.jsonl"));
+
+        Assert.Contains(
+            observations,
+            observation =>
+                observation.Interpretation.Role == ObservationRole.AgentThought &&
+                observation.Interpretation.Evidence == InferenceEvidence.Opaque);
+        Assert.Contains(
+            observations,
+            observation =>
+                observation.Interpretation.Skill?.Stage == SkillEvidenceStage.Available);
+        Assert.Contains(
+            observations,
+            observation =>
+                observation.Interpretation.Skill?.Stage == SkillEvidenceStage.Invoked);
+        Assert.Contains(
+            observations,
+            observation =>
+                observation.HookEventName == "turn_duration" &&
+                observation.IsMetadataOnly);
+        Assert.Contains(
+            observations.SelectMany(observation => observation.Interpretation.UsageMeasurements),
+            measurement =>
+                measurement.Name == "total_cost_usd" &&
+                measurement.Value == 250_000);
+    }
+
+    [Fact]
+    public void CopilotEnrichmentFixtureProjectsReasoningOutcomesAndAccounting()
+    {
+        List<HookObservation> observations = ParseFixture(
+            DialectIds.CopilotCliTranscript,
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            Fixture("CopilotCli", "transcript-enrichment-sample.jsonl"));
+
+        Assert.Contains(
+            observations,
+            observation =>
+                observation.Interpretation.Role == ObservationRole.AgentThought &&
+                observation.Text == "Inspect first.");
+        Assert.Contains(
+            observations,
+            observation =>
+                observation.Interpretation.Role == ObservationRole.ToolFailure &&
+                observation.ToolUseId == "call-1");
+        Assert.Contains(
+            observations,
+            observation =>
+                observation.Interpretation.Role == ObservationRole.PermissionDenied);
+        Assert.Contains(
+            observations,
+            observation =>
+                observation.Interpretation.Role == ObservationRole.AgentResponse &&
+                observation.Text == "The request was denied.");
+        Assert.Contains(
+            observations.SelectMany(observation => observation.Interpretation.UsageMeasurements),
+            measurement =>
+                measurement.Name == "totalNanoAiu" &&
+                measurement.Value == 75);
     }
 
     [Fact]
@@ -214,7 +390,12 @@ public sealed class TranscriptParserTests
         TranscriptRowScanner.RowMeta assistant = TranscriptRowScanner.Read(
             "{\"type\":\"assistant\",\"timestamp\":\"2026-08-30T15:29:05Z\"}");
         Assert.Null(assistant.TurnId);
+        Assert.Null(assistant.Role);
         Assert.NotNull(assistant.Timestamp);
+
+        TranscriptRowScanner.RowMeta cursor = TranscriptRowScanner.Read(
+            """{"role":"assistant","message":{"content":[]}}""");
+        Assert.Equal("assistant", cursor.Role);
 
         TranscriptRowScanner.RowMeta copilot = TranscriptRowScanner.Read(
             """{"type":"assistant.message","timestamp":"2026-09-19T09:21:19Z","data":{"turnId":"4","interactionId":"i1"}}""");
@@ -239,6 +420,108 @@ public sealed class TranscriptParserTests
         Assert.Equal("transcript-interaction:i1", first);
         Assert.Equal(first, laterStep);
         Assert.Equal("transcript-interaction:i2", second);
+    }
+
+    [Fact]
+    public void CursorTurnTrackerGroupsRowsBetweenPromptAndTurnEnd()
+    {
+        TranscriptTurnTracker tracker =
+            new(DialectIds.CursorTranscript);
+
+        string? prompt = tracker.Observe(TranscriptRowScanner.Read(
+            """{"role":"user","message":{"content":[]}}"""));
+        string? assistant = tracker.Observe(TranscriptRowScanner.Read(
+            """{"role":"assistant","message":{"content":[]}}"""));
+        string? ended = tracker.Observe(TranscriptRowScanner.Read(
+            """{"type":"turn_ended","status":"success"}"""));
+        string? nextPrompt = tracker.Observe(TranscriptRowScanner.Read(
+            """{"role":"user","message":{"content":[]}}"""));
+
+        Assert.Equal("transcript-cursor-turn:1", prompt);
+        Assert.Equal(prompt, assistant);
+        Assert.Equal(prompt, ended);
+        Assert.Equal("transcript-cursor-turn:2", nextPrompt);
+    }
+
+    [Fact]
+    public void ClaudeParserProjectsRedactedThinkingAndCostAccounting()
+    {
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.ClaudeTranscript);
+        HookObservation thinking = Assert.Single(parser.Parse(new TranscriptLine(
+            """{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"role":"assistant","content":[{"type":"redacted_thinking"}],"usage":{"input_tokens":12,"output_tokens":3,"output_tokens_details":{"thinking_tokens":2}}}}""",
+            "C:/claude.jsonl",
+            0,
+            1,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.ClaudeCode,
+            HookSurface.ClaudeCode,
+            DialectIds.ClaudeTranscript,
+            "ClaudeCode:ClaudeCode:s1",
+            "s1",
+            TurnHint: "p1")));
+        Assert.Equal(InferenceEvidence.Opaque, thinking.Interpretation.Evidence);
+        Assert.Contains(
+            thinking.Interpretation.UsageMeasurements,
+            measurement => measurement.Name == "thinking_tokens" && measurement.Value == 2);
+
+        HookObservation cost = Assert.Single(parser.Parse(new TranscriptLine(
+            """{"type":"cost-state","sessionId":"s1","totalCostUSD":0.25,"totalLinesAdded":4,"totalDuration":1500}""",
+            "C:/claude.jsonl",
+            100,
+            2,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.ClaudeCode,
+            HookSurface.ClaudeCode,
+            DialectIds.ClaudeTranscript,
+            "ClaudeCode:ClaudeCode:s1",
+            "s1")));
+        Assert.True(cost.IsMetadataOnly);
+        Assert.Contains(
+            cost.Interpretation.UsageMeasurements,
+            measurement =>
+                measurement.Name == "total_cost_usd" &&
+                measurement.Value == 250_000 &&
+                measurement.Unit == "micro-usd");
+    }
+
+    [Fact]
+    public void CopilotParserProjectsReasoningOutcomesAndFinalUsage()
+    {
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CopilotCliTranscript);
+        HookObservation reasoning = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"assistant.reasoning","id":"r1","data":{"turnId":"1","interactionId":"i1","content":"inspect first","usage":{"reasoningTokens":5}}}""",
+            "transcript-interaction:i1")));
+        Assert.Equal(ObservationRole.AgentThought, reasoning.Interpretation.Role);
+        Assert.Equal("inspect first", reasoning.Text);
+        Assert.Contains(
+            reasoning.Interpretation.UsageMeasurements,
+            measurement => measurement.Name.Contains("reasoningTokens", StringComparison.Ordinal));
+
+        HookObservation failure = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"tool.execution_complete","id":"e1","data":{"turnId":"1","interactionId":"i1","toolCallId":"call-1","toolName":"powershell","success":false,"error":"exit 1","durationMs":25}}""",
+            "transcript-interaction:i1")));
+        Assert.Equal(ObservationRole.ToolFailure, failure.Interpretation.Role);
+        Assert.Equal("call-1", failure.ToolUseId);
+        Assert.Equal(25, failure.DurationMs);
+
+        HookObservation denied = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"permission.denied","id":"p1","data":{"turnId":"1","interactionId":"i1","toolCallId":"call-1","status":"denied"}}""",
+            "transcript-interaction:i1")));
+        Assert.Equal(ObservationRole.PermissionDenied, denied.Interpretation.Role);
+
+        HookObservation shutdown = Assert.Single(parser.Parse(CopilotLine(
+            """{"type":"session.shutdown","id":"s1","data":{"tokenDetails":{"input":100,"output":20,"reasoningTokens":5},"totalNanoAiu":42,"totalPremiumRequests":1}}""",
+            turnHint: null!)));
+        Assert.True(shutdown.IsMetadataOnly);
+        Assert.Contains(
+            shutdown.Interpretation.UsageMeasurements,
+            measurement =>
+                measurement.Name == "totalNanoAiu" &&
+                measurement.Unit == "nano-AIU");
     }
 
     [Fact]

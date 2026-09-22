@@ -37,7 +37,8 @@ public sealed record TranscriptLine(
         string? turnId = null,
         string? interactionId = null,
         string? toolCallId = null,
-        string? discoveryHookEventId = null) =>
+        string? discoveryHookEventId = null,
+        string? assistantStepId = null) =>
         new(
             ObservationSourceKind.TranscriptFile,
             DialectId,
@@ -54,5 +55,6 @@ public sealed record TranscriptLine(
             interactionId,
             toolCallId,
             discoveryHookEventId,
-            ContractVersion);
+            ContractVersion,
+            assistantStepId);
 }

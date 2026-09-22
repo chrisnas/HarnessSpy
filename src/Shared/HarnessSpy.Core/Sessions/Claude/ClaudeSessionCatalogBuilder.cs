@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Runtimes;
+using HarnessSpy.Core.Runtimes.Claude;
 
 namespace HarnessSpy.Core.Sessions.Claude;
 
@@ -152,6 +153,7 @@ internal sealed class ClaudeSessionAccumulator
     private readonly string _sessionId;
     private readonly WorkspaceNormalizer _workspaceNormalizer;
     private readonly ClaudeJsonAccessor _json = new();
+    private readonly ClaudeTranscriptSemantics _transcriptSemantics = new();
     private readonly Dictionary<string, ClaudeTurnAccumulator> _turns =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _eventTurns =
@@ -161,6 +163,7 @@ internal sealed class ClaudeSessionAccumulator
     private readonly Dictionary<string, SessionFileBinding> _files =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly List<SessionSourceProvenance> _sources = [];
+    private readonly List<SessionEventRecord> _sessionEvents = [];
     private readonly Dictionary<string, string?> _metadata =
         new(StringComparer.Ordinal);
     private readonly HashSet<string> _usageSnapshots =
@@ -529,6 +532,10 @@ internal sealed class ClaudeSessionAccumulator
                 .OrderBy(static file => file.Role)
                 .ThenBy(static file => file.AgentId, StringComparer.Ordinal)
                 .ThenBy(static file => file.Path, StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            SessionEvents = _sessionEvents
+                .OrderBy(static item => item.TimestampUtc ?? DateTimeOffset.MinValue)
+                .ThenBy(static item => item.Order)
                 .ToArray(),
             Turns = turns,
             Metadata = new Dictionary<string, string?>(_metadata, StringComparer.Ordinal),
@@ -1101,6 +1108,37 @@ internal sealed class ClaudeSessionAccumulator
         }
 
         string attachmentType = _json.String(attachment, "type") ?? "attachment";
+        if (attachmentType == "prompt_snapshot")
+        {
+            SystemPromptContent? systemPrompt =
+                _transcriptSemantics.ReadSystemPrompt(attachment);
+            if (systemPrompt is null)
+            {
+                StoreRawMetadata(file, row, "attachment.prompt_snapshot");
+                return;
+            }
+
+            SessionEventRecord promptSnapshot = BaseEvent(
+                file,
+                row,
+                provenance,
+                timestamp,
+                promptId,
+                attachmentType,
+                "system-prompt") with
+            {
+                Role = ObservationRole.SystemPrompt,
+                EventKind = CanonicalEventKind.SystemPromptSnapshot,
+                Direction = ObservationDirection.Input,
+                Text = systemPrompt.Text,
+                SystemPrompt = systemPrompt,
+                Evidence = InferenceEvidence.Observed,
+                ExcludeFromSummary = true
+            };
+            _sessionEvents.Add(promptSnapshot);
+            return;
+        }
+
         if (attachmentType is "plan_mode" or "plan_mode_exit")
         {
             CapturePlanModeAttachment(
@@ -1248,7 +1286,11 @@ internal sealed class ClaudeSessionAccumulator
         _costStateProjected = true;
         ClaudeCostStateCandidate cost = _costState;
         JsonElement root = cost.Row.Json;
-        IReadOnlyList<UsageMeasurement> usage = CostMeasurements(root, cost.Provenance);
+        string costSourceId =
+            cost.Provenance.RecordId ??
+            $"cost-state:{cost.Provenance.Path}:{cost.Provenance.LineNumber}";
+        IReadOnlyList<UsageMeasurement> usage =
+            _transcriptSemantics.ReadCostState(root, costSourceId);
         _metadata["claude.costState"] = cost.Row.RawContent;
 
         DateTimeOffset? start = cost.StartedAtUtc;
@@ -1303,67 +1345,7 @@ internal sealed class ClaudeSessionAccumulator
             return [];
         }
 
-        List<UsageMeasurement> measurements = [];
-        AddUsage(
-            measurements,
-            usage,
-            "input_tokens",
-            UsageScope.Turn,
-            UsageBehavior.CumulativeSnapshot,
-            sourceRecordId);
-        AddUsage(
-            measurements,
-            usage,
-            "cache_read_input_tokens",
-            UsageScope.Turn,
-            UsageBehavior.CumulativeSnapshot,
-            sourceRecordId);
-        AddUsage(
-            measurements,
-            usage,
-            "cache_creation_input_tokens",
-            UsageScope.Turn,
-            UsageBehavior.CumulativeSnapshot,
-            sourceRecordId);
-        AddUsage(
-            measurements,
-            usage,
-            "output_tokens",
-            UsageScope.Turn,
-            UsageBehavior.Delta,
-            sourceRecordId);
-
-        if (usage.TryGetProperty(
-                "output_tokens_details",
-                out JsonElement outputDetails) &&
-            outputDetails.ValueKind == JsonValueKind.Object)
-        {
-            AddUsage(
-                measurements,
-                outputDetails,
-                "thinking_tokens",
-                UsageScope.Turn,
-                UsageBehavior.Delta,
-                sourceRecordId);
-        }
-
-        if (usage.TryGetProperty("server_tool_use", out JsonElement serverToolUse) &&
-            serverToolUse.ValueKind == JsonValueKind.Object)
-        {
-            foreach (JsonProperty property in serverToolUse.EnumerateObject())
-            {
-                AddUsage(
-                    measurements,
-                    serverToolUse,
-                    property.Name,
-                    UsageScope.Turn,
-                    UsageBehavior.Delta,
-                    sourceRecordId,
-                    unit: "requests");
-            }
-        }
-
-        return measurements;
+        return _transcriptSemantics.ReadAssistantUsage(message, sourceRecordId);
     }
 
     private IReadOnlyList<UsageMeasurement> CostMeasurements(
@@ -1793,23 +1775,13 @@ internal sealed class ClaudeSessionAccumulator
         JsonElement message,
         JsonElement block,
         string sourcePath)
-    {
-        if (string.Equals(nativeToolName, "Skill", StringComparison.OrdinalIgnoreCase) &&
-            input.ValueKind == JsonValueKind.Object)
-        {
-            string? invoked = _json.String(input, "skill", "skillName", "skill_name");
-            if (!string.IsNullOrWhiteSpace(invoked))
-            {
-                return new SkillEvidence(
-                    invoked.Trim(),
-                    SkillEvidenceStage.Invoked,
-                    InferenceEvidence.Observed,
-                    sourcePath);
-            }
-        }
-
-        return SkillAttribution(row, message, block, sourcePath);
-    }
+        => _transcriptSemantics.ReadSkill(
+            nativeToolName,
+            input,
+            row,
+            message,
+            block,
+            sourcePath);
 
     private SkillEvidence? SkillAttribution(
         JsonElement row,
@@ -1848,87 +1820,10 @@ internal sealed class ClaudeSessionAccumulator
     }
 
     private IReadOnlyList<string> SkillNames(JsonElement attachment)
-    {
-        HashSet<string> names = new(StringComparer.OrdinalIgnoreCase);
-        foreach (string propertyName in new[] { "names", "skills", "skillNames" })
-        {
-            if (!attachment.TryGetProperty(propertyName, out JsonElement value) ||
-                value.ValueKind != JsonValueKind.Array)
-            {
-                continue;
-            }
-
-            foreach (JsonElement item in value.EnumerateArray())
-            {
-                string? name = item.ValueKind switch
-                {
-                    JsonValueKind.String => item.GetString(),
-                    JsonValueKind.Object => _json.String(item, "name", "skillName"),
-                    _ => null
-                };
-                if (!string.IsNullOrWhiteSpace(name))
-                {
-                    names.Add(name.Trim());
-                }
-            }
-        }
-
-        string? content = _json.String(attachment, "content");
-        if (!string.IsNullOrWhiteSpace(content))
-        {
-            foreach (string line in content.Split(
-                         ['\r', '\n'],
-                         StringSplitOptions.RemoveEmptyEntries |
-                         StringSplitOptions.TrimEntries))
-            {
-                if (!line.StartsWith("- ", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                string name = line[2..];
-                int colon = name.IndexOf(':');
-                if (colon >= 0)
-                {
-                    name = name[..colon];
-                }
-
-                name = name.Trim();
-                if (name.Length > 0)
-                {
-                    names.Add(name);
-                }
-            }
-        }
-
-        return names.Order(StringComparer.OrdinalIgnoreCase).ToArray();
-    }
+        => _transcriptSemantics.ReadSkillNames(attachment);
 
     private bool IsToolFailure(JsonElement row, JsonElement block)
-    {
-        if ((_json.Boolean(block, "is_error", "isError") ?? false) ||
-            (_json.Boolean(row, "is_error", "isError") ?? false) ||
-            !string.IsNullOrWhiteSpace(_json.String(row, "toolDenialKind")))
-        {
-            return true;
-        }
-
-        if (!row.TryGetProperty("toolUseResult", out JsonElement result))
-        {
-            return false;
-        }
-
-        if (result.ValueKind == JsonValueKind.String)
-        {
-            string? text = result.GetString();
-            return text?.StartsWith("Error:", StringComparison.OrdinalIgnoreCase) == true;
-        }
-
-        return result.ValueKind == JsonValueKind.Object &&
-            ((_json.Boolean(result, "interrupted", "is_error", "isError") ?? false) ||
-             _json.Boolean(result, "success") == false ||
-             result.TryGetProperty("error", out _));
-    }
+        => _transcriptSemantics.IsToolFailure(row, block);
 
     private string? ToolResultText(JsonElement row, JsonElement block)
     {
@@ -1947,19 +1842,7 @@ internal sealed class ClaudeSessionAccumulator
         JsonElement row,
         JsonElement block,
         bool isFailure)
-    {
-        if (!string.IsNullOrWhiteSpace(_json.String(row, "toolDenialKind")))
-        {
-            return "denied";
-        }
-
-        bool interrupted =
-            (_json.Boolean(block, "interrupted") ?? false) ||
-            (row.TryGetProperty("toolUseResult", out JsonElement result) &&
-             result.ValueKind == JsonValueKind.Object &&
-             (_json.Boolean(result, "interrupted") ?? false));
-        return interrupted ? "interrupted" : isFailure ? "failure" : "success";
-    }
+        => _transcriptSemantics.ToolResultStatus(row, block, isFailure);
 
     private IReadOnlyList<string> TargetPaths(params JsonElement[] containers)
     {

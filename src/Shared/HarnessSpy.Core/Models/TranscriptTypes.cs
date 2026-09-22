@@ -77,6 +77,18 @@ public enum EnrichmentCaptureState
     Unsupported
 }
 
+// Human-readable system instructions captured by a provider immediately before
+// a model call. Text is JSON-decoded and line-ending-normalized; ContentHash is
+// calculated from that text so repeated snapshots can be coalesced without
+// losing their individual source occurrences.
+public sealed record SystemPromptContent(
+    string Text,
+    string ContentHash,
+    int PartCount)
+{
+    public int CharacterCount => Text.Length;
+}
+
 // Navigable relationships between nodes that do not replace the existing
 // tool/subagent parent-child rules.
 public enum TranscriptRelationshipKind

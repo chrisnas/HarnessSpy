@@ -338,6 +338,12 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
                     hash.Add(value, StringComparer.Ordinal);
                 }
 
+                foreach (SessionEventRecord item in session.SessionEvents)
+                {
+                    eventCount++;
+                    AddEvent(ref hash, item);
+                }
+
                 foreach (SessionTurn turn in session.Turns)
                 {
                     turnCount++;
@@ -425,6 +431,10 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
             hash.Add(item.McpToolName, StringComparer.Ordinal);
             hash.Add(item.PromptText, StringComparer.Ordinal);
             hash.Add(item.Text, StringComparer.Ordinal);
+            hash.Add(
+                item.SystemPrompt?.ContentHash,
+                StringComparer.Ordinal);
+            hash.Add(item.SystemPrompt?.PartCount);
             hash.Add(item.Model, StringComparer.Ordinal);
             hash.Add(item.Mode, StringComparer.Ordinal);
             hash.Add(item.Status, StringComparer.Ordinal);

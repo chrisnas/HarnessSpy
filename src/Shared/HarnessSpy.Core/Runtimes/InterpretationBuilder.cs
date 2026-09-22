@@ -20,6 +20,8 @@ internal sealed class InterpretationBuilder(string nativeEventName)
 
     public string? McpServerName { get; set; }
 
+    public string? McpToolName { get; set; }
+
     public string? TargetFilePath { get; set; }
 
     public IReadOnlyList<string> TargetFilePaths { get; set; } = [];
@@ -27,6 +29,12 @@ internal sealed class InterpretationBuilder(string nativeEventName)
     public string? PromptText { get; set; }
 
     public string? AssistantText { get; set; }
+
+    public SystemPromptContent? SystemPrompt { get; set; }
+
+    public string? Model { get; set; }
+
+    public string? AssistantStepId { get; set; }
 
     public string? Task { get; set; }
 
@@ -88,6 +96,8 @@ internal sealed class InterpretationBuilder(string nativeEventName)
 
     public bool EnrichmentOnly { get; set; }
 
+    public bool MetadataOnly { get; set; }
+
     public bool ExcludeFromSummary { get; set; }
 
     public SkillEvidence? Skill { get; set; }
@@ -127,8 +137,12 @@ internal sealed class InterpretationBuilder(string nativeEventName)
             SubagentType = SubagentType,
             ToolName = ToolName,
             McpServerName = McpServerName,
+            McpToolName = McpToolName,
             PromptText = PromptText,
             AssistantText = AssistantText,
+            SystemPrompt = SystemPrompt,
+            Model = Model,
+            AssistantStepId = AssistantStepId,
             TargetFilePath = TargetFilePath,
             TargetFilePaths = TargetFilePaths,
             Task = Task,
@@ -154,6 +168,7 @@ internal sealed class InterpretationBuilder(string nativeEventName)
             TranscriptReferences = TranscriptReferences,
             Evidence = Evidence,
             EnrichmentOnly = EnrichmentOnly,
+            MetadataOnly = MetadataOnly,
             ExcludeFromSummary = ExcludeFromSummary,
             Skill = Skill,
             UsageMeasurements = UsageMeasurements

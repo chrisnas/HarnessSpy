@@ -11,8 +11,10 @@ This contract describes the **hook-side transcript enrichment parser** used by
 the CopilotSpy runtime. SessionViewer uses a separate and substantially broader
 passive-history projector:
 
-- `CopilotCliTranscriptDialectParser` emits nodes for
-  `assistant.message`, tool execution, and permission request/completion rows.
+- `CopilotCliTranscriptDialectParser` emits conversational nodes for
+  assistant reasoning/final answers, attaches tool execution and permission
+  outcomes as evidence, and projects usage/model/context records as
+  metadata-only session evidence.
 - SessionViewer uses `Sessions/Copilot/CopilotSessionProjector.cs`. It also
   projects user/system messages, turn boundaries, readable
   `assistant.reasoning`, session lifecycle/context/model/mode records,
@@ -46,16 +48,17 @@ SessionViewer source and reconstruction contract.
 
 | `type` | Handling |
 |--------|----------|
-| `session.start` / `session.shutdown` | raw row captured; no hook-side observation node |
-| `session.usage_checkpoint` | raw row captured; no hook-side usage projection |
+| `session.start` | raw row captured; hook `sessionStart` remains authoritative |
+| `session.shutdown` | metadata-only final usage/accounting snapshot |
+| `session.usage_checkpoint` | metadata-only cumulative usage/accounting snapshot |
 | `user.message` | raw row captured; no hook-side prompt node |
 | `system.message` | raw row captured; no hook-side system/skill node |
 | `assistant.turn_start` / `assistant.turn_end` | raw row captured; no hook-side turn-boundary node |
-| `assistant.message` | projects final-answer `content`, `toolRequests[]`, and opaque reasoning |
-| `tool.execution_start` / `tool.execution_complete` | tool lifecycle |
-| `permission.requested` / `permission.completed` | permission flow |
+| `assistant.reasoning` / `assistant.message` | readable or opaque reasoning, final-answer `content`, usage, and `toolRequests[]` |
+| `tool.execution_start` / `tool.execution_complete` | exact-id lifecycle plus success/failure/abort/result/duration evidence |
+| `permission.requested` / `permission.completed` / `permission.denied` | exact-id permission flow and outcome |
 | `hook.start` / `hook.end` | raw row captured; no observation node |
-| `model_change`, `auto_mode_resolved` | raw row captured; no observation node |
+| model/mode/context/permission change families | compact metadata-only session evidence |
 
 ## Native ids and correlation keys
 
@@ -73,16 +76,17 @@ SessionViewer source and reconstruction contract.
 | `assistant.message.toolRequests[]` | evidence on a matching canonical pre-tool request, otherwise standalone tool node pending late-hook promotion | exact shared ID, else provider-scoped canonical-argument signature |
 | `tool.execution_start`/`complete` | evidence on the canonical pre-tool request, or on a pending transcript request until its hook arrives | `toolCallId` learned from the matched request |
 | `permission.requested`/`completed` | evidence on the matching tool request when `toolCallId` is present; otherwise standalone permission node | direct or nested `toolCallId` |
+| readable `assistant.reasoning` / `reasoningText` | transcript-only observed thought node | native interaction/assistant-step provenance |
 | `reasoningOpaque`/`encryptedContent` | transcript-only opaque thought node | none |
 | `assistant.message.content` (final answer) | transcript-only assistant message | none |
-| `session.shutdown.tokenDetails` | no hook-side dashboard projection | raw capture only; SessionViewer handles it separately |
+| message/request usage | turn/request typed measurements | source-record dedupe |
+| checkpoint/shutdown usage and provider accounting | session cumulative/final snapshots shown in dashboards | final snapshot supersedes checkpoint/deltas |
 
 ## Provider-specific semantics
 
-- The hook-side parser reads `mcpServerName` and `toolCallId` on tool
-  requests/executions. Copilot 1.0.86 execution rows use `toolName`; older
-  rows used `name`, and both are accepted. It uses `mcpToolName` only in the display header and
-  does not populate structured `McpToolName`; `toolTitle` is not read. For
+- The hook-side parser reads `mcpServerName`, `mcpToolName`, and `toolCallId`
+  on tool requests/executions. Copilot 1.0.86 execution rows use `toolName`;
+  older rows used `name`, and both are accepted. `toolTitle` remains raw-only. For
   permissions it recognizes `permissionRequest.kind:"mcp"`, nested approval
   kind, and direct or nested tool-call ids. Flat hyphenated names are never split.
 - `assistant.message.toolRequests[]` is expanded into one transcript
@@ -96,12 +100,10 @@ SessionViewer source and reconstruction contract.
   unmatched historical interactions remain separate and cannot collide with a
   process-local `derived-N`. Copilot's native `turnId` resets for each
   interaction and is not a tree generation id.
-- In the verified hook-enrichment fixture, reasoning is opaque. The hook-side
-  parser does not extract `reasoningTokens` or any other usage from Copilot
-  transcript rows. SessionViewer supports usage extraction and also supports
-  readable `assistant.reasoning.content` and
-  `assistant.message.reasoningText`; `reasoningOpaque` and
-  `encryptedContent` remain opaque.
+- The live parser and SessionViewer support readable
+  `assistant.reasoning.content`, `assistant.message.reasoningText`, and opaque
+  `reasoningOpaque`/`encryptedContent`. Both use the shared usage extractor for
+  token, duration, latency, premium-request, and nano-AIU fields.
 
 ## Skill / usage / opaque states
 
@@ -110,12 +112,12 @@ SessionViewer source and reconstruction contract.
   maps `skill.*` records to `Available`, `Attached`, `Invoked`, `Loaded`, or
   `ExecutionCorroborated` according to the exact event type. A usage checkpoint
   that merely lists a `skill` tool is not proof of invocation.
-- The hook-enrichment parser emits no Copilot transcript usage measurements.
-  SessionViewer separately handles per-event deltas, cumulative checkpoints,
-  and final shutdown snapshots while preserving units such as `totalNanoAiu`.
-- In the hook-side parser, `reasoningOpaque`/`encryptedContent` is Opaque and
-  readable reasoning events are not projected. SessionViewer projects both
-  readable and opaque forms.
+- Live Spy and SessionViewer both handle per-event deltas, cumulative
+  checkpoints, and final shutdown snapshots while preserving units such as
+  `totalNanoAiu`. Shared aggregation prevents checkpoint/final double-counting.
+- `reasoningOpaque`/`encryptedContent` is Opaque; readable
+  `assistant.reasoning` and `reasoningText` is Observed in both live Spy and
+  SessionViewer.
 
 ## Privacy notes
 

@@ -442,6 +442,14 @@ public sealed class SessionTreeProjector
             IsExpanded = expandedNodeIds.Contains(sessionId)
         };
 
+        SessionTreeNodeViewModel? systemPrompts = BuildSystemPromptGroup(
+            session,
+            expandedNodeIds);
+        if (systemPrompts is not null)
+        {
+            sessionNode.Children.Add(systemPrompts);
+        }
+
         // Canonical bound plans appear directly under the session, before turns.
         if (planContext.BoundBySession.TryGetValue(
                 session.CatalogSessionId,
@@ -468,6 +476,205 @@ public sealed class SessionTreeProjector
         }
 
         return sessionNode;
+    }
+
+    private SessionTreeNodeViewModel? BuildSystemPromptGroup(
+        SessionCatalogEntry session,
+        IReadOnlySet<string> expandedNodeIds)
+    {
+        SessionEventRecord[] records = session.SessionEvents
+            .Where(IsSystemPrompt)
+            .OrderBy(static item => item.TimestampUtc ?? DateTimeOffset.MinValue)
+            .ThenBy(static item => item.Order)
+            .ToArray();
+        if (records.Length == 0)
+        {
+            return null;
+        }
+
+        List<SystemPromptProjection> revisions = [];
+        foreach (SessionEventRecord record in records)
+        {
+            string contentKey =
+                record.SystemPrompt?.ContentHash ??
+                record.Text ??
+                record.Id;
+            SystemPromptProjection? previous = revisions.LastOrDefault();
+            if (previous is not null &&
+                string.Equals(
+                    previous.ContentKey,
+                    contentKey,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    previous.AgentId,
+                    record.AgentId,
+                    StringComparison.Ordinal))
+            {
+                previous.Occurrences.Add(record);
+                continue;
+            }
+
+            revisions.Add(new SystemPromptProjection(
+                contentKey,
+                record.AgentId,
+                record));
+        }
+
+        string groupId =
+            $"session:{session.CatalogSessionId}:system-prompts";
+        string snapshotLabel = records.Length == 1
+            ? "1 snapshot"
+            : $"{records.Length} snapshots";
+        string revisionLabel = revisions.Count == 1
+            ? "1 revision"
+            : $"{revisions.Count} revisions";
+        SessionTreeNodeViewModel groupNode = new(
+            groupId,
+            "System prompts",
+            SessionTreeNodeKind.SystemPromptGroup,
+            session.Provider,
+            $"{snapshotLabel} \u00b7 {revisionLabel}",
+            session: session,
+            details:
+            [
+                new SessionDetailRow("Snapshots", records.Length.ToString()),
+                new SessionDetailRow("Revisions", revisions.Count.ToString())
+            ])
+        {
+            IsExpanded = expandedNodeIds.Contains(groupId)
+        };
+
+        bool sawMainPrompt = false;
+        foreach (SystemPromptProjection revision in revisions)
+        {
+            string header;
+            if (revision.AgentId is not null)
+            {
+                SessionEventRecord first = revision.Occurrences[0];
+                string agent = first.AgentType ?? revision.AgentId;
+                header = $"Subagent system prompt \u00b7 {agent}";
+            }
+            else if (!sawMainPrompt)
+            {
+                header = "Initial system prompt";
+                sawMainPrompt = true;
+            }
+            else
+            {
+                header = "System prompt changed";
+            }
+
+            groupNode.Children.Add(BuildSystemPromptNode(
+                session,
+                revision,
+                header,
+                expandedNodeIds));
+        }
+
+        return groupNode;
+    }
+
+    private SessionTreeNodeViewModel BuildSystemPromptNode(
+        SessionCatalogEntry session,
+        SystemPromptProjection revision,
+        string header,
+        IReadOnlySet<string> expandedNodeIds)
+    {
+        SessionEventRecord first = revision.Occurrences[0];
+        SessionEventRecord last = revision.Occurrences[^1];
+        SystemPromptContent? content = first.SystemPrompt;
+        string stableId =
+            $"session:{session.CatalogSessionId}:system-prompt:{first.Id}";
+        List<string> summary = [];
+        if (content is not null)
+        {
+            summary.Add(content.PartCount == 1
+                ? "1 part"
+                : $"{content.PartCount} parts");
+            summary.Add($"{content.CharacterCount:N0} chars");
+        }
+
+        if (revision.Occurrences.Count > 1)
+        {
+            summary.Add($"seen {revision.Occurrences.Count} times");
+        }
+
+        if (first.TimestampUtc is DateTimeOffset timestamp)
+        {
+            summary.Add(timestamp.ToLocalTime().ToString("HH:mm:ss"));
+        }
+
+        List<SessionDetailRow> details =
+        [
+            new("Kind", "System prompt snapshot"),
+            new("Native name", first.NativeName),
+            new("Scope", first.AgentId is null ? "Session" : "Subagent"),
+            new("Occurrences", revision.Occurrences.Count.ToString()),
+            new("First observed", FormatTimestamp(first.TimestampUtc)),
+            new("Last observed", FormatTimestamp(last.TimestampUtc))
+        ];
+        AddDetail(details, "Content hash", content?.ContentHash);
+        if (content is not null)
+        {
+            details.Add(new SessionDetailRow(
+                "Parts",
+                content.PartCount.ToString()));
+            details.Add(new SessionDetailRow(
+                "Characters",
+                content.CharacterCount.ToString("N0")));
+        }
+
+        string[] turnIds = revision.Occurrences
+            .Select(static item => item.TurnId)
+            .Where(static item => !string.IsNullOrWhiteSpace(item))
+            .Cast<string>()
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (turnIds.Length > 0)
+        {
+            details.Add(new SessionDetailRow(
+                "Observed for turns",
+                string.Join(", ", turnIds)));
+        }
+
+        AddDetail(details, "Agent ID", first.AgentId);
+        AddDetail(details, "Agent type", first.AgentType);
+
+        return new SessionTreeNodeViewModel(
+            stableId,
+            header,
+            SessionTreeNodeKind.SystemPrompt,
+            session.Provider,
+            string.Join(" \u00b7 ", summary),
+            workspace: session.Workspace,
+            session: session,
+            eventRecord: first,
+            details: details,
+            provenance: BuildSystemPromptProvenance(revision.Occurrences),
+            rawSource: first.Provenance.RawContent)
+        {
+            IsExpanded = expandedNodeIds.Contains(stableId)
+        };
+    }
+
+    private static IReadOnlyList<SessionDetailRow> BuildSystemPromptProvenance(
+        IReadOnlyList<SessionEventRecord> occurrences)
+    {
+        List<SessionDetailRow> rows = [];
+        for (int index = 0; index < occurrences.Count; index++)
+        {
+            SessionSourceProvenance source = occurrences[index].Provenance;
+            string prefix = $"Occurrence {index + 1}";
+            rows.Add(new SessionDetailRow(
+                prefix,
+                $"{source.SourceKind} \u00b7 {source.Format}"));
+            rows.Add(new SessionDetailRow(
+                $"{prefix} path",
+                source.Path));
+            AddSourceLocation(rows, prefix, source);
+        }
+
+        return rows;
     }
 
     private SessionTreeNodeViewModel BuildTurnNode(
@@ -1053,6 +1260,9 @@ public sealed class SessionTreeProjector
             new("Model", session.Model ?? "\u2014"),
             new("Mode", session.Mode ?? "\u2014"),
             new("Turn count", session.Turns.Count.ToString()),
+            new(
+                "System prompt snapshots",
+                session.SessionEvents.Count(IsSystemPrompt).ToString()),
             new("Source count", session.Sources.Count.ToString()),
             new("File count", session.Files.Count.ToString())
         ];
@@ -1277,6 +1487,11 @@ public sealed class SessionTreeProjector
             ? string.Empty
             : $" \u00b7 {Preview(content, 140)}";
 
+        if (IsSystemPrompt(record))
+        {
+            return "System prompt";
+        }
+
         if (record.Role == ObservationRole.AgentThought ||
             record.EventKind == CanonicalEventKind.AssistantThought)
         {
@@ -1437,6 +1652,10 @@ public sealed class SessionTreeProjector
         record.Role == ObservationRole.ToolRequest ||
         record.EventKind == CanonicalEventKind.ToolRequested;
 
+    private static bool IsSystemPrompt(SessionEventRecord record) =>
+        record.Role == ObservationRole.SystemPrompt ||
+        record.EventKind == CanonicalEventKind.SystemPromptSnapshot;
+
     private static bool ShouldProjectEvent(SessionEventRecord record)
     {
         if (record.Role == ObservationRole.PromptSubmitted ||
@@ -1531,5 +1750,17 @@ public sealed class SessionTreeProjector
         {
             details.Add(new SessionDetailRow(name, value));
         }
+    }
+
+    private sealed class SystemPromptProjection(
+        string contentKey,
+        string? agentId,
+        SessionEventRecord first)
+    {
+        public string ContentKey { get; } = contentKey;
+
+        public string? AgentId { get; } = agentId;
+
+        public List<SessionEventRecord> Occurrences { get; } = [first];
     }
 }

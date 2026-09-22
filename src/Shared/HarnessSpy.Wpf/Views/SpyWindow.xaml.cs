@@ -8,6 +8,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using HarnessSpy.Core.Services;
+using HarnessSpy.Wpf.Input;
 using HarnessSpy.Wpf.ViewModels;
 using Microsoft.Win32;
 
@@ -39,6 +40,7 @@ public partial class SpyWindow : Window
         _lastReplayFolder = lastReplayFolder;
         _productName = productName;
         InitializeComponent();
+        InspectorFieldTableCopySupport.Enable(FieldsDataGrid);
         Title = $"{productName} Hook Spy";
         Loaded += SpyWindow_Loaded;
 

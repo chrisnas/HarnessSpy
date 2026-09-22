@@ -12,7 +12,7 @@ namespace HarnessSpy.Core.Services;
 // instruction stream.
 public sealed class TranscriptBindingJournal
 {
-    public const int ReconcilerVersion = 2;
+    public const int ReconcilerVersion = 3;
 
     private readonly TranscriptCaptureStore _captureStore;
     private readonly object _gate = new();
@@ -42,6 +42,7 @@ public sealed class TranscriptBindingJournal
                     ["nativeEvent"] = observation.HookEventName,
                     ["role"] = observation.Interpretation.Role.ToString(),
                     ["evidence"] = observation.Interpretation.Evidence.ToString(),
+                    ["bindingEvidence"] = change.BindingEvidence.ToString(),
                     ["relationship"] = change.Relationship.ToString(),
                     ["targetEventId"] = change.TargetEventId?.ToString("N"),
                     ["dedupeKey"] = provenance?.DedupeKey,

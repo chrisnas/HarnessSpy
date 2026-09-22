@@ -290,6 +290,85 @@ public sealed class SessionTreeProjectorTests
     }
 
     [Fact]
+    public void ProjectorCoalescesRepeatedSystemPromptsBeforeTurns()
+    {
+        SessionSourceProvenance source = new(
+            SessionSourceKind.CopilotEventsJsonl,
+            "events.jsonl",
+            "jsonl",
+            """{"type":"system.message"}""");
+        SystemPromptContent initialContent = new(
+            "# Initial",
+            new string('a', 64),
+            1);
+        SystemPromptContent changedContent = new(
+            "# Changed",
+            new string('b', 64),
+            1);
+        SessionEventRecord first = Event(
+            "system-1",
+            ObservationRole.SystemPrompt,
+            CanonicalEventKind.SystemPromptSnapshot,
+            source) with
+        {
+            Text = initialContent.Text,
+            SystemPrompt = initialContent,
+            TimestampUtc = DateTimeOffset.UnixEpoch,
+            Order = 1,
+            TurnId = "turn-1"
+        };
+        SessionEventRecord repeated = first with
+        {
+            Id = "system-2",
+            TimestampUtc = DateTimeOffset.UnixEpoch.AddSeconds(1),
+            Order = 2
+        };
+        SessionEventRecord changed = first with
+        {
+            Id = "system-3",
+            Text = changedContent.Text,
+            SystemPrompt = changedContent,
+            TimestampUtc = DateTimeOffset.UnixEpoch.AddSeconds(2),
+            Order = 3
+        };
+        SessionTurn turn = new(
+            "turn-1",
+            1,
+            "inspect",
+            null,
+            null,
+            InferenceEvidence.Observed,
+            []);
+        SessionCatalogEntry session = new()
+        {
+            CatalogSessionId = "copilot:prompt-session",
+            NativeSessionId = "prompt-session",
+            Provider = HookProvider.GitHubCopilot,
+            Surface = HookSurface.CopilotCli,
+            Workspace = WorkspaceContext.Unknown,
+            Title = "Prompt session",
+            SessionEvents = [first, repeated, changed],
+            Turns = [turn]
+        };
+
+        SessionTreeNodeViewModel sessionNode = new SessionTreeProjector()
+            .Project([session], new HashSet<string>(), true)
+            .Single()
+            .Children.Single();
+
+        Assert.True(sessionNode.Children[0].IsSystemPromptGroup);
+        Assert.True(sessionNode.Children[1].IsTurn);
+        SessionTreeNodeViewModel group = sessionNode.Children[0];
+        Assert.Equal(2, group.Children.Count);
+        Assert.Equal("Initial system prompt", group.Children[0].Header);
+        Assert.Contains("seen 2 times", group.Children[0].Summary);
+        Assert.Equal("# Initial", group.Children[0].ReadableContent);
+        Assert.True(group.Children[0].HasReadableContent);
+        Assert.Equal("System prompt changed", group.Children[1].Header);
+        Assert.Equal("# Changed", group.Children[1].ReadableContent);
+    }
+
+    [Fact]
     public void ProjectorGroupsWorkspacesUnderSharedFolders()
     {
         SessionCatalogEntry harness = WorkspaceSession(

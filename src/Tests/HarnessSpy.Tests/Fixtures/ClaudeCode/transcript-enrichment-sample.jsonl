@@ -1,0 +1,6 @@
+{"type":"user","promptId":"p1","uuid":"u1","sessionId":"s1","timestamp":"2026-09-19T08:00:00Z","message":{"role":"user","content":[{"type":"text","text":"inspect"}]}}
+{"type":"attachment","promptId":"p1","uuid":"sk1","sessionId":"s1","timestamp":"2026-09-19T08:00:00Z","attachment":{"type":"skill_listing","skills":[{"name":"dotnet-memory-analysis"}]}}
+{"type":"attachment","promptId":"p1","uuid":"sk2","sessionId":"s1","timestamp":"2026-09-19T08:00:01Z","attachment":{"type":"skill_activated","skills":["dotnet-memory-analysis"]}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"s1","timestamp":"2026-09-19T08:00:02Z","message":{"id":"m1","role":"assistant","model":"claude-sonnet-5","content":[{"type":"redacted_thinking"}],"usage":{"input_tokens":120,"output_tokens":20,"cache_read_input_tokens":40,"output_tokens_details":{"thinking_tokens":8},"server_tool_use":{"web_search_requests":1}}}}
+{"type":"system","subtype":"turn_duration","durationMs":1500,"sessionId":"s1","timestamp":"2026-09-19T08:00:03Z"}
+{"type":"cost-state","sessionId":"s1","timestamp":"2026-09-19T08:00:04Z","totalCostUSD":0.25,"totalLinesAdded":4,"totalLinesRemoved":1,"totalAPIDuration":1100,"totalToolDuration":200,"totalDuration":1500,"modelUsage":{"claude-sonnet-5":{"inputTokens":120,"outputTokens":20,"cacheReadInputTokens":40,"cacheCreationInputTokens":0,"webSearchRequests":1}}}

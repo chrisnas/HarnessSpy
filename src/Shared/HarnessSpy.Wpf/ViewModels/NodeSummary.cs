@@ -14,12 +14,14 @@ public sealed class NodeSummary
             McpCalls = [],
             Thoughts = [],
             Skills = [],
+            SkillDetails = [],
             Commands = [],
             ReadFiles = [],
             WrittenFiles = [],
             DeletedFiles = [],
             Subagents = [],
-            Kpis = []
+            Kpis = [],
+            Accounting = []
         };
     }
 
@@ -53,6 +55,8 @@ public sealed class NodeSummary
 
     public long CacheWriteTokens { get; init; }
 
+    public long ReasoningTokens { get; init; }
+
     public required IReadOnlyList<CountedDurationRow> Tools { get; init; }
 
     public required IReadOnlyList<CountedDurationRow> McpCalls { get; init; }
@@ -60,6 +64,8 @@ public sealed class NodeSummary
     public required IReadOnlyList<CountedDurationRow> Thoughts { get; init; }
 
     public required IReadOnlyList<string> Skills { get; init; }
+
+    public IReadOnlyList<SkillSummaryRow> SkillDetails { get; init; } = [];
 
     public required IReadOnlyList<string> Commands { get; init; }
 
@@ -72,6 +78,8 @@ public sealed class NodeSummary
     public required IReadOnlyList<SubagentSummary> Subagents { get; init; }
 
     public required IReadOnlyList<KpiItem> Kpis { get; init; }
+
+    public IReadOnlyList<UsageSummaryRow> Accounting { get; init; } = [];
 
     public string Badge { get; init; } = string.Empty;
 
@@ -87,7 +95,7 @@ public sealed class NodeSummary
 
     public string CompactionText => CompactionCount.ToString();
 
-    public bool HasSkills => Skills.Count > 0;
+    public bool HasSkills => SkillDetails.Count > 0 || Skills.Count > 0;
 
     public bool HasCommands => Commands.Count > 0;
 
@@ -103,7 +111,10 @@ public sealed class NodeSummary
         InputTokens is not null ||
         OutputTokens > 0 ||
         CacheReadTokens > 0 ||
-        CacheWriteTokens > 0;
+        CacheWriteTokens > 0 ||
+        ReasoningTokens > 0;
+
+    public bool HasAccounting => Accounting.Count > 0;
 }
 
 public sealed class CountedDurationRow
@@ -184,4 +195,32 @@ public sealed class KpiItem
     public required string Value { get; init; }
 
     public bool IsWarning { get; init; }
+}
+
+public sealed class UsageSummaryRow
+{
+    public required string Name { get; init; }
+
+    public long Value { get; init; }
+
+    public required string Unit { get; init; }
+
+    public string ValueText => Unit switch
+    {
+        "micro-usd" => $"${Value / 1_000_000m:0.######}",
+        "ms" => HookObservation.FormatDuration(TimeSpan.FromMilliseconds(Value)),
+        "tokens" => HookObservation.FormatTokens(Value),
+        _ => $"{Value:N0} {Unit}"
+    };
+}
+
+public sealed class SkillSummaryRow
+{
+    public required string Name { get; init; }
+
+    public IReadOnlyList<SkillEvidenceStage> Stages { get; init; } = [];
+
+    public string DisplayText => Stages.Count == 0
+        ? Name
+        : $"{Name} \u00b7 {string.Join("/", Stages)}";
 }

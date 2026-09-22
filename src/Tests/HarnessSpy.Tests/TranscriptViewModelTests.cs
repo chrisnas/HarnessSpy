@@ -40,6 +40,256 @@ public sealed class TranscriptViewModelTests
     }
 
     [Fact]
+    public void CursorAttachedSkillEnrichesCanonicalPromptWithoutDuplicateNode()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        HookObservation hook = CursorHook(
+            """{"hook_event_name":"beforeSubmitPrompt","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"prompt":"analyze"}""");
+        Apply(viewModel, reconciler, hook);
+
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CursorTranscript);
+        HookObservation transcript = Assert.Single(parser.Parse(CursorLine(
+            """
+            {"role":"user","message":{"content":[{"type":"text","text":"<user_query>analyze</user_query>\n<manually_attached_skills>\nname: demo-skill\nPath: C:/skills/demo-skill/SKILL.md\n</manually_attached_skills>"}]}}
+            """,
+            "c1")));
+        Apply(viewModel, reconciler, transcript);
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel prompt = Assert.Single(turn.Children);
+        Assert.Equal("beforeSubmitPrompt", prompt.Observation!.HookEventName);
+        Assert.Equal(
+            TranscriptRelationshipKind.AttachmentForPrompt,
+            Assert.Single(prompt.Evidence).Relationship);
+        SkillSummaryRow skill = Assert.Single(turn.NodeSummary!.SkillDetails);
+        Assert.Equal("demo-skill", skill.Name);
+        Assert.Contains(SkillEvidenceStage.Attached, skill.Stages);
+    }
+
+    [Fact]
+    public void CursorStepGenerationAndBaseThoughtProduceOneTurnAndNode()
+    {
+        const string turnId = "9c036778-0b3f-4a42-b0de-b733bf08c012";
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+
+        Apply(viewModel, reconciler, CursorHook(
+            $$"""{"hook_event_name":"beforeSubmitPrompt","conversation_id":"c1","generation_id":"{{turnId}}","workspace_roots":["C:\\Repo"],"prompt":"analyze"}"""));
+        Apply(viewModel, reconciler, CursorHook(
+            $$"""{"hook_event_name":"afterAgentThought","conversation_id":"c1","generation_id":"{{turnId}}","workspace_roots":["C:\\Repo"],"text":"inspect the dump","duration_ms":2}"""));
+        Apply(viewModel, reconciler, CursorHook(
+            $$"""{"hook_event_name":"afterAgentThought","conversation_id":"c1","generation_id":"{{turnId}}-0-9ns5","workspace_roots":["C:\\Repo"],"text":"inspect the dump","duration_ms":2}"""));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        Assert.Equal(turnId, turn.GenerationId);
+        Assert.Single(
+            Descendants(turn),
+            node => node.Observation?.Interpretation.Role ==
+                ObservationRole.AgentThought);
+    }
+
+    [Fact]
+    public void CursorTranscriptInteractionJoinsPromptHookTurn()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        Apply(viewModel, reconciler, CursorHook(
+            """{"hook_event_name":"beforeSubmitPrompt","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"prompt":"analyze"}"""));
+
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CursorTranscript);
+        foreach (HookObservation prompt in parser.Parse(CursorLine(
+                     """{"role":"user","message":{"content":[{"type":"text","text":"<user_query>analyze</user_query>"}]}}""",
+                     "c1",
+                     "transcript-cursor-turn:1")))
+        {
+            Apply(viewModel, reconciler, prompt);
+        }
+
+        foreach (HookObservation fragment in parser.Parse(CursorLine(
+                     """{"role":"assistant","message":{"content":[{"type":"text","text":"checking files"},{"type":"tool_use","name":"Glob","input":{"target_directory":"C:\\Repo","glob_pattern":"**/*"}}]}}""",
+                     "c1",
+                     "transcript-cursor-turn:1")))
+        {
+            Apply(viewModel, reconciler, fragment);
+        }
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        Assert.Equal("g1", turn.GenerationId);
+        Assert.Contains(
+            Descendants(turn),
+            node => node.Observation?.IsTranscriptSourced == true &&
+                node.Observation.ToolName == "Glob");
+        Assert.DoesNotContain(
+            Assert.Single(viewModel.Roots).Children.Single().Children,
+            node => node.GenerationId == "transcript-cursor-turn:1");
+    }
+
+    [Fact]
+    public void CursorOrphanMcpHooksFormOneLifecycleAndAdoptTranscript()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        HookObservation before = CursorHook(
+            """{"hook_event_name":"beforeMCPExecution","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"get_duplicated_strings","mcp_server_name":"dotnet-dstrings","tool_input":"{\"dumpPath\":\"C:\\\\dump.dmp\"}"}""");
+        Apply(viewModel, reconciler, before);
+        Apply(viewModel, reconciler, CursorHook(
+            """{"hook_event_name":"afterMCPExecution","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"get_duplicated_strings","mcp_server_name":"dotnet-dstrings","tool_input":"{\"dumpPath\":\"C:\\\\dump.dmp\"}","duration":25}"""));
+        Apply(viewModel, reconciler, CursorHook(
+            """{"hook_event_name":"postToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"MCP:get_duplicated_strings","tool_input":{"dumpPath":"C:\\dump.dmp"},"tool_use_id":"m1","duration":25}"""));
+
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CursorTranscript);
+        HookObservation transcript = Assert.Single(parser.Parse(CursorLine(
+            """{"role":"assistant","message":{"content":[{"type":"tool_use","name":"CallDynamicTool","input":{"namespace":"user-dotnet-dstrings","toolName":"get_duplicated_strings","arguments":{"dumpPath":"C:\\dump.dmp"}}}]}}""",
+            "c1",
+            "transcript-cursor-turn:1")));
+        Apply(viewModel, reconciler, transcript);
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel owner = Assert.Single(
+            turn.Children,
+            node => node.Observation?.EventId == before.EventId);
+        Assert.Contains(
+            owner.Children,
+            node => node.Observation?.HookEventName ==
+                "afterMCPExecution");
+        Assert.Contains(
+            owner.Children,
+            node => node.Observation?.HookEventName == "postToolUse");
+        Assert.Contains(
+            owner.Children,
+            node => node.Observation?.HookEventName ==
+                "CallDynamicTool");
+        Assert.DoesNotContain(
+            turn.Children,
+            node => node.Observation?.HookEventName is
+                "afterMCPExecution" or "postToolUse" or "CallDynamicTool");
+    }
+
+    [Fact]
+    public void CursorOrphanShellHooksFormOneLifecycleAndAdoptTranscript()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        HookObservation before = CursorHook(
+            """{"hook_event_name":"beforeShellExecution","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"command":"dotnet test","cwd":"C:\\Repo"}""");
+        Apply(viewModel, reconciler, before);
+        Apply(viewModel, reconciler, CursorHook(
+            """{"hook_event_name":"afterShellExecution","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"command":"dotnet test","cwd":"C:\\Repo","output":"passed","duration":25}"""));
+        Apply(viewModel, reconciler, CursorHook(
+            """{"hook_event_name":"postToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_input":{"command":"dotnet test","cwd":"C:\\Repo","timeout":30000},"tool_use_id":"s1","duration":25}"""));
+
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CursorTranscript);
+        HookObservation transcript = Assert.Single(parser.Parse(CursorLine(
+            """{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"dotnet test","description":"Run tests"}}]}}""",
+            "c1",
+            "transcript-cursor-turn:1")));
+        Apply(viewModel, reconciler, transcript);
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel owner = Assert.Single(
+            turn.Children,
+            node => node.Observation?.EventId == before.EventId);
+        Assert.Contains(
+            owner.Children,
+            node => node.Observation?.HookEventName ==
+                "afterShellExecution");
+        Assert.Contains(
+            owner.Children,
+            node => node.Observation?.HookEventName == "postToolUse");
+        Assert.Contains(
+            owner.Children,
+            node => node.Observation?.HookEventName == "Shell" &&
+                node.Observation.IsTranscriptSourced);
+    }
+
+    [Fact]
+    public void CursorAssistantStepGroupsUnmatchedParallelToolAndBindsText()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        HookObservation readHook = CursorHook(
+            """{"hook_event_name":"preToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_input":{"file_path":"C:\\Repo\\Program.cs"},"tool_use_id":"r1"}""");
+        Apply(viewModel, reconciler, readHook);
+
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CursorTranscript);
+        foreach (HookObservation fragment in parser.Parse(CursorLine(
+                     """{"role":"assistant","message":{"content":[{"type":"text","text":"Inspecting source files."},{"type":"tool_use","name":"Read","input":{"path":"C:\\Repo\\Program.cs"}},{"type":"tool_use","name":"Glob","input":{"target_directory":"C:\\Repo","glob_pattern":"**/*.cs"}}]}}""",
+                     "c1",
+                     "transcript-cursor-turn:1")))
+        {
+            Apply(viewModel, reconciler, fragment);
+        }
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel wave = Assert.Single(
+            turn.Children,
+            node => node.Kind == TreeNodeKind.ParallelWave);
+        Assert.Equal(2, wave.Children.Count);
+        TreeNodeViewModel canonicalRead = Assert.Single(
+            wave.Children,
+            node => node.Observation?.EventId == readHook.EventId);
+        Assert.Contains(
+            wave.Children,
+            node => node.Observation?.ToolName == "Glob" &&
+                node.Observation.IsTranscriptSourced);
+        Assert.Contains(
+            canonicalRead.Evidence,
+            evidence => evidence.Observation.Interpretation.Role ==
+                ObservationRole.AgentThought);
+        Assert.DoesNotContain(
+            Descendants(turn),
+            node => node.Observation?.IsTranscriptSourced == true &&
+                node.Observation.Interpretation.Role ==
+                    ObservationRole.AgentThought);
+    }
+
+    [Fact]
+    public void CursorAssistantStepJoinsExistingHookParallelWave()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        HookObservation first = CursorHook(
+            """{"hook_event_name":"preToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_input":{"command":"dotnet test A"},"tool_use_id":"a"}""");
+        HookObservation second = CursorHook(
+            """{"hook_event_name":"preToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_input":{"command":"dotnet test B"},"tool_use_id":"b"}""");
+        Apply(viewModel, reconciler, first);
+        Apply(viewModel, reconciler, second);
+        Apply(viewModel, reconciler, CursorHook(
+            """{"hook_event_name":"postToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_input":{"command":"dotnet test A"},"tool_use_id":"a","duration":100}"""));
+        Apply(viewModel, reconciler, CursorHook(
+            """{"hook_event_name":"postToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_input":{"command":"dotnet test B"},"tool_use_id":"b","duration":100}"""));
+
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CursorTranscript);
+        foreach (HookObservation fragment in parser.Parse(CursorLine(
+                     """{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"dotnet test A"}},{"type":"tool_use","name":"Shell","input":{"command":"dotnet test B"}},{"type":"tool_use","name":"Grep","input":{"pattern":"needle","path":"C:\\Repo"}}]}}""",
+                     "c1",
+                     "transcript-cursor-turn:1")))
+        {
+            Apply(viewModel, reconciler, fragment);
+        }
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel wave = Assert.Single(
+            turn.Children,
+            node => node.Kind == TreeNodeKind.ParallelWave);
+        Assert.Equal(3, wave.Children.Count);
+        Assert.Contains(
+            wave.Children,
+            node => node.Observation?.ToolName == "Grep" &&
+                node.Observation.IsTranscriptSourced);
+        Assert.DoesNotContain(
+            turn.Children,
+            node => node.Observation?.ToolName == "Grep");
+    }
+
+    [Fact]
     public void UnmatchedTranscriptFragmentIsAddedAsItsOwnNode()
     {
         MainWindowViewModel viewModel = new();
@@ -53,6 +303,43 @@ public sealed class TranscriptViewModelTests
             Descendants(session),
             node => node.Observation?.Interpretation.Role == ObservationRole.AgentThought &&
                     node.Observation.IsTranscriptSourced);
+    }
+
+    [Fact]
+    public void RepeatedSystemPromptIsCoalescedInLiveSession()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(
+                DialectIds.CopilotCliTranscript);
+
+        for (int lineNumber = 1; lineNumber <= 2; lineNumber++)
+        {
+            HookObservation prompt = Assert.Single(parser.Parse(new TranscriptLine(
+                $$$"""{"type":"system.message","id":"system-{{{lineNumber}}}","data":{"role":"system","content":"# Prompt\nUse C:\\repo","turnId":"1","interactionId":"i1"}}""",
+                "C:/events.jsonl",
+                lineNumber * 100,
+                lineNumber,
+                1,
+                TranscriptFileRole.Main,
+                HookProvider.GitHubCopilot,
+                HookSurface.CopilotCli,
+                DialectIds.CopilotCliTranscript,
+                "GitHubCopilot:CopilotCli:c1",
+                "c1",
+                TurnHint: "transcript-interaction:i1")));
+            Apply(viewModel, reconciler, prompt);
+        }
+
+        TreeNodeViewModel workspace = Assert.Single(viewModel.Roots);
+        TreeNodeViewModel session = Assert.Single(workspace.Children);
+        TreeNodeViewModel systemPrompt = Assert.Single(
+            session.Children,
+            static node => node.IsSystemPrompt);
+        Assert.Equal("# Prompt\nUse C:\\repo", systemPrompt.ReadableContent);
+        Assert.Single(systemPrompt.Evidence);
+        Assert.Equal("seen 2 times", systemPrompt.Summary);
     }
 
     [Fact]
@@ -73,6 +360,8 @@ public sealed class TranscriptViewModelTests
         Assert.True(child.Observation!.IsTranscriptSourced);
         Assert.Equal("Bash", child.Observation.ToolName);
         Assert.True(preNode.HasEvidence);
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        Assert.Equal(1, turn.NodeSummary!.ToolCallCount);
     }
 
     [Fact]
@@ -176,6 +465,43 @@ public sealed class TranscriptViewModelTests
         Assert.Contains(
             turn.Children,
             node => node.Observation?.Interpretation.Role == ObservationRole.AgentThought);
+    }
+
+    [Fact]
+    public void SystemPromptSortsImmediatelyBeforeOwningTurn()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        HookObservation prompt = CopilotHook(
+            "userPromptSubmitted",
+            """{"sessionId":"c1","timestamp":1789809677000,"cwd":"C:\\Repo","prompt":"Inspect memory"}""");
+        Apply(viewModel, reconciler, prompt);
+
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(
+                DialectIds.CopilotCliTranscript);
+        HookObservation systemPrompt = Assert.Single(parser.Parse(new TranscriptLine(
+            """{"type":"system.message","id":"system-1","data":{"role":"system","content":"# System","interactionId":"i1"}}""",
+            "C:/events.jsonl",
+            100,
+            2,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            DialectIds.CopilotCliTranscript,
+            "GitHubCopilot:CopilotCli:c1",
+            "c1",
+            ObservedAtUtc: DateTimeOffset.FromUnixTimeMilliseconds(
+                1789809677100),
+            TurnHint: "transcript-interaction:i1")));
+        Apply(viewModel, reconciler, systemPrompt);
+
+        TreeNodeViewModel workspace = Assert.Single(viewModel.Roots);
+        TreeNodeViewModel session = Assert.Single(workspace.Children);
+        Assert.Equal(2, session.Children.Count);
+        Assert.True(session.Children[0].IsSystemPrompt);
+        Assert.Equal(TreeNodeKind.Generation, session.Children[1].Kind);
     }
 
     [Fact]
@@ -300,6 +626,78 @@ public sealed class TranscriptViewModelTests
             node => node.Observation?.EventId == request.EventId);
     }
 
+    [Fact]
+    public void ClaudeTranscriptUsageAndCostReachLiveSummary()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.ClaudeTranscript);
+        TranscriptLine thinkingLine = new(
+            """{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"inspect"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":50,"output_tokens_details":{"thinking_tokens":7}}}}""",
+            "C:/claude.jsonl",
+            0,
+            1,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.ClaudeCode,
+            HookSurface.ClaudeCode,
+            DialectIds.ClaudeTranscript,
+            "ClaudeCode:ClaudeCode:s1",
+            "s1",
+            TurnHint: "p1");
+        Apply(viewModel, reconciler, Assert.Single(parser.Parse(thinkingLine)));
+
+        TranscriptLine costLine = thinkingLine with
+        {
+            Raw = """{"type":"cost-state","sessionId":"s1","totalCostUSD":0.5,"totalLinesAdded":3,"totalDuration":1200}""",
+            ByteOffset = 100,
+            LineNumber = 2,
+            TurnHint = null
+        };
+        Apply(viewModel, reconciler, Assert.Single(parser.Parse(costLine)));
+
+        TreeNodeViewModel session = Assert.Single(Assert.Single(viewModel.Roots).Children);
+        NodeSummary summary = session.NodeSummary!;
+        Assert.Equal(100, summary.InputTokens);
+        Assert.Equal(20, summary.OutputTokens);
+        Assert.Equal(50, summary.CacheReadTokens);
+        Assert.Equal(7, summary.ReasoningTokens);
+        Assert.Contains(
+            summary.Accounting,
+            row => row.Name == "total_cost_usd" && row.Value == 500_000);
+    }
+
+    [Fact]
+    public void CopilotShutdownAccountingReachesLiveSessionSummary()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CopilotCliTranscript);
+        HookObservation shutdown = Assert.Single(parser.Parse(new TranscriptLine(
+            """{"type":"session.shutdown","id":"end-1","data":{"tokenDetails":{"input":90,"output":12,"reasoningTokens":4},"totalNanoAiu":77,"totalPremiumRequests":1}}""",
+            "C:/events.jsonl",
+            0,
+            1,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            DialectIds.CopilotCliTranscript,
+            "GitHubCopilot:CopilotCli:c1",
+            "c1")));
+        Apply(viewModel, reconciler, shutdown);
+
+        TreeNodeViewModel session = Assert.Single(Assert.Single(viewModel.Roots).Children);
+        Assert.Equal(90, session.NodeSummary!.InputTokens);
+        Assert.Equal(12, session.NodeSummary.OutputTokens);
+        Assert.Equal(4, session.NodeSummary.ReasoningTokens);
+        Assert.Contains(
+            session.NodeSummary.Accounting,
+            row => row.Name == "totalNanoAiu" && row.Value == 77);
+    }
+
     private static void Apply(MainWindowViewModel viewModel, ObservationReconciler reconciler, HookObservation observation)
     {
         foreach (ObservationChange change in reconciler.Reconcile(observation))
@@ -314,6 +712,15 @@ public sealed class TranscriptViewModelTests
         TreeNodeViewModel session = Assert.Single(workspace.Children);
         TreeNodeViewModel turn = Assert.Single(session.Children, c => c.Kind == TreeNodeKind.Generation);
         return Assert.Single(turn.Children, c => c.Observation?.HookEventName == "PreToolUse");
+    }
+
+    private static TreeNodeViewModel OnlyTurn(MainWindowViewModel viewModel)
+    {
+        TreeNodeViewModel workspace = Assert.Single(viewModel.Roots);
+        TreeNodeViewModel session = Assert.Single(workspace.Children);
+        return Assert.Single(
+            session.Children,
+            child => child.Kind == TreeNodeKind.Generation);
     }
 
     private static HookObservation ClaudeTranscriptTool(string session, string toolCallId, string toolName)
@@ -408,7 +815,10 @@ public sealed class TranscriptViewModelTests
             .First(o => o.Interpretation.Role == ObservationRole.AgentThought);
     }
 
-    private static TranscriptLine CursorLine(string raw, string session) =>
+    private static TranscriptLine CursorLine(
+        string raw,
+        string session,
+        string? turnHint = null) =>
         new(
             raw,
             "C:/t.jsonl",
@@ -420,7 +830,8 @@ public sealed class TranscriptViewModelTests
             HookSurface.CursorIde,
             DialectIds.CursorTranscript,
             $"{HookProvider.Cursor}:{HookSurface.CursorIde}:{session}",
-            session);
+            session,
+            TurnHint: turnHint);
 
     private static HookObservation CursorHook(string payloadJson)
     {

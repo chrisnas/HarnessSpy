@@ -1,10 +1,15 @@
+using System.Globalization;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Services;
 using HarnessSpy.Core.Sessions;
 
 namespace HarnessSpy.Wpf.ViewModels;
 
 public sealed class SessionNodeSummaryBuilder
 {
+    private readonly UsageAggregator _usageAggregator = new();
+    private readonly UsageNameClassifier _usageNames = new();
+
     public NodeSummary Build(SessionCatalogEntry session)
     {
         IReadOnlyList<SessionEventRecord> events =
@@ -24,7 +29,8 @@ public sealed class SessionNodeSummaryBuilder
             isSession: true,
             session.Turns.Count,
             abortedTurnCount,
-            wallTime);
+            wallTime,
+            ReadSessionMetadataUsage(session.Metadata));
     }
 
     public NodeSummary Build(SessionTurn turn)
@@ -37,7 +43,8 @@ public sealed class SessionNodeSummaryBuilder
             isSession: false,
             turnCount: 0,
             abortedTurnCount: 0,
-            wallTime);
+            wallTime,
+            []);
     }
 
     private NodeSummary Build(
@@ -45,15 +52,27 @@ public sealed class SessionNodeSummaryBuilder
         bool isSession,
         int turnCount,
         int abortedTurnCount,
-        TimeSpan wallTime)
+        TimeSpan wallTime,
+        IReadOnlyList<UsageMeasurement> sessionUsage)
     {
-        SessionEventRecord[] toolRequests = events
+        SessionEventRecord[] structuralEvents = events
+            .Where(static item =>
+                !item.ExcludeFromSummary ||
+                item.Role is
+                    ObservationRole.ToolRequest or
+                    ObservationRole.AgentThought or
+                    ObservationRole.CompactionStart or
+                    ObservationRole.CompactionEnd or
+                    ObservationRole.SubagentStart or
+                    ObservationRole.SubagentStop)
+            .ToArray();
+        SessionEventRecord[] toolRequests = structuralEvents
             .Where(IsToolRequest)
             .ToArray();
         SessionEventRecord[] mcpRequests = toolRequests
             .Where(IsMcp)
             .ToArray();
-        SessionEventRecord[] thoughts = events
+        SessionEventRecord[] thoughts = structuralEvents
             .Where(IsThought)
             .ToArray();
 
@@ -67,16 +86,67 @@ public sealed class SessionNodeSummaryBuilder
             thoughts,
             static item => item.Model ?? "Thinking");
 
-        long? inputTokens = AggregateUsage(events, IsInputToken);
-        long outputTokens = AggregateUsage(events, IsOutputToken) ?? 0;
-        long cacheReadTokens = AggregateUsage(events, IsCacheReadToken) ?? 0;
-        long cacheWriteTokens = AggregateUsage(events, IsCacheWriteToken) ?? 0;
+        UsageSample[] usageSamples =
+        [
+            .. events
+            .SelectMany(item => item.UsageMeasurements
+                .Where(measurement =>
+                    isSession || measurement.Scope != UsageScope.Session)
+                .Select(measurement =>
+                new UsageSample(
+                    measurement,
+                    measurement.Scope == UsageScope.Session
+                        ? "session"
+                        : item.TurnId ?? "unscoped",
+                    item.TimestampUtc ?? DateTimeOffset.UnixEpoch.AddTicks(item.Order)))),
+            .. sessionUsage.Select(measurement => new UsageSample(
+                measurement,
+                "session",
+                DateTimeOffset.MaxValue))
+        ];
+        UsageSample[] tokenSamples = usageSamples
+            .Where(sample => sample.Measurement.Unit == "tokens")
+            .ToArray();
+        long? inputTokens = _usageAggregator.Aggregate(tokenSamples, _usageNames.IsInputToken);
+        long outputTokens = _usageAggregator.Aggregate(tokenSamples, _usageNames.IsOutputToken) ?? 0;
+        long cacheReadTokens = _usageAggregator.Aggregate(tokenSamples, _usageNames.IsCacheReadToken) ?? 0;
+        long cacheWriteTokens = _usageAggregator.Aggregate(tokenSamples, _usageNames.IsCacheWriteToken) ?? 0;
+        long reasoningTokens = _usageAggregator.Aggregate(tokenSamples, _usageNames.IsReasoningToken) ?? 0;
+        IReadOnlyList<UsageSummaryRow> accounting = _usageAggregator
+            .AggregateByName(usageSamples)
+            .Where(value =>
+                value.Unit != "tokens" ||
+                !_usageNames.IsAnyToken(value.Name))
+            .Select(value => new UsageSummaryRow
+            {
+                Name = value.Name,
+                Value = value.Value,
+                Unit = value.Unit
+            })
+            .ToArray();
+        IReadOnlyList<SkillSummaryRow> skillRows = events
+            .Where(static item => item.Skill is not null)
+            .GroupBy(
+                static item => item.Skill!.SkillName,
+                StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new SkillSummaryRow
+            {
+                Name = group.Key,
+                Stages = group
+                    .Select(static item => item.Skill!.Stage)
+                    .Distinct()
+                    .Order()
+                    .ToArray()
+            })
+            .ToArray();
 
         string tokenLine = BuildTokenLine(
             inputTokens,
             outputTokens,
             cacheReadTokens,
-            cacheWriteTokens);
+            cacheWriteTokens,
+            reasoningTokens);
         string badge = BuildBadge(
             isSession,
             turnCount,
@@ -116,12 +186,12 @@ public sealed class SessionNodeSummaryBuilder
             IsSession = isSession,
             TurnCount = turnCount,
             AbortedTurnCount = abortedTurnCount,
-            IsAborted = events.Any(static item => item.IsAborted),
+            IsAborted = structuralEvents.Any(static item => item.IsAborted),
             WallTime = wallTime,
             ToolCallCount = toolRequests.Length,
             McpCallCount = mcpRequests.Length,
             ThoughtCount = thoughts.Length,
-            CompactionCount = events.Count(IsCompaction),
+            CompactionCount = structuralEvents.Count(IsCompaction),
             ThoughtDurationMs = thoughts.Sum(static item => item.DurationMs ?? 0),
             ThoughtCharacterCount = thoughts.Sum(
                 static item => (item.Text ?? string.Empty).Length),
@@ -129,17 +199,13 @@ public sealed class SessionNodeSummaryBuilder
             OutputTokens = outputTokens,
             CacheReadTokens = cacheReadTokens,
             CacheWriteTokens = cacheWriteTokens,
+            ReasoningTokens = reasoningTokens,
             Tools = tools,
             McpCalls = mcpCalls,
             Thoughts = thoughtRows,
-            Skills = events
-                .Select(static item => item.Skill?.SkillName)
-                .Where(static item => !string.IsNullOrWhiteSpace(item))
-                .Cast<string>()
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Order(StringComparer.OrdinalIgnoreCase)
-                .ToArray(),
-            Commands = events
+            Skills = skillRows.Select(row => row.Name).ToArray(),
+            SkillDetails = skillRows,
+            Commands = structuralEvents
                 .Where(static item =>
                     IsToolRequest(item) &&
                     item.ToolKind == CanonicalToolKind.Shell)
@@ -148,17 +214,18 @@ public sealed class SessionNodeSummaryBuilder
                 .Cast<string>()
                 .Distinct(StringComparer.Ordinal)
                 .ToArray(),
-            ReadFiles = BuildFileRows(events, CanonicalToolKind.FileRead),
+            ReadFiles = BuildFileRows(structuralEvents, CanonicalToolKind.FileRead),
             WrittenFiles =
             [
                 .. BuildFileRows(
-                    events,
+                    structuralEvents,
                     CanonicalToolKind.FileWrite,
                     CanonicalToolKind.FileEdit)
             ],
-            DeletedFiles = BuildFileRows(events, CanonicalToolKind.FileDelete),
-            Subagents = BuildSubagents(events),
+            DeletedFiles = BuildFileRows(structuralEvents, CanonicalToolKind.FileDelete),
+            Subagents = BuildSubagents(structuralEvents),
             Kpis = kpis,
+            Accounting = accounting,
             Badge = badge,
             TokenLine = tokenLine
         };
@@ -231,6 +298,49 @@ public sealed class SessionNodeSummaryBuilder
                 };
             })
             .ToArray();
+    }
+
+    private static IReadOnlyList<UsageMeasurement> ReadSessionMetadataUsage(
+        IReadOnlyDictionary<string, string?> metadata)
+    {
+        const string finalPrefix = "usage.final.";
+        const string latestPrefix = "usage.latest.";
+        bool hasFinal = metadata.Keys.Any(key =>
+            key.StartsWith(finalPrefix, StringComparison.Ordinal) &&
+            !key.EndsWith(".unit", StringComparison.Ordinal));
+        string prefix = hasFinal ? finalPrefix : latestPrefix;
+        UsageBehavior behavior = hasFinal
+            ? UsageBehavior.FinalSnapshot
+            : UsageBehavior.CumulativeSnapshot;
+
+        List<UsageMeasurement> measurements = [];
+        foreach ((string key, string? rawValue) in metadata)
+        {
+            if (!key.StartsWith(prefix, StringComparison.Ordinal) ||
+                key.EndsWith(".unit", StringComparison.Ordinal) ||
+                rawValue is null ||
+                !long.TryParse(
+                    rawValue,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out long value))
+            {
+                continue;
+            }
+
+            string name = key[prefix.Length..];
+            string unit = metadata.GetValueOrDefault($"{key}.unit") ??
+                "provider units";
+            measurements.Add(new UsageMeasurement(
+                name,
+                value,
+                unit,
+                UsageScope.Session,
+                behavior,
+                key));
+        }
+
+        return measurements;
     }
 
     private static long? AggregateUsage(
@@ -358,7 +468,8 @@ public sealed class SessionNodeSummaryBuilder
         long? input,
         long output,
         long cacheRead,
-        long cacheWrite)
+        long cacheWrite,
+        long reasoning)
     {
         List<string> parts = [];
         if (input is long inputValue)
@@ -379,6 +490,11 @@ public sealed class SessionNodeSummaryBuilder
         if (cacheWrite > 0)
         {
             parts.Add($"cache write {cacheWrite:N0}");
+        }
+
+        if (reasoning > 0)
+        {
+            parts.Add($"reasoning {reasoning:N0}");
         }
 
         return string.Join(" \u00b7 ", parts);

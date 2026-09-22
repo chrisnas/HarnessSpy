@@ -1,4 +1,6 @@
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Runtimes;
+using HarnessSpy.Core.Runtimes.Cursor;
 
 namespace HarnessSpy.Core.Services;
 
@@ -11,6 +13,8 @@ namespace HarnessSpy.Core.Services;
 public sealed class ObservationReconciler
 {
     private static readonly TimeSpan MaxSignatureSkew = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MaxCursorThoughtDuplicateSkew =
+        TimeSpan.FromSeconds(5);
 
     // Provenance dedupe keys already projected, so a replayed/re-tailed row is
     // never projected twice.
@@ -20,15 +24,26 @@ public sealed class ObservationReconciler
     private readonly Dictionary<string, Guid> _byToolCallId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<CanonicalToolCandidate>> _byToolSignature =
         new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<CanonicalToolCandidate>>
+        _byCursorExecutionSignature = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Guid> _bySubagentId = new(StringComparer.Ordinal);
     private readonly HashSet<Guid> _matchedCanonicalTools = [];
+    private readonly Dictionary<string, List<Guid>> _cursorEvidenceHooks =
+        new(StringComparer.Ordinal);
 
     // Transcript-only nodes that a later hook may promote to canonical.
     private readonly Dictionary<string, Guid> _transcriptToolCallNodes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<PendingTranscriptTool>> _pendingTranscriptToolsBySignature =
         new(StringComparer.Ordinal);
     private readonly HashSet<Guid> _pendingTranscriptNodeIds = [];
+    private readonly Dictionary<string, List<Guid>> _pendingCursorEvidence =
+        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Guid> _cursorAssistantStepTargets =
+        new(StringComparer.Ordinal);
     private readonly ToolCorrelationSignatureBuilder _signatureBuilder = new();
+    private readonly CursorGenerationIdentity _cursorGenerationIdentity = new();
+    private readonly Dictionary<string, CursorThoughtCandidate> _cursorThoughts =
+        new(StringComparer.Ordinal);
 
     public IReadOnlyList<ObservationChange> Reconcile(HookObservation observation)
     {
@@ -42,6 +57,42 @@ public sealed class ObservationReconciler
 
     private IReadOnlyList<ObservationChange> RegisterHook(HookObservation hook)
     {
+        if (IsDuplicateCursorThought(hook))
+        {
+            return [];
+        }
+
+        if (hook.Provider == HookProvider.Cursor &&
+            hook.Surface == HookSurface.CursorIde &&
+            hook.Interpretation.Role is
+                ObservationRole.TurnStop or ObservationRole.SessionEnd)
+        {
+            ClearCursorThoughts(hook.ProviderScopedSessionId);
+        }
+
+        if (TryCursorEvidenceKey(hook, out string? cursorEvidenceKey))
+        {
+            if (TryTakePendingCursorEvidence(cursorEvidenceKey, out Guid transcriptNode))
+            {
+                return [new ObservationChange(
+                    ObservationChangeKind.PromotePrimary,
+                    hook,
+                    transcriptNode,
+                    TranscriptRelationshipKind.EvidenceOf,
+                    InferenceEvidence.Heuristic)];
+            }
+
+            if (!_cursorEvidenceHooks.TryGetValue(
+                cursorEvidenceKey,
+                out List<Guid>? hooks))
+            {
+                hooks = [];
+                _cursorEvidenceHooks[cursorEvidenceKey] = hooks;
+            }
+
+            hooks.Add(hook.EventId);
+        }
+
         if (hook.Provider == HookProvider.GitHubCopilot &&
             hook.Surface == HookSurface.CopilotCli &&
             hook.Interpretation.Role is ObservationRole.TurnStop or ObservationRole.SessionEnd)
@@ -87,10 +138,37 @@ public sealed class ObservationReconciler
                 return [new ObservationChange(
                     ObservationChangeKind.PromotePrimary,
                     hook,
-                    pending.EventId)];
+                    pending.EventId,
+                    TranscriptRelationshipKind.EvidenceOf,
+                    InferenceEvidence.Heuristic)];
             }
 
             EnqueueSignature(signature, hook);
+        }
+
+        if (IsCursorExecutionFallback(hook) &&
+            hook.ToolName is not null)
+        {
+            string signature = _signatureBuilder.Build(hook);
+            if (TryTakePendingTranscript(
+                    signature,
+                    hook,
+                    out PendingTranscriptTool pending))
+            {
+                _pendingTranscriptNodeIds.Remove(pending.EventId);
+                _matchedCanonicalTools.Add(hook.EventId);
+                return [new ObservationChange(
+                    ObservationChangeKind.PromotePrimary,
+                    hook,
+                    pending.EventId,
+                    TranscriptRelationshipKind.EvidenceOf,
+                    InferenceEvidence.Heuristic)];
+            }
+
+            EnqueueCandidate(
+                _byCursorExecutionSignature,
+                signature,
+                hook);
         }
 
         if (hook.Interpretation.OpensSubagent && hook.SubagentId is string agentId)
@@ -109,18 +187,22 @@ public sealed class ObservationReconciler
             return [];
         }
 
-        Guid? match = FindCanonicalMatch(transcript);
+        Guid? match = FindCanonicalMatch(
+            transcript,
+            out InferenceEvidence bindingEvidence);
         if (match is Guid target)
         {
             if (transcript.Interpretation.Role == ObservationRole.ToolRequest)
             {
                 RegisterTranscriptToolAlias(transcript, target);
+                RegisterCursorAssistantStepTarget(transcript, target);
                 _matchedCanonicalTools.Add(target);
             }
 
             return [new ObservationChange(
                 ObservationChangeKind.AttachEvidence, transcript, target,
-                RelationshipFor(transcript))];
+                RelationshipFor(transcript),
+                bindingEvidence)];
         }
 
         // No canonical hook matched. Enrichment-only fragments still appear as
@@ -153,11 +235,51 @@ public sealed class ObservationReconciler
             _pendingTranscriptNodeIds.Add(transcript.EventId);
         }
 
+        if (TryCursorEvidenceKey(transcript, out string? cursorEvidenceKey))
+        {
+            if (!_pendingCursorEvidence.TryGetValue(
+                cursorEvidenceKey,
+                out List<Guid>? pendingEvidence))
+            {
+                pendingEvidence = [];
+                _pendingCursorEvidence[cursorEvidenceKey] = pendingEvidence;
+            }
+
+            pendingEvidence.Add(transcript.EventId);
+        }
+
         return [new ObservationChange(ObservationChangeKind.Add, transcript)];
     }
 
-    private Guid? FindCanonicalMatch(HookObservation transcript)
+    private Guid? FindCanonicalMatch(
+        HookObservation transcript,
+        out InferenceEvidence bindingEvidence)
     {
+        bindingEvidence = InferenceEvidence.Observed;
+        if (TryCursorEvidenceKey(transcript, out string? cursorEvidenceKey) &&
+            _cursorEvidenceHooks.TryGetValue(
+                cursorEvidenceKey,
+                out List<Guid>? evidenceHooks) &&
+            evidenceHooks.Count == 1)
+        {
+            Guid matched = evidenceHooks[0];
+            evidenceHooks.RemoveAt(0);
+            bindingEvidence = InferenceEvidence.Heuristic;
+            return matched;
+        }
+
+        if (transcript.Provider == HookProvider.Cursor &&
+            transcript.Surface == HookSurface.CursorIde &&
+            transcript.Interpretation.Role == ObservationRole.AgentThought &&
+            transcript.AssistantStepId is string assistantStepId &&
+            _cursorAssistantStepTargets.TryGetValue(
+                CursorAssistantStepKey(transcript, assistantStepId),
+                out Guid assistantStepTarget))
+        {
+            bindingEvidence = InferenceEvidence.Heuristic;
+            return assistantStepTarget;
+        }
+
         // Exact id match first (Claude tool_use.id, Copilot toolCallId).
         if (transcript.ToolUseId is string toolCallId &&
             _byToolCallId.TryGetValue(
@@ -185,36 +307,79 @@ public sealed class ObservationReconciler
         }
 
         // Heuristic signature match for transcripts without a shared id (Cursor).
-        if (transcript.Interpretation.Role == ObservationRole.ToolRequest &&
-            TryTakeCanonicalTool(
-                _signatureBuilder.Build(transcript),
-                transcript,
-                out Guid canonicalTool))
+        if (transcript.Interpretation.Role == ObservationRole.ToolRequest)
         {
-            return canonicalTool;
+            string signature = _signatureBuilder.Build(transcript);
+            if (TryTakeCanonicalTool(
+                    signature,
+                    transcript,
+                    out CanonicalToolCandidate canonicalTool))
+            {
+                if (transcript.Provider == HookProvider.Cursor)
+                {
+                    DiscardMatchingCursorExecution(
+                        signature,
+                        canonicalTool.Timestamp);
+                }
+
+                bindingEvidence = InferenceEvidence.Heuristic;
+                return canonicalTool.EventId;
+            }
+
+            if (transcript.Provider == HookProvider.Cursor &&
+                transcript.Surface == HookSurface.CursorIde &&
+                TryTakeCursorExecution(
+                    signature,
+                    out CanonicalToolCandidate executionHook))
+            {
+                bindingEvidence = InferenceEvidence.Heuristic;
+                return executionHook.EventId;
+            }
         }
 
         return null;
     }
 
-    private static TranscriptRelationshipKind RelationshipFor(HookObservation transcript) =>
-        transcript.Interpretation.Role switch
+    private static TranscriptRelationshipKind RelationshipFor(HookObservation transcript)
+    {
+        if (transcript.SubagentId is not null &&
+            transcript.Interpretation.Role is
+                ObservationRole.AgentThought or
+                ObservationRole.AgentResponse or
+                ObservationRole.Message or
+                ObservationRole.SystemPrompt)
         {
+            return TranscriptRelationshipKind.SubagentConversation;
+        }
+
+        return transcript.Interpretation.Role switch
+        {
+            ObservationRole.PromptSubmitted when transcript.Interpretation.Skill is not null =>
+                TranscriptRelationshipKind.AttachmentForPrompt,
             ObservationRole.ToolSuccess or ObservationRole.ToolFailure =>
                 TranscriptRelationshipKind.ToolRequestResult,
             ObservationRole.SubagentStart or ObservationRole.SubagentStop =>
                 TranscriptRelationshipKind.SubagentConversation,
             _ => TranscriptRelationshipKind.EvidenceOf
         };
+    }
 
-    private void EnqueueSignature(string signature, HookObservation hook)
+    private void EnqueueSignature(
+        string signature,
+        HookObservation hook) =>
+        EnqueueCandidate(_byToolSignature, signature, hook);
+
+    private static void EnqueueCandidate(
+        Dictionary<string, List<CanonicalToolCandidate>> index,
+        string signature,
+        HookObservation hook)
     {
-        if (!_byToolSignature.TryGetValue(
+        if (!index.TryGetValue(
             signature,
             out List<CanonicalToolCandidate>? candidates))
         {
             candidates = [];
-            _byToolSignature[signature] = candidates;
+            index[signature] = candidates;
         }
 
         candidates.Add(new CanonicalToolCandidate(hook.EventId, hook.EffectiveTimestamp));
@@ -223,9 +388,9 @@ public sealed class ObservationReconciler
     private bool TryTakeCanonicalTool(
         string signature,
         HookObservation transcript,
-        out Guid eventId)
+        out CanonicalToolCandidate matched)
     {
-        eventId = default;
+        matched = default;
         if (!_byToolSignature.TryGetValue(
             signature,
             out List<CanonicalToolCandidate>? candidates))
@@ -259,12 +424,68 @@ public sealed class ObservationReconciler
 
         if (bestIndex >= 0)
         {
-            eventId = candidates[bestIndex].EventId;
+            matched = candidates[bestIndex];
             candidates.RemoveAt(bestIndex);
             return true;
         }
 
         return false;
+    }
+
+    private bool TryTakeCursorExecution(
+        string signature,
+        out CanonicalToolCandidate matched)
+    {
+        matched = default;
+        if (!_byCursorExecutionSignature.TryGetValue(
+                signature,
+                out List<CanonicalToolCandidate>? candidates))
+        {
+            return false;
+        }
+
+        int index = candidates.FindIndex(candidate =>
+            !_matchedCanonicalTools.Contains(candidate.EventId));
+        if (index < 0)
+        {
+            return false;
+        }
+
+        matched = candidates[index];
+        candidates.RemoveAt(index);
+        return true;
+    }
+
+    private void DiscardMatchingCursorExecution(
+        string signature,
+        DateTimeOffset canonicalTimestamp)
+    {
+        if (!_byCursorExecutionSignature.TryGetValue(
+                signature,
+                out List<CanonicalToolCandidate>? candidates))
+        {
+            return;
+        }
+
+        int bestIndex = -1;
+        TimeSpan bestSkew = TimeSpan.MaxValue;
+        for (int index = 0; index < candidates.Count; index++)
+        {
+            TimeSpan skew =
+                candidates[index].Timestamp - canonicalTimestamp;
+            if (skew >= TimeSpan.Zero &&
+                skew <= MaxSignatureSkew &&
+                skew < bestSkew)
+            {
+                bestIndex = index;
+                bestSkew = skew;
+            }
+        }
+
+        if (bestIndex >= 0)
+        {
+            candidates.RemoveAt(bestIndex);
+        }
     }
 
     private bool TryTakePendingTranscript(
@@ -358,11 +579,211 @@ public sealed class ObservationReconciler
         _pendingTranscriptNodeIds.Remove(transcript.EventId);
     }
 
+    private bool TryTakePendingCursorEvidence(string key, out Guid eventId)
+    {
+        eventId = default;
+        if (!_pendingCursorEvidence.TryGetValue(
+                key,
+                out List<Guid>? pending) ||
+            pending.Count != 1)
+        {
+            return false;
+        }
+
+        eventId = pending[0];
+        pending.RemoveAt(0);
+        if (pending.Count == 0)
+        {
+            _pendingCursorEvidence.Remove(key);
+        }
+
+        return true;
+    }
+
+    private static bool TryCursorEvidenceKey(
+        HookObservation observation,
+        out string key)
+    {
+        key = string.Empty;
+        if (observation.Provider != HookProvider.Cursor ||
+            observation.Surface != HookSurface.CursorIde)
+        {
+            return false;
+        }
+
+        string? value = observation.Interpretation.Role switch
+        {
+            ObservationRole.PromptSubmitted => NormalizePrompt(observation.PromptText),
+            ObservationRole.AgentThought or ObservationRole.AgentResponse =>
+                NormalizeText(observation.Text),
+            ObservationRole.TurnStop => NormalizeStopStatus(observation.Status),
+            _ => null
+        };
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        key =
+            $"{observation.ProviderScopedSessionId}\0" +
+            $"{observation.Interpretation.Role}\0{value}";
+        return true;
+    }
+
+    private static string? NormalizePrompt(string? prompt)
+    {
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            return null;
+        }
+
+        const string open = "<user_query>";
+        const string close = "</user_query>";
+        int start = prompt.IndexOf(open, StringComparison.Ordinal);
+        if (start >= 0)
+        {
+            start += open.Length;
+            int end = prompt.IndexOf(close, start, StringComparison.Ordinal);
+            prompt = end < 0 ? prompt[start..] : prompt[start..end];
+        }
+
+        return NormalizeText(prompt);
+    }
+
+    private static string? NormalizeText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        value = TrimTrailingRedaction(value);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return string.Join(
+            " ",
+            value.Split(
+                (char[]?)null,
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries));
+    }
+
+    private static string TrimTrailingRedaction(string value)
+    {
+        const string redacted = "[REDACTED]";
+        string trimmed = value.TrimEnd();
+        while (trimmed.EndsWith(redacted, StringComparison.Ordinal))
+        {
+            int markerStart = trimmed.Length - redacted.Length;
+            if (markerStart > 0 && !char.IsWhiteSpace(trimmed[markerStart - 1]))
+            {
+                break;
+            }
+
+            trimmed = trimmed[..markerStart].TrimEnd();
+        }
+
+        return trimmed;
+    }
+
+    private static string? NormalizeStopStatus(string? value)
+    {
+        string? normalized = NormalizeText(value)?.ToLowerInvariant();
+        return normalized switch
+        {
+            "success" or "completed" or "complete" or "end_turn" => "completed",
+            "error" or "failed" or "failure" or "aborted" => "aborted",
+            _ => normalized
+        };
+    }
+
     private static string ToolCallKey(string scopedSession, string toolCallId) =>
         $"{scopedSession}\0{toolCallId}";
 
     private static string SubagentKey(string scopedSession, string agentId) =>
         $"{scopedSession}\0agent\0{agentId}";
+
+    private static bool IsCursorExecutionFallback(HookObservation hook) =>
+        hook.Provider == HookProvider.Cursor &&
+        hook.Surface == HookSurface.CursorIde &&
+        (hook.Interpretation.Role == ObservationRole.InnerExecutionStart ||
+         hook.Interpretation.Role == ObservationRole.FileAccess &&
+         hook.Interpretation.Direction == ObservationDirection.Input);
+
+    private void RegisterCursorAssistantStepTarget(
+        HookObservation transcript,
+        Guid target)
+    {
+        if (transcript.Provider != HookProvider.Cursor ||
+            transcript.Surface != HookSurface.CursorIde ||
+            transcript.AssistantStepId is not string assistantStepId)
+        {
+            return;
+        }
+
+        _cursorAssistantStepTargets.TryAdd(
+            CursorAssistantStepKey(transcript, assistantStepId),
+            target);
+    }
+
+    private static string CursorAssistantStepKey(
+        HookObservation observation,
+        string assistantStepId) =>
+        $"{observation.ProviderScopedSessionId}\0{assistantStepId}";
+
+    private bool IsDuplicateCursorThought(HookObservation hook)
+    {
+        if (hook.Provider != HookProvider.Cursor ||
+            hook.Surface != HookSurface.CursorIde ||
+            hook.Interpretation.Role != ObservationRole.AgentThought ||
+            NormalizeText(hook.Text) is not string text ||
+            hook.GenerationId is not string turnId)
+        {
+            return false;
+        }
+
+        string? rawGenerationId =
+            RuntimeJson.String(hook.Payload, "generation_id");
+        if (rawGenerationId is null)
+        {
+            return false;
+        }
+
+        bool isStepScoped =
+            _cursorGenerationIdentity.IsStepScoped(rawGenerationId);
+        string key =
+            $"{hook.ProviderScopedSessionId}\0{turnId}\0{text}";
+        if (_cursorThoughts.TryGetValue(
+                key,
+                out CursorThoughtCandidate existing) &&
+            existing.IsStepScoped != isStepScoped &&
+            Abs(existing.Timestamp - hook.EffectiveTimestamp) <=
+                MaxCursorThoughtDuplicateSkew)
+        {
+            return true;
+        }
+
+        _cursorThoughts[key] = new CursorThoughtCandidate(
+            hook.EffectiveTimestamp,
+            isStepScoped);
+        return false;
+    }
+
+    private void ClearCursorThoughts(string scopedSessionId)
+    {
+        string prefix = scopedSessionId + "\0";
+        foreach (string key in _cursorThoughts.Keys
+                     .Where(key => key.StartsWith(
+                         prefix,
+                         StringComparison.Ordinal))
+                     .ToArray())
+        {
+            _cursorThoughts.Remove(key);
+        }
+    }
 
     private readonly record struct PendingTranscriptTool(
         Guid EventId,
@@ -372,4 +793,8 @@ public sealed class ObservationReconciler
     private readonly record struct CanonicalToolCandidate(
         Guid EventId,
         DateTimeOffset Timestamp);
+
+    private readonly record struct CursorThoughtCandidate(
+        DateTimeOffset Timestamp,
+        bool IsStepScoped);
 }

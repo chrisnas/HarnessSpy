@@ -114,6 +114,7 @@ public enum ObservationRole
     ModelSwitchStart,
     ModelSwitchEnd,
     InstructionsLoaded,
+    SystemPrompt,
     ConfigChange,
     DirectoryChange,
     WorkingDirectoryChange

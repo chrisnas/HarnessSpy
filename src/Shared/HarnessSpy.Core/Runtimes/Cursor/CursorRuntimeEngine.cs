@@ -13,6 +13,7 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
 
     private static readonly string[] ReadOwnerTools = ["Read"];
     private static readonly string[] EditOwnerTools = ["Write", "StrReplace", "EditNotebook"];
+    private readonly CursorGenerationIdentity _generationIdentity = new();
 
     public override ObservationInterpretation Interpret(ObservationContext context)
     {
@@ -25,7 +26,8 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
         string? sessionId =
             RuntimeJson.String(payload, "conversation_id") ??
             RuntimeJson.String(payload, "session_id");
-        string? turnId = RuntimeJson.String(payload, "generation_id");
+        string? turnId = _generationIdentity.CanonicalTurnId(
+            RuntimeJson.String(payload, "generation_id"));
         string? toolName = RuntimeJson.String(payload, "tool_name");
         string? mcpServer = RuntimeJson.String(payload, "mcp_server_name");
         string? targetFilePath =
@@ -161,6 +163,8 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
             case "beforeShellExecution":
                 interpretation.Role = ObservationRole.InnerExecutionStart;
                 interpretation.Direction = ObservationDirection.Input;
+                interpretation.ToolName = "Shell";
+                interpretation.ToolKind = CanonicalToolKind.Shell;
                 interpretation.MatchStrategy = ToolCallMatchStrategy.ExecutionEvidence;
                 interpretation.InnerExecutionKind = "beforeShellExecution";
                 interpretation.InnerExecutionOwnerTool = "Shell";
@@ -172,6 +176,8 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
             case "afterShellExecution":
                 interpretation.Role = ObservationRole.InnerExecutionEnd;
                 interpretation.Direction = ObservationDirection.Output;
+                interpretation.ToolName = "Shell";
+                interpretation.ToolKind = CanonicalToolKind.Shell;
                 interpretation.MatchStrategy = ToolCallMatchStrategy.ExecutionEvidence;
                 interpretation.InnerExecutionKind = "beforeShellExecution";
                 interpretation.InnerExecutionOwnerTool = "Shell";
@@ -183,6 +189,7 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
                 interpretation.Role = ObservationRole.InnerExecutionStart;
                 interpretation.Direction = ObservationDirection.Input;
                 interpretation.Tone = ObservationTone.Mcp;
+                interpretation.ToolKind = CanonicalToolKind.Mcp;
                 interpretation.MatchStrategy = ToolCallMatchStrategy.ExecutionEvidence;
                 interpretation.InnerExecutionKind = "beforeMCPExecution";
                 interpretation.InnerExecutionOwnerTool = toolName is null ? null : $"MCP:{toolName}";
@@ -199,6 +206,7 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
                 interpretation.Role = ObservationRole.InnerExecutionEnd;
                 interpretation.Direction = ObservationDirection.Output;
                 interpretation.Tone = ObservationTone.Mcp;
+                interpretation.ToolKind = CanonicalToolKind.Mcp;
                 interpretation.MatchStrategy = ToolCallMatchStrategy.ExecutionEvidence;
                 interpretation.InnerExecutionKind = "beforeMCPExecution";
                 interpretation.InnerExecutionOwnerTool = toolName is null ? null : $"MCP:{toolName}";
@@ -215,6 +223,8 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
             case "beforeReadFile":
                 interpretation.Role = ObservationRole.FileAccess;
                 interpretation.Direction = ObservationDirection.Input;
+                interpretation.ToolName = "Read";
+                interpretation.ToolKind = CanonicalToolKind.FileRead;
                 interpretation.MatchStrategy = ToolCallMatchStrategy.FileTarget;
                 interpretation.InnerExecutionKind = "beforeReadFile";
                 interpretation.InnerCategory = InnerExecutionCategory.FileRead;

@@ -90,6 +90,8 @@ public sealed record SessionEventRecord
 
     public string? Text { get; init; }
 
+    public SystemPromptContent? SystemPrompt { get; init; }
+
     public string? Model { get; init; }
 
     public string? Mode { get; init; }
@@ -159,6 +161,11 @@ public sealed record SessionCatalogEntry
     public bool IsSelectedInHarness { get; init; }
 
     public IReadOnlyList<SessionFileBinding> Files { get; init; } = [];
+
+    // Provider records that describe the session as a whole rather than one
+    // conversational turn. System-prompt snapshots live here even when they
+    // retain a TurnId identifying the model call that observed them.
+    public IReadOnlyList<SessionEventRecord> SessionEvents { get; init; } = [];
 
     public IReadOnlyList<SessionTurn> Turns { get; init; } = [];
 

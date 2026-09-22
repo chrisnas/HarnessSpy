@@ -5,7 +5,8 @@ namespace HarnessSpy.Core.Models;
 // file coordinates plus any native ids so live capture, durable sidecar
 // storage, and replay all agree on identity.
 //
-// The stable transcript dedupe key is (NormalizedPath, ByteOffset, BlockIndex).
+// The stable transcript dedupe key is
+// (NormalizedPath, FileGeneration, ByteOffset, BlockIndex).
 // Native ids (RecordId/ToolCallId/...) are retained as separate correlation
 // evidence, never used alone across files.
 public sealed record ObservationProvenance(
@@ -24,9 +25,10 @@ public sealed record ObservationProvenance(
     string? InteractionId = null,
     string? ToolCallId = null,
     string? DiscoveryHookEventId = null,
-    string? ContractVersion = null)
+    string? ContractVersion = null,
+    string? AssistantStepId = null)
 {
     // The stable identity used to avoid re-projecting a row already captured.
     public string DedupeKey =>
-        $"{NormalizedPath.ToUpperInvariant()}|{ByteOffset}|{BlockIndex}";
+        $"{NormalizedPath.ToUpperInvariant()}|{FileGeneration}|{ByteOffset}|{BlockIndex}";
 }

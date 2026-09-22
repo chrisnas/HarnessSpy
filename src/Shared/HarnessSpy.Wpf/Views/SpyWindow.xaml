@@ -158,7 +158,7 @@
                                 <StackPanel Margin="0,4,0,0"
                                             Visibility="{Binding NodeSummary.HasSkills, Converter={StaticResource BooleanToVisibilityConverter}}">
                                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Skills" />
-                                    <ItemsControl ItemsSource="{Binding NodeSummary.Skills}">
+                                    <ItemsControl ItemsSource="{Binding NodeSummary.SkillDetails, Mode=OneWay}">
                                         <ItemsControl.ItemsPanel>
                                             <ItemsPanelTemplate>
                                                 <WrapPanel />
@@ -174,7 +174,7 @@
                                                         CornerRadius="10">
                                                     <TextBlock FontSize="12"
                                                                Foreground="#3730A3"
-                                                               Text="{Binding}" />
+                                                               Text="{Binding DisplayText, Mode=OneWay}" />
                                                 </Border>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -242,6 +242,23 @@
                                             Visibility="{Binding NodeSummary.HasTokens, Converter={StaticResource BooleanToVisibilityConverter}}">
                                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tokens" />
                                     <TextBlock Text="{Binding NodeSummary.TokenLine}" />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding NodeSummary.HasAccounting, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Usage and accounting" />
+                                    <ItemsControl ItemsSource="{Binding NodeSummary.Accounting, Mode=OneWay}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock FontSize="12" TextWrapping="Wrap">
+                                                    <Run Text="{Binding Name}" />
+                                                    <Run Text=": " />
+                                                    <Run FontWeight="SemiBold"
+                                                         Text="{Binding ValueText, Mode=OneWay}" />
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                 </StackPanel>
 
                                 <StackPanel Margin="0,8,0,0"
@@ -400,6 +417,10 @@
                                 </DataTrigger>
                                 <DataTrigger Binding="{Binding IsAgentResponse}" Value="True">
                                     <Setter Property="FontWeight" Value="Bold" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsSystemPrompt}" Value="True">
+                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                    <Setter Property="Foreground" Value="#8250DF" />
                                 </DataTrigger>
                                 <DataTrigger Binding="{Binding IsSkill}" Value="True">
                                     <Setter Property="FontStyle" Value="Italic" />
@@ -591,10 +612,59 @@
                         </ItemsControl.ItemsPanel>
                     </ItemsControl>
 
+                    <StackPanel Margin="0,12,0,0"
+                                Visibility="{Binding SelectedNode.HasEvidence, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Transcript evidence" />
+                        <ItemsControl ItemsSource="{Binding SelectedNode.Evidence, Mode=OneWay}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Expander Margin="0,0,0,4"
+                                              Header="{Binding Header, Mode=OneWay}">
+                                        <StackPanel Margin="12,4,0,4">
+                                            <ItemsControl ItemsSource="{Binding Details, Mode=OneWay}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock FontSize="12"
+                                                                   Foreground="#57606A"
+                                                                   TextWrapping="Wrap">
+                                                            <Run FontWeight="SemiBold" Text="{Binding Name}" />
+                                                            <Run Text=": " />
+                                                            <Run Text="{Binding Value}" />
+                                                        </TextBlock>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBox MaxHeight="220"
+                                                     Margin="0,6,0,0"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Consolas"
+                                                     FontSize="11"
+                                                     HorizontalScrollBarVisibility="Disabled"
+                                                     IsReadOnly="True"
+                                                     Text="{Binding ReadableContent, Mode=OneWay}"
+                                                     TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Auto"
+                                                     Visibility="{Binding HasReadableContent, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                            <TextBox MaxHeight="140"
+                                                     Margin="0,6,0,0"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Consolas"
+                                                     FontSize="11"
+                                                     IsReadOnly="True"
+                                                     Text="{Binding RawPayload, Mode=OneWay}"
+                                                     TextWrapping="NoWrap"
+                                                     VerticalScrollBarVisibility="Auto" />
+                                        </StackPanel>
+                                    </Expander>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
                     <StackPanel Margin="0,8,0,0"
                                 Visibility="{Binding SelectedNode.NodeSummary.HasSkills, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Skills" />
-                        <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.Skills}">
+                        <ItemsControl ItemsSource="{Binding SelectedNode.NodeSummary.SkillDetails, Mode=OneWay}">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
                                     <WrapPanel />
@@ -608,7 +678,8 @@
                                             BorderBrush="#C7D2FE"
                                             BorderThickness="1"
                                             CornerRadius="12">
-                                        <TextBlock Foreground="#3730A3" Text="{Binding}" />
+                                        <TextBlock Foreground="#3730A3"
+                                                   Text="{Binding DisplayText, Mode=OneWay}" />
                                     </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -656,10 +727,10 @@
                                                     Binding="{Binding Name}"
                                                     Width="*" />
                                 <DataGridTextColumn Header=""
-                                                    Binding="{Binding CountText}"
+                                                    Binding="{Binding CountText, Mode=OneWay}"
                                                     Width="48" />
                                 <DataGridTextColumn Header="Time"
-                                                    Binding="{Binding DurationText}"
+                                                    Binding="{Binding DurationText, Mode=OneWay}"
                                                     Width="100" />
                                 <DataGridTemplateColumn Header="" Width="140">
                                     <DataGridTemplateColumn.CellTemplate>
@@ -688,10 +759,10 @@
                                                     Binding="{Binding Name}"
                                                     Width="*" />
                                 <DataGridTextColumn Header=""
-                                                    Binding="{Binding CountText}"
+                                                    Binding="{Binding CountText, Mode=OneWay}"
                                                     Width="48" />
                                 <DataGridTextColumn Header="Time"
-                                                    Binding="{Binding DurationText}"
+                                                    Binding="{Binding DurationText, Mode=OneWay}"
                                                     Width="100" />
                                 <DataGridTemplateColumn Header="" Width="140">
                                     <DataGridTemplateColumn.CellTemplate>
@@ -724,6 +795,22 @@
                                 Visibility="{Binding SelectedNode.NodeSummary.HasTokens, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tokens" />
                         <TextBlock FontSize="14" Text="{Binding SelectedNode.NodeSummary.TokenLine}" />
+                    </StackPanel>
+
+                    <StackPanel Margin="0,16,0,0"
+                                Visibility="{Binding SelectedNode.NodeSummary.HasAccounting, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Usage and accounting" />
+                        <DataGrid Style="{StaticResource SummaryDataGrid}"
+                                  ItemsSource="{Binding SelectedNode.NodeSummary.Accounting, Mode=OneWay}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Metric"
+                                                    Binding="{Binding Name}"
+                                                    Width="*" />
+                                <DataGridTextColumn Header="Value"
+                                                    Binding="{Binding ValueText, Mode=OneWay}"
+                                                    Width="180" />
+                            </DataGrid.Columns>
+                        </DataGrid>
                     </StackPanel>
 
                     <StackPanel Margin="0,16,0,0"
@@ -800,6 +887,24 @@
                 <DockPanel Grid.Row="0"
                            Visibility="{Binding HasSelectedFields, Converter={StaticResource BooleanToVisibilityConverter}}">
                     <StackPanel DockPanel.Dock="Top"
+                                Margin="0,0,0,10"
+                                Visibility="{Binding SelectedNode.HasReadableContent, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Margin="0,0,0,4"
+                                   FontWeight="SemiBold"
+                                   Text="System prompt" />
+                        <TextBox Height="240"
+                                 AcceptsReturn="True"
+                                 AcceptsTab="True"
+                                 FontFamily="Consolas"
+                                 FontSize="12"
+                                 HorizontalScrollBarVisibility="Disabled"
+                                 IsReadOnly="True"
+                                 Text="{Binding SelectedNode.ReadableContent, Mode=OneWay}"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto" />
+                    </StackPanel>
+
+                    <StackPanel DockPanel.Dock="Top"
                                 Margin="0,0,0,6"
                                 Visibility="{Binding SelectedNode.IsTranscriptSourced, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <TextBlock FontStyle="Italic"
@@ -816,14 +921,48 @@
                         <TextBlock Margin="0,0,0,4"
                                    FontWeight="SemiBold"
                                    Text="Transcript evidence" />
-                        <ItemsControl ItemsSource="{Binding SelectedNode.Evidence}">
+                        <ItemsControl ItemsSource="{Binding SelectedNode.Evidence, Mode=OneWay}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <TextBlock FontSize="12" Foreground="#57606A">
-                                        <Run Text="{Binding Relationship, Mode=OneWay}" />
-                                        <Run Text=" · " />
-                                        <Run Text="{Binding Observation.HookEventName, Mode=OneWay}" />
-                                    </TextBlock>
+                                    <Expander Margin="0,0,0,4"
+                                              Header="{Binding Header, Mode=OneWay}">
+                                        <StackPanel Margin="12,4,0,4">
+                                            <ItemsControl ItemsSource="{Binding Details, Mode=OneWay}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock FontSize="12"
+                                                                   Foreground="#57606A"
+                                                                   TextWrapping="Wrap">
+                                                            <Run FontWeight="SemiBold"
+                                                                 Text="{Binding Name, Mode=OneWay}" />
+                                                            <Run Text=": " />
+                                                            <Run Text="{Binding Value, Mode=OneWay}" />
+                                                        </TextBlock>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBox MaxHeight="220"
+                                                     Margin="0,6,0,0"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Consolas"
+                                                     FontSize="11"
+                                                     HorizontalScrollBarVisibility="Disabled"
+                                                     IsReadOnly="True"
+                                                     Text="{Binding ReadableContent, Mode=OneWay}"
+                                                     TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Auto"
+                                                     Visibility="{Binding HasReadableContent, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                            <TextBox MaxHeight="140"
+                                                     Margin="0,6,0,0"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Consolas"
+                                                     FontSize="11"
+                                                     IsReadOnly="True"
+                                                     Text="{Binding RawPayload, Mode=OneWay}"
+                                                     TextWrapping="NoWrap"
+                                                     VerticalScrollBarVisibility="Auto" />
+                                        </StackPanel>
+                                    </Expander>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>

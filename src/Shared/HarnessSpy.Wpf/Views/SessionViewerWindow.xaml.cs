@@ -8,6 +8,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using HarnessSpy.Core.Sessions;
+using HarnessSpy.Wpf.Input;
 using HarnessSpy.Wpf.ViewModels;
 
 namespace HarnessSpy.Wpf.Views;
@@ -28,6 +29,8 @@ public partial class SessionViewerWindow : Window
     public SessionViewerWindow()
     {
         InitializeComponent();
+        InspectorFieldTableCopySupport.Enable(DetailsDataGrid);
+        InspectorFieldTableCopySupport.Enable(ProvenanceDataGrid);
         Loaded += SessionViewerWindow_Loaded;
 
         _dashboardOpenTimer = new DispatcherTimer

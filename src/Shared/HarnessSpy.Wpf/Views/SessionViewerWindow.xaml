@@ -139,7 +139,7 @@
                 <StackPanel Margin="0,4,0,0"
                             Visibility="{Binding HasSkills, Converter={StaticResource BooleanToVisibilityConverter}}">
                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Skills" />
-                    <ItemsControl ItemsSource="{Binding Skills}">
+                    <ItemsControl ItemsSource="{Binding SkillDetails, Mode=OneWay}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <Border Margin="0,0,6,4"
@@ -150,7 +150,7 @@
                                         CornerRadius="10">
                                     <TextBlock FontSize="12"
                                                Foreground="#3730A3"
-                                               Text="{Binding}" />
+                                               Text="{Binding DisplayText, Mode=OneWay}" />
                                 </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -223,6 +223,23 @@
                             Visibility="{Binding HasTokens, Converter={StaticResource BooleanToVisibilityConverter}}">
                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Tokens" />
                     <TextBlock Text="{Binding TokenLine}" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <StackPanel Margin="0,8,0,0"
+                            Visibility="{Binding HasAccounting, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{StaticResource SummarySectionHeader}" Text="Usage and accounting" />
+                    <ItemsControl ItemsSource="{Binding Accounting, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock FontSize="12" TextWrapping="Wrap">
+                                    <Run Text="{Binding Name}" />
+                                    <Run Text=": " />
+                                    <Run FontWeight="SemiBold"
+                                         Text="{Binding ValueText, Mode=OneWay}" />
+                                </TextBlock>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
                 </StackPanel>
 
                 <StackPanel Margin="0,8,0,0"
@@ -465,6 +482,14 @@
                                         <Setter Property="Foreground" Value="#8250DF" />
                                     </DataTrigger>
                                     <DataTrigger Binding="{Binding IsPlanActivity}" Value="True">
+                                        <Setter Property="Foreground" Value="#8250DF" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsSystemPromptGroup}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground" Value="#8250DF" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsSystemPrompt}" Value="True">
+                                        <Setter Property="FontWeight" Value="SemiBold" />
                                         <Setter Property="Foreground" Value="#8250DF" />
                                     </DataTrigger>
                                     <DataTrigger Binding="{Binding IsOrphanPlansRoot}" Value="True">
@@ -862,9 +887,37 @@
                     </ItemsControl.ItemsPanel>
                 </ItemsControl>
 
+                <Border DockPanel.Dock="Top"
+                        Height="250"
+                        Margin="0,0,0,10"
+                        Padding="10"
+                        Background="#F6F8FA"
+                        BorderBrush="#D0D7DE"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Visibility="{Binding SelectedNode.HasReadableContent, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top"
+                                   Margin="0,0,0,6"
+                                   FontWeight="SemiBold"
+                                   Text="System prompt" />
+                        <TextBox AcceptsReturn="True"
+                                 AcceptsTab="True"
+                                 Background="White"
+                                 FontFamily="Consolas"
+                                 FontSize="12"
+                                 HorizontalScrollBarVisibility="Disabled"
+                                 IsReadOnly="True"
+                                 Text="{Binding SelectedNode.ReadableContent, Mode=OneWay}"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto" />
+                    </DockPanel>
+                </Border>
+
                 <TabControl>
                     <TabItem Header="Normalized details">
-                        <DataGrid Margin="8"
+                        <DataGrid x:Name="DetailsDataGrid"
+                                  Margin="8"
                                   ItemsSource="{Binding SelectedNode.Details}"
                                   Style="{StaticResource InspectorGridStyle}">
                             <DataGrid.Columns>
@@ -936,7 +989,8 @@
 
                     <TabItem Header="Provenance">
                         <Grid Margin="8">
-                            <DataGrid ItemsSource="{Binding SelectedNode.Provenance}"
+                            <DataGrid x:Name="ProvenanceDataGrid"
+                                      ItemsSource="{Binding SelectedNode.Provenance}"
                                       Style="{StaticResource InspectorGridStyle}">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Field"

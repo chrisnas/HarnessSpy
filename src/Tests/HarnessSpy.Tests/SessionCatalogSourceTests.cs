@@ -4,6 +4,7 @@ using HarnessSpy.Core.Sessions;
 using HarnessSpy.Core.Sessions.Claude;
 using HarnessSpy.Core.Sessions.Copilot;
 using HarnessSpy.Core.Sessions.Cursor;
+using HarnessSpy.Wpf.ViewModels;
 using Microsoft.Data.Sqlite;
 
 namespace HarnessSpy.Tests;
@@ -312,6 +313,61 @@ public sealed class SessionCatalogSourceTests
     }
 
     [Fact]
+    public async Task ClaudeSourceCapturesSystemPromptOutsideTurns()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string project = Path.Combine(
+                root,
+                ".claude",
+                "projects",
+                "C--repo");
+            Directory.CreateDirectory(project);
+            await File.WriteAllLinesAsync(
+                Path.Combine(project, "prompt-session.jsonl"),
+                [
+                    """{"type":"user","promptId":"prompt-1","uuid":"user-1","sessionId":"prompt-session","cwd":"C:\\repo","timestamp":"2026-09-20T08:00:00Z","message":{"role":"user","content":"inspect"}}""",
+                    """{"parentUuid":"user-1","attachment":{"type":"prompt_snapshot","systemPrompt":["\n# Harness\nUse C:\\repo\n","## Rules\nPreserve \\\\d+"]},"type":"attachment","uuid":"snapshot-1","timestamp":"2026-09-20T08:00:01Z","sessionId":"prompt-session","cwd":"C:\\repo"}"""
+                ]);
+
+            SessionDiscoveryContext context = new(
+                root,
+                root,
+                _ => null,
+                new SessionDiscoveryLimits(
+                    MaximumDuration: TimeSpan.FromSeconds(5)));
+            ClaudeCodeSessionCatalogSource source = new(context);
+
+            SessionCatalogScanResult result = await source.ScanAsync(
+                CancellationToken.None);
+
+            SessionCatalogEntry session = Assert.Single(result.Sessions);
+            SessionEventRecord snapshot = Assert.Single(session.SessionEvents);
+            Assert.Equal(ObservationRole.SystemPrompt, snapshot.Role);
+            Assert.Equal(
+                CanonicalEventKind.SystemPromptSnapshot,
+                snapshot.EventKind);
+            Assert.Equal(
+                "# Harness\nUse C:\\repo\n\n## Rules\nPreserve \\\\d+",
+                snapshot.Text);
+            Assert.Equal(2, snapshot.SystemPrompt!.PartCount);
+            Assert.DoesNotContain(
+                session.Metadata.Keys,
+                key => key.Contains(
+                    "prompt_snapshot",
+                    StringComparison.Ordinal));
+            Assert.DoesNotContain(
+                session.Turns.SelectMany(static turn => turn.Events),
+                static item => item.Role == ObservationRole.SystemPrompt);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CopilotSourceBuildsExactTurnReasoningAndTools()
     {
         string root = CreateTempDirectory();
@@ -361,6 +417,73 @@ public sealed class SessionCatalogSourceTests
                     item.Role == ObservationRole.ToolSuccess &&
                     item.ToolCallId == "tool-1");
             Assert.Equal("5000", session.Metadata["totalApiDurationMs"]);
+            NodeSummary summary = new SessionNodeSummaryBuilder().Build(session);
+            Assert.Equal(120, summary.InputTokens);
+            Assert.Equal(30, summary.OutputTokens);
+            Assert.Equal(10, summary.ReasoningTokens);
+            Assert.Contains(
+                summary.Accounting,
+                row =>
+                    row.Name.EndsWith("totalNanoAiu", StringComparison.Ordinal) &&
+                    row.Value == 1000);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CopilotSourceCapturesOnlyConversationSystemPrompt()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string sessionDirectory = Path.Combine(
+                root,
+                ".copilot",
+                "session-state",
+                "prompt-session");
+            Directory.CreateDirectory(sessionDirectory);
+            await File.WriteAllLinesAsync(
+                Path.Combine(sessionDirectory, "events.jsonl"),
+                [
+                    """{"type":"session.start","id":"event-1","timestamp":"2026-09-20T08:00:00Z","data":{"sessionId":"prompt-session","version":1,"producer":"copilot-agent","copilotVersion":"1.0.86"}}""",
+                    """{"type":"user.message","id":"event-2","timestamp":"2026-09-20T08:00:01Z","data":{"turnId":"turn-1","interactionId":"interaction-1","content":"inspect"}}""",
+                    """{"type":"system.message","id":"event-3","timestamp":"2026-09-20T08:00:02Z","data":{"role":"system","turnId":"turn-1","interactionId":"interaction-1","content":"\n# Copilot\nUse C:\\repo and \\\\d+\n"}}""",
+                    """{"type":"model.messages_snapshot","id":"event-4","timestamp":"2026-09-20T08:00:03Z","data":{"kind":"messages_snapshot","turnId":"turn-1","messages":[{"role":"system","content":"Generate a title"}]}}""",
+                    """{"type":"session.shutdown","id":"event-5","timestamp":"2026-09-20T08:00:04Z","data":{"shutdownType":"routine"}}"""
+                ]);
+            await File.WriteAllTextAsync(
+                Path.Combine(sessionDirectory, "workspace.yaml"),
+                """
+                id: prompt-session
+                cwd: C:\repo
+                name: Prompt session
+                created_at: 2026-09-20T08:00:00Z
+                updated_at: 2026-09-20T08:00:04Z
+                """);
+
+            SessionDiscoveryContext context = new(
+                root,
+                root,
+                _ => null,
+                new SessionDiscoveryLimits(
+                    MaximumDuration: TimeSpan.FromSeconds(5)));
+            CopilotCliSessionCatalogSource source = new(context);
+
+            SessionCatalogScanResult result = await source.ScanAsync(
+                CancellationToken.None);
+
+            SessionCatalogEntry session = Assert.Single(result.Sessions);
+            SessionEventRecord snapshot = Assert.Single(session.SessionEvents);
+            Assert.Equal(ObservationRole.SystemPrompt, snapshot.Role);
+            Assert.Equal(
+                "# Copilot\nUse C:\\repo and \\\\d+",
+                snapshot.Text);
+            Assert.DoesNotContain(
+                session.Turns.SelectMany(static turn => turn.Events),
+                static item => item.Role == ObservationRole.SystemPrompt);
         }
         finally
         {

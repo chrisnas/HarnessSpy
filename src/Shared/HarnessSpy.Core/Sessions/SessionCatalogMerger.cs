@@ -65,6 +65,12 @@ public sealed class SessionCatalogMerger
                 .Concat(second.Files)
                 .DistinctBy(static file => file.Path, StringComparer.OrdinalIgnoreCase)
                 .ToArray(),
+            SessionEvents = first.SessionEvents
+                .Concat(second.SessionEvents)
+                .DistinctBy(static item => item.Id, StringComparer.Ordinal)
+                .OrderBy(static item => item.TimestampUtc ?? DateTimeOffset.MinValue)
+                .ThenBy(static item => item.Order)
+                .ToArray(),
             Turns = MergeTurns(first.Turns, second.Turns),
             Metadata = metadata,
             Sources = first.Sources
@@ -122,6 +128,7 @@ public sealed class SessionCatalogMerger
 
     private static int Richness(SessionCatalogEntry session) =>
         session.Turns.Sum(static turn => turn.Events.Count) +
+        session.SessionEvents.Count +
         session.Sources.Count +
         (session.Workspace.Kind == WorkspaceContextKind.Unknown ? 0 : 10);
 

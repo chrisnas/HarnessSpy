@@ -76,7 +76,8 @@ public enum CanonicalEventKind
     CompactionCompleted,
     TurnCompleted,
     RuntimeError,
-    Notification
+    Notification,
+    SystemPromptSnapshot
 }
 
 public enum CanonicalToolKind

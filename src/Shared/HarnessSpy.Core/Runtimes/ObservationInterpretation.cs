@@ -64,9 +64,19 @@ public sealed record ObservationInterpretation
 
     public string? McpServerName { get; init; }
 
+    public string? McpToolName { get; init; }
+
     public string? PromptText { get; init; }
 
     public string? AssistantText { get; init; }
+
+    public SystemPromptContent? SystemPrompt { get; init; }
+
+    public string? Model { get; init; }
+
+    // Identity of the model response that emitted this fragment. It is distinct
+    // from the turn id because one turn may contain several model/tool steps.
+    public string? AssistantStepId { get; init; }
 
     public string? TargetFilePath { get; init; }
 
@@ -142,6 +152,10 @@ public sealed record ObservationInterpretation
     // True for a transcript-sourced observation that only enriches a canonical
     // hook node and must never become a separate timeline node.
     public bool EnrichmentOnly { get; init; }
+
+    // Metadata/accounting evidence belongs to its session or turn container but
+    // should not create a standalone timeline node.
+    public bool MetadataOnly { get; init; }
 
     // True when this observation must not contribute to session/turn summary
     // counts (metadata rows, propagated snapshots, transcript duplicates).

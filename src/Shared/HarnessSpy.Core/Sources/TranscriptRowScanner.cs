@@ -13,7 +13,8 @@ public static class TranscriptRowScanner
         DateTimeOffset? Timestamp,
         string? TurnId,
         string? InteractionId,
-        string? RecordType);
+        string? RecordType,
+        string? Role);
 
     public static RowMeta Read(string raw)
     {
@@ -33,7 +34,8 @@ public static class TranscriptRowScanner
                     ReadIdentifier(data, "promptId", "prompt_id", "turnId"),
                 ReadIdentifier(root, "interactionId", "interaction_id") ??
                     ReadIdentifier(data, "interactionId", "interaction_id"),
-                ReadIdentifier(root, "type"));
+                ReadIdentifier(root, "type"),
+                ReadIdentifier(root, "role"));
         }
         catch (JsonException)
         {

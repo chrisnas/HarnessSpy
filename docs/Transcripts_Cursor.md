@@ -69,21 +69,24 @@ them, but never fabricates native IDs when they are absent.
 
 | Transcript field/record | Target | Reconciliation key |
 |-------------------------|--------|--------------------|
-| user `text` | standalone transcript prompt | no prompt-correlation implementation |
-| `<manually_attached_skills>` | `Attached` skill evidence on that prompt | parsed from `name:` inside the block |
-| any `tool_use` | matching canonical pre-tool node when possible | provider-scoped session + canonical tool kind + normalized primary path/command; FIFO for repeated signatures |
+| user `text` | evidence on `beforeSubmitPrompt` when normalized `<user_query>` text matches; fallback transcript prompt otherwise | provider-scoped session + normalized prompt text, FIFO |
+| `<manually_attached_skills>` | `Attached` skill evidence on the canonical prompt, including source path | parsed from `name:`/`Path:` inside the block |
+| any `tool_use` | matching canonical pre-tool node when possible | provider-scoped session + canonical tool kind + normalized complete input; FIFO for repeated signatures |
 | unmatched `tool_use` | standalone transcript tool node | no safe match |
 | `GetDynamicTools` | standalone MCP-toned discovery node unless its signature happens to match a hook | no explicit discovery-to-call relationship |
 | `CallDynamicTool` | MCP-classified tool; may attach to a matching pre-tool node | ordinary tool signature |
-| assistant `text` in a row containing any tool | standalone heuristic thought | no thought-hook correlation |
-| assistant `text` in a tool-free row | standalone heuristic response | no response-hook correlation |
-| `turn_ended` | standalone transcript turn-stop node | no stop-hook correlation |
+| assistant `text` in a row containing any tool | evidence on an exact-text `afterAgentThought`; fallback heuristic thought otherwise | provider-scoped session + role + normalized text, FIFO |
+| assistant `text` in a tool-free row | evidence on an exact-text `afterAgentResponse`; fallback response otherwise | provider-scoped session + role + normalized text, FIFO |
+| `turn_ended` | evidence on an equivalent-status `stop`; fallback transcript turn-stop otherwise | normalized completed/aborted status, FIFO |
 
 ## Provider-specific semantics
 
 - The parser marks `GetDynamicTools` with MCP tone and classifies
   `CallDynamicTool` as MCP. It does not currently create a
   `DynamicToolDiscoveryFor` edge or join the before/after MCP hook triple.
+- Content blocks from one assistant row share a derived assistant-step key
+  based on transcript provenance. This can group matching hook tool requests as
+  parallel without fabricating a provider-native id.
 - Native tool names are always displayed. Signature matching uses the
   canonical tool category, so `Write` (`FileWrite`) and `StrReplace`
   (`FileEdit`) do **not** currently correlate with each other.
@@ -91,9 +94,11 @@ them, but never fabricates native IDs when they are absent.
 ## Skill / usage / opaque states
 
 - This parser emits `Attached` only, from
-  `<manually_attached_skills>`. Slash commands remain discoverable through the
-  prompt's derived `SlashCommands` property, but the parser does not convert a
-  slash command or `SKILL.md` read into another `SkillEvidence` stage.
+  `<manually_attached_skills>`. The evidence now enriches the canonical prompt
+  and contributes its explicit stage to turn/session skill summaries. Slash
+  commands remain discoverable through the prompt's derived `SlashCommands`
+  property, but the parser does not convert a slash command or `SKILL.md` read
+  into another `SkillEvidence` stage.
 - Usage: hook-only. Neither Cursor source exposes cost, thinking-token counts,
   or context/compaction usage.
 - Opaque states: none in the verified hook-enrichment dialect; its fixture has

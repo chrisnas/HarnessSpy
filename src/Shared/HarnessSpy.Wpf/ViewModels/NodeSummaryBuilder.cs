@@ -1,22 +1,28 @@
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Runtimes;
+using HarnessSpy.Core.Services;
 
 namespace HarnessSpy.Wpf.ViewModels;
 
 internal static class NodeSummaryBuilder
 {
     private const int BadgeToolLimit = 3;
+    private static readonly UsageAggregator UsageAggregator = new();
+    private static readonly UsageNameClassifier UsageNames = new();
 
     public static NodeSummary Build(
         IEnumerable<TreeNodeViewModel> nodes,
         bool isSession,
         int turnCount,
-        int abortedTurnCount)
+        int abortedTurnCount,
+        IEnumerable<TranscriptEvidence>? containerEvidence = null)
     {
+        List<TreeNodeViewModel> materialized =
+            nodes as List<TreeNodeViewModel> ?? [.. nodes];
         Dictionary<string, CountAccumulator> tools = new(StringComparer.Ordinal);
         Dictionary<string, CountAccumulator> mcp = new(StringComparer.Ordinal);
         Dictionary<string, SubagentAccumulator> subagents = new(StringComparer.Ordinal);
-        Dictionary<string, TokenSnapshot> tokensByGeneration = new(StringComparer.Ordinal);
+        List<UsageSample> usageSamples = [];
         SortedSet<string> skills = new(StringComparer.OrdinalIgnoreCase);
         SortedSet<string> slashCommands = new(StringComparer.OrdinalIgnoreCase);
         FileAccessAccumulator fileAccess = new();
@@ -32,11 +38,11 @@ internal static class NodeSummaryBuilder
         DateTimeOffset? end = null;
 
         Walk(
-            nodes,
+            materialized,
             tools,
             mcp,
             subagents,
-            tokensByGeneration,
+            usageSamples,
             skills,
             slashCommands,
             fileAccess,
@@ -49,6 +55,46 @@ internal static class NodeSummaryBuilder
             ref aborted,
             ref start,
             ref end);
+        TranscriptEvidence[] scopedEvidence =
+            containerEvidence?.ToArray() ?? [];
+        foreach (TranscriptEvidence evidence in scopedEvidence)
+        {
+            AbsorbEvidence(
+                evidence.Observation,
+                usageSamples,
+                skills,
+                slashCommands);
+        }
+
+        if (isSession)
+        {
+            usageSamples = usageSamples
+                .Select(sample =>
+                {
+                    bool sessionSnapshot =
+                        sample.IsAuthoritative &&
+                        (UsageNames.IsInputToken(sample.Measurement.Name) ||
+                         UsageNames.IsCacheReadToken(sample.Measurement.Name));
+                    return sessionSnapshot
+                        ? sample with
+                        {
+                            Measurement = sample.Measurement with
+                            {
+                                Scope = UsageScope.Session,
+                                Behavior = sample.Measurement.Behavior ==
+                                    UsageBehavior.FinalSnapshot
+                                        ? UsageBehavior.FinalSnapshot
+                                        : UsageBehavior.CumulativeSnapshot
+                            },
+                            BucketId = "hook-session"
+                        }
+                        : sample;
+                })
+                .ToList();
+        }
+
+        IReadOnlyList<SkillSummaryRow> skillRows =
+            BuildSkillRows(materialized, skills, scopedEvidence);
 
         IReadOnlyList<CountedDurationRow> toolRows = ToRows(tools);
         IReadOnlyList<CountedDurationRow> mcpRows = ToRows(mcp);
@@ -72,7 +118,27 @@ internal static class NodeSummaryBuilder
             ? end.Value - start.Value
             : TimeSpan.Zero;
 
-        TokenTotals tokenTotals = SumTokens(tokensByGeneration);
+        UsageSample[] tokenSamples = usageSamples
+            .Where(sample => sample.Measurement.Unit == "tokens")
+            .ToArray();
+        TokenTotals tokenTotals = new(
+            UsageAggregator.Aggregate(tokenSamples, UsageNames.IsInputToken),
+            UsageAggregator.Aggregate(tokenSamples, UsageNames.IsOutputToken) ?? 0,
+            UsageAggregator.Aggregate(tokenSamples, UsageNames.IsCacheReadToken) ?? 0,
+            UsageAggregator.Aggregate(tokenSamples, UsageNames.IsCacheWriteToken) ?? 0,
+            UsageAggregator.Aggregate(tokenSamples, UsageNames.IsReasoningToken) ?? 0);
+        IReadOnlyList<UsageSummaryRow> accounting = UsageAggregator
+            .AggregateByName(usageSamples)
+            .Where(value =>
+                value.Unit != "tokens" ||
+                !UsageNames.IsAnyToken(value.Name))
+            .Select(value => new UsageSummaryRow
+            {
+                Name = value.Name,
+                Value = value.Value,
+                Unit = value.Unit
+            })
+            .ToArray();
         string tokenLine = BuildTokenLine(tokenTotals);
         bool isAborted = isSession ? abortedTurnCount > 0 : aborted;
 
@@ -93,10 +159,12 @@ internal static class NodeSummaryBuilder
             OutputTokens = tokenTotals.Output,
             CacheReadTokens = tokenTotals.CacheRead,
             CacheWriteTokens = tokenTotals.CacheWrite,
+            ReasoningTokens = tokenTotals.Reasoning,
             Tools = toolRows,
             McpCalls = mcpRows,
             Thoughts = thoughtRows,
-            Skills = skills.ToArray(),
+            Skills = skillRows.Select(row => row.Name).ToArray(),
+            SkillDetails = skillRows,
             Commands = slashCommands.ToArray(),
             ReadFiles = ToFileRows(fileAccess.Reads),
             WrittenFiles = ToFileRows(fileAccess.Writes),
@@ -115,6 +183,7 @@ internal static class NodeSummaryBuilder
                 wallTime,
                 tokenLine,
                 fileAccess),
+            Accounting = accounting,
             Badge = BuildBadge(
                 isSession,
                 turnCount,
@@ -136,7 +205,7 @@ internal static class NodeSummaryBuilder
         Dictionary<string, CountAccumulator> tools,
         Dictionary<string, CountAccumulator> mcp,
         Dictionary<string, SubagentAccumulator> subagents,
-        Dictionary<string, TokenSnapshot> tokensByGeneration,
+        List<UsageSample> usageSamples,
         SortedSet<string> skills,
         SortedSet<string> slashCommands,
         FileAccessAccumulator fileAccess,
@@ -152,15 +221,30 @@ internal static class NodeSummaryBuilder
     {
         foreach (TreeNodeViewModel node in nodes)
         {
+            foreach (TranscriptEvidence evidence in node.Evidence)
+            {
+                AbsorbEvidence(
+                    evidence.Observation,
+                    usageSamples,
+                    skills,
+                    slashCommands);
+            }
+
             HookObservation? observation = node.Observation;
             if (observation is not null)
             {
+                HookObservation? identityEvidence = node.Evidence
+                    .Select(static evidence => evidence.Observation)
+                    .FirstOrDefault(static evidence =>
+                        evidence.ToolKind == CanonicalToolKind.Mcp ||
+                        evidence.McpServerName is not null);
                 Absorb(
                     observation,
+                    identityEvidence,
                     tools,
                     mcp,
                     subagents,
-                    tokensByGeneration,
+                    usageSamples,
                     skills,
                     slashCommands,
                     fileAccess,
@@ -182,7 +266,7 @@ internal static class NodeSummaryBuilder
                     tools,
                     mcp,
                     subagents,
-                    tokensByGeneration,
+                    usageSamples,
                     skills,
                     slashCommands,
                     fileAccess,
@@ -201,10 +285,11 @@ internal static class NodeSummaryBuilder
 
     private static void Absorb(
         HookObservation observation,
+        HookObservation? identityEvidence,
         Dictionary<string, CountAccumulator> tools,
         Dictionary<string, CountAccumulator> mcp,
         Dictionary<string, SubagentAccumulator> subagents,
-        Dictionary<string, TokenSnapshot> tokensByGeneration,
+        List<UsageSample> usageSamples,
         SortedSet<string> skills,
         SortedSet<string> slashCommands,
         FileAccessAccumulator fileAccess,
@@ -218,16 +303,6 @@ internal static class NodeSummaryBuilder
         ref DateTimeOffset? start,
         ref DateTimeOffset? end)
     {
-        if (start is null || observation.ObservedAtUtc < start)
-        {
-            start = observation.ObservedAtUtc;
-        }
-
-        if (end is null || observation.ObservedAtUtc > end)
-        {
-            end = observation.ObservedAtUtc;
-        }
-
         if (observation.SkillName is string skillName)
         {
             skills.Add(skillName);
@@ -243,15 +318,31 @@ internal static class NodeSummaryBuilder
             slashCommands.Add(slashCommand);
         }
 
-        RecordTokens(observation, tokensByGeneration);
+        RecordUsage(observation, usageSamples);
 
         ObservationInterpretation interpretation = observation.Interpretation;
+        if (interpretation.ExcludeFromSummary)
+        {
+            return;
+        }
+
+        if (start is null || observation.ObservedAtUtc < start)
+        {
+            start = observation.ObservedAtUtc;
+        }
+
+        if (end is null || observation.ObservedAtUtc > end)
+        {
+            end = observation.ObservedAtUtc;
+        }
+
         switch (interpretation.Role)
         {
             case ObservationRole.ToolRequest:
-                if (IsNativeMcpToolCall(observation))
+                if (IsNativeMcpToolCall(observation) ||
+                    identityEvidence?.ToolKind == CanonicalToolKind.Mcp)
                 {
-                    AddCount(mcp, McpKey(observation));
+                    AddCount(mcp, McpKey(identityEvidence ?? observation));
                 }
                 else if (!observation.IsMcpPrefixedTool && observation.ToolName is string preTool)
                 {
@@ -335,32 +426,119 @@ internal static class NodeSummaryBuilder
         }
     }
 
-    private static void RecordTokens(HookObservation observation, Dictionary<string, TokenSnapshot> tokensByGeneration)
+    private static void AbsorbEvidence(
+        HookObservation observation,
+        List<UsageSample> usageSamples,
+        ISet<string> skills,
+        ISet<string> slashCommands)
     {
+        RecordUsage(observation, usageSamples);
+
+        if (observation.SkillName is string skillName)
+        {
+            skills.Add(skillName);
+        }
+
+        foreach (string mentionedSkill in observation.SkillMentions)
+        {
+            skills.Add(mentionedSkill);
+        }
+
+        foreach (string slashCommand in observation.SlashCommands)
+        {
+            slashCommands.Add(slashCommand);
+        }
+    }
+
+    private static void RecordUsage(
+        HookObservation observation,
+        ICollection<UsageSample> samples)
+    {
+        string bucketId =
+            observation.GenerationId ??
+            observation.ProviderScopedSessionId;
+        foreach (UsageMeasurement measurement in observation.Interpretation.UsageMeasurements)
+        {
+            samples.Add(new UsageSample(
+                measurement,
+                bucketId,
+                observation.EffectiveTimestamp));
+        }
+
         if (!observation.HasTokenCounts)
         {
             return;
         }
 
-        string key = observation.GenerationId ?? observation.EventId.ToString("N");
-        TokenSnapshot snapshot = new(
-            observation.InputTokens,
-            observation.OutputTokens ?? 0,
-            observation.CacheReadTokens ?? 0,
-            observation.CacheWriteTokens ?? 0,
-            observation.ObservedAtUtc);
+        string source = observation.EventId.ToString("N");
+        UsageBehavior snapshotBehavior = observation.IsStop
+            ? UsageBehavior.FinalSnapshot
+            : UsageBehavior.CumulativeSnapshot;
 
-        if (observation.IsStop)
+        AddLegacyUsage(
+            samples,
+            observation.InputTokens,
+            "input_tokens",
+            UsageScope.Turn,
+            snapshotBehavior,
+            source,
+            bucketId,
+            observation.EffectiveTimestamp);
+        AddLegacyUsage(
+            samples,
+            observation.OutputTokens,
+            "output_tokens",
+            UsageScope.Turn,
+            observation.IsStop ? UsageBehavior.FinalSnapshot : UsageBehavior.Delta,
+            source,
+            bucketId,
+            observation.EffectiveTimestamp);
+        AddLegacyUsage(
+            samples,
+            observation.CacheReadTokens,
+            "cache_read_tokens",
+            UsageScope.Turn,
+            snapshotBehavior,
+            source,
+            bucketId,
+            observation.EffectiveTimestamp);
+        AddLegacyUsage(
+            samples,
+            observation.CacheWriteTokens,
+            "cache_write_tokens",
+            UsageScope.Turn,
+            observation.IsStop ? UsageBehavior.FinalSnapshot : UsageBehavior.Delta,
+            source,
+            bucketId,
+            observation.EffectiveTimestamp);
+    }
+
+    private static void AddLegacyUsage(
+        ICollection<UsageSample> samples,
+        long? value,
+        string name,
+        UsageScope scope,
+        UsageBehavior behavior,
+        string source,
+        string bucketId,
+        DateTimeOffset timestamp)
+    {
+        if (value is not long count)
         {
-            tokensByGeneration[key] = snapshot;
             return;
         }
 
-        if (observation.Interpretation.Role == ObservationRole.AgentResponse &&
-            !tokensByGeneration.ContainsKey(key))
-        {
-            tokensByGeneration[key] = snapshot;
-        }
+        samples.Add(new UsageSample(
+            new UsageMeasurement(
+                name,
+                count,
+                "tokens",
+                scope,
+                behavior,
+                source),
+            bucketId,
+            timestamp,
+            IsAuthoritative: true));
     }
 
     private static void AddCount(Dictionary<string, CountAccumulator> map, string name)
@@ -406,7 +584,9 @@ internal static class NodeSummaryBuilder
     private static string McpKey(HookObservation observation)
     {
         string? server = observation.McpServerName;
-        string? tool = StripMcpPrefix(observation.ToolName);
+        string? tool =
+            observation.McpToolName ??
+            StripMcpPrefix(observation.ToolName);
 
         // Copilot flattens an MCP call as "<server>-<tool>" in a single field.
         // Use that flattened name as the key so a request and its completion
@@ -453,6 +633,90 @@ internal static class NodeSummaryBuilder
         return item;
     }
 
+    private static IReadOnlyList<SkillSummaryRow> BuildSkillRows(
+        IEnumerable<TreeNodeViewModel> nodes,
+        IEnumerable<string> knownNames,
+        IEnumerable<TranscriptEvidence> containerEvidence)
+    {
+        Dictionary<string, SortedSet<SkillEvidenceStage>> stages =
+            new(StringComparer.OrdinalIgnoreCase);
+        foreach (string name in knownNames)
+        {
+            stages.TryAdd(name, []);
+        }
+
+        Visit(nodes);
+        foreach (TranscriptEvidence evidence in containerEvidence)
+        {
+            Record(evidence.Observation);
+        }
+
+        return stages
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => new SkillSummaryRow
+            {
+                Name = pair.Key,
+                Stages = pair.Value.ToArray()
+            })
+            .ToArray();
+
+        void Visit(IEnumerable<TreeNodeViewModel> current)
+        {
+            foreach (TreeNodeViewModel node in current)
+            {
+                if (node.Observation is HookObservation observation)
+                {
+                    Record(observation);
+                }
+
+                foreach (TranscriptEvidence evidence in node.Evidence)
+                {
+                    Record(evidence.Observation);
+                }
+
+                Visit(node.Children);
+            }
+        }
+
+        void Record(HookObservation observation)
+        {
+            if (observation.Interpretation.Skill is SkillEvidence explicitSkill)
+            {
+                AddStage(explicitSkill.SkillName, explicitSkill.Stage);
+                return;
+            }
+
+            if (observation.SkillName is not string inferred)
+            {
+                return;
+            }
+
+            if (string.Equals(
+                    observation.ToolName,
+                    "Skill",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                AddStage(inferred, SkillEvidenceStage.Invoked);
+            }
+            else if (observation.ToolKind == CanonicalToolKind.FileRead ||
+                observation.Interpretation.Role == ObservationRole.InstructionsLoaded)
+            {
+                AddStage(inferred, SkillEvidenceStage.Loaded);
+            }
+        }
+
+        void AddStage(string name, SkillEvidenceStage stage)
+        {
+            if (!stages.TryGetValue(name, out SortedSet<SkillEvidenceStage>? values))
+            {
+                values = [];
+                stages[name] = values;
+            }
+
+            values.Add(stage);
+        }
+    }
+
     private static IReadOnlyList<CountedDurationRow> ToRows(Dictionary<string, CountAccumulator> map)
     {
         double totalMs = map.Values.Sum(item => item.DurationMs);
@@ -468,21 +732,6 @@ internal static class NodeSummaryBuilder
             .ThenByDescending(row => row.Count)
             .ThenBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
-    }
-
-    private static TokenTotals SumTokens(Dictionary<string, TokenSnapshot> tokensByGeneration)
-    {
-        if (tokensByGeneration.Count == 0)
-        {
-            return default;
-        }
-
-        TokenSnapshot last = tokensByGeneration.Values.OrderBy(item => item.At).Last();
-        return new TokenTotals(
-            last.Input,
-            tokensByGeneration.Values.Sum(item => item.Output),
-            last.CacheRead,
-            tokensByGeneration.Values.Sum(item => item.CacheWrite));
     }
 
     private static string BuildTokenLine(TokenTotals tokens)
@@ -506,6 +755,11 @@ internal static class NodeSummaryBuilder
         if (tokens.CacheWrite > 0)
         {
             parts.Add($"cache w {HookObservation.FormatTokens(tokens.CacheWrite)}");
+        }
+
+        if (tokens.Reasoning > 0)
+        {
+            parts.Add($"reasoning {HookObservation.FormatTokens(tokens.Reasoning)}");
         }
 
         return string.Join(" \u00b7 ", parts);
@@ -753,9 +1007,12 @@ internal static class NodeSummaryBuilder
         }
     }
 
-    private readonly record struct TokenSnapshot(long? Input, long Output, long CacheRead, long CacheWrite, DateTimeOffset At);
-
-    private readonly record struct TokenTotals(long? Input, long Output, long CacheRead, long CacheWrite);
+    private readonly record struct TokenTotals(
+        long? Input,
+        long Output,
+        long CacheRead,
+        long CacheWrite,
+        long Reasoning);
 
     private static string? Truncate(string? text)
     {

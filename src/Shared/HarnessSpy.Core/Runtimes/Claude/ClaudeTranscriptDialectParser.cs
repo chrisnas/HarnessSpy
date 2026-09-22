@@ -14,6 +14,8 @@ namespace HarnessSpy.Core.Runtimes.Claude;
 // are not turned into noisy tree nodes here.
 internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBase
 {
+    private readonly ClaudeTranscriptSemantics _semantics = new();
+
     public override string DialectId => DialectIds.ClaudeTranscript;
 
     protected override IReadOnlyList<HookObservation> ParseRow(TranscriptLine line, JsonElement row)
@@ -23,6 +25,9 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
         {
             "assistant" => AssistantRow(line, row),
             "user" => UserRow(line, row),
+            "system" => SystemRow(line, row),
+            "cost-state" => CostState(line, row),
+            "attachment" => Attachment(line, row),
             _ => []
         };
     }
@@ -37,9 +42,7 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
             NativeSessionId = RuntimeJson.String(row, "sessionId", "session_id") ?? line.NativeSessionId
         };
 
-        if (!row.TryGetProperty("message", out JsonElement message) ||
-            !message.TryGetProperty("content", out JsonElement content) ||
-            content.ValueKind != JsonValueKind.Array)
+        if (!row.TryGetProperty("message", out JsonElement message))
         {
             return [];
         }
@@ -51,27 +54,87 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
         string? uuid = RuntimeJson.String(row, "uuid");
         string? parentUuid = RuntimeJson.String(row, "parentUuid");
         string? model = RuntimeJson.String(message, "model");
-        IReadOnlyList<UsageMeasurement> usage = ReadUsage(message, uuid);
+        string sourceRecordId =
+            RuntimeJson.String(message, "id") ??
+            uuid ??
+            $"{line.NormalizedPath}:{line.LineNumber}";
+        IReadOnlyList<UsageMeasurement> usage =
+            _semantics.ReadAssistantUsage(message, sourceRecordId);
+        if (!message.TryGetProperty("content", out JsonElement content))
+        {
+            return usage.Count == 0
+                ? []
+                : [UsageOnly(line, row, promptId, uuid, parentUuid, model, usage)];
+        }
+
+        if (content.ValueKind == JsonValueKind.String)
+        {
+            string text = content.GetString() ?? string.Empty;
+            return [AssistantText(
+                line,
+                row,
+                text,
+                0,
+                promptId,
+                uuid,
+                parentUuid,
+                model,
+                usage)];
+        }
+
+        if (content.ValueKind != JsonValueKind.Array)
+        {
+            return usage.Count == 0
+                ? []
+                : [UsageOnly(line, row, promptId, uuid, parentUuid, model, usage)];
+        }
 
         List<HookObservation> observations = [];
         int index = 0;
+        bool usageAssigned = false;
         foreach (JsonElement block in content.EnumerateArray())
         {
             string? blockType = RuntimeJson.String(block, "type");
+            IReadOnlyList<UsageMeasurement> blockUsage = usageAssigned ? [] : usage;
             HookObservation? observation = blockType switch
             {
-                "thinking" => Thinking(line, block, index, promptId, uuid, parentUuid, model, usage),
-                "text" => AssistantText(line, block, index, promptId, uuid, parentUuid),
-                "tool_use" => ToolUse(line, block, index, promptId, uuid, parentUuid),
+                "thinking" or "redacted_thinking" =>
+                    Thinking(line, row, message, block, index, promptId, uuid, parentUuid, model, blockUsage),
+                "text" =>
+                    AssistantText(
+                        line,
+                        row,
+                        RuntimeJson.String(block, "text") ?? string.Empty,
+                        index,
+                        promptId,
+                        uuid,
+                        parentUuid,
+                        model,
+                        blockUsage),
+                "tool_use" =>
+                    ToolUse(line, row, message, block, index, promptId, uuid, parentUuid, model, blockUsage),
                 _ => null
             };
 
             if (observation is not null)
             {
                 observations.Add(observation);
+                usageAssigned = true;
             }
 
             index++;
+        }
+
+        if (!usageAssigned && usage.Count > 0)
+        {
+            observations.Add(UsageOnly(
+                line,
+                row,
+                promptId,
+                uuid,
+                parentUuid,
+                model,
+                usage));
         }
 
         return observations;
@@ -119,6 +182,8 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
 
     private HookObservation Thinking(
         TranscriptLine line,
+        JsonElement row,
+        JsonElement message,
         JsonElement block,
         int index,
         string? promptId,
@@ -127,14 +192,17 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
         string? model,
         IReadOnlyList<UsageMeasurement> usage)
     {
-        string? thinkingText = RuntimeJson.String(block, "thinking");
+        string? blockType = RuntimeJson.String(block, "type");
+        string? thinkingText = RuntimeJson.String(block, "thinking", "text");
         string? signature = RuntimeJson.String(block, "signature");
-        bool opaque = string.IsNullOrEmpty(thinkingText) && !string.IsNullOrEmpty(signature);
+        bool opaque = _semantics.IsOpaqueThinking(blockType, block);
 
-        var builder = new InterpretationBuilder("thinking")
+        var builder = new InterpretationBuilder(blockType ?? "thinking")
         {
             SessionId = line.NativeSessionId,
             TurnId = promptId,
+            SubagentId = AgentId(line, row),
+            SubagentType = RuntimeJson.String(row, "attributionAgent", "agentType", "agent_type"),
             Role = ObservationRole.AgentThought,
             EventKind = CanonicalEventKind.AssistantThought,
             Tone = ObservationTone.Thought,
@@ -142,12 +210,14 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
             HoverText = opaque ? "Thinking is opaque/redacted by the provider." : thinkingText,
             HeaderDetail = opaque ? OpaqueHeader(signature, usage) : Preview(thinkingText),
             Evidence = opaque ? InferenceEvidence.Opaque : InferenceEvidence.Observed,
-            UsageMeasurements = usage
+            UsageMeasurements = usage,
+            Model = model,
+            AssistantStepId = RuntimeJson.String(message, "id") ?? uuid
         };
 
         JsonObject payload = new()
         {
-            ["type"] = "thinking",
+            ["type"] = blockType ?? "thinking",
             ["signature_present"] = !string.IsNullOrEmpty(signature),
             ["signature_length"] = signature?.Length ?? 0,
             ["model"] = model
@@ -159,17 +229,20 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
 
     private HookObservation AssistantText(
         TranscriptLine line,
-        JsonElement block,
+        JsonElement row,
+        string text,
         int index,
         string? promptId,
         string? uuid,
-        string? parentUuid)
+        string? parentUuid,
+        string? model,
+        IReadOnlyList<UsageMeasurement> usage)
     {
-        string? text = RuntimeJson.String(block, "text");
         var builder = new InterpretationBuilder("text")
         {
             SessionId = line.NativeSessionId,
             TurnId = promptId,
+            SubagentId = AgentId(line, row),
             Role = ObservationRole.AgentResponse,
             EventKind = CanonicalEventKind.AssistantMessage,
             // Standalone assistant text is not a reply to a preceding request
@@ -178,7 +251,13 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
             AssistantText = text,
             HoverText = text,
             HeaderDetail = Preview(text),
-            Evidence = InferenceEvidence.Observed
+            Evidence = InferenceEvidence.Observed,
+            UsageMeasurements = usage,
+            Model = model,
+            AssistantStepId = uuid,
+            EnrichmentOnly = true,
+            MetadataOnly = true,
+            ExcludeFromSummary = true
         };
 
         JsonObject payload = new()
@@ -193,35 +272,64 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
 
     private HookObservation ToolUse(
         TranscriptLine line,
+        JsonElement row,
+        JsonElement message,
         JsonElement block,
         int index,
         string? promptId,
         string? uuid,
-        string? parentUuid)
+        string? parentUuid,
+        string? model,
+        IReadOnlyList<UsageMeasurement> usage)
     {
         string toolName = RuntimeJson.String(block, "name") ?? "tool_use";
         string? toolCallId = RuntimeJson.String(block, "id");
+        JsonElement input = block.TryGetProperty("input", out JsonElement toolInput)
+            ? toolInput
+            : default;
+        ClaudeMcpIdentity mcp = _semantics.ReadMcpIdentity(
+            toolName,
+            row,
+            message,
+            block);
 
         var builder = new InterpretationBuilder(toolName)
         {
             SessionId = line.NativeSessionId,
             TurnId = promptId,
+            SubagentId = AgentId(line, row),
+            SubagentType = RuntimeJson.String(row, "attributionAgent", "agentType", "agent_type"),
             ToolName = toolName,
             ToolCallId = toolCallId,
+            McpServerName = mcp.ServerName,
+            McpToolName = mcp.ToolName,
             Role = ObservationRole.ToolRequest,
             EventKind = CanonicalEventKind.ToolRequested,
             // No directional arrow: a transcript tool request is not one side of
             // a request/response pair the way a hook Pre/PostToolUse is.
             Direction = ObservationDirection.None,
-            ToolKind = ToolKind(toolName),
+            ToolKind = mcp.IsMcp ? CanonicalToolKind.Mcp : ToolKind(toolName),
             TargetFilePath = ToolInputValue(block, "file_path", "path"),
+            TargetFilePaths = input.ValueKind == JsonValueKind.Undefined
+                ? []
+                : _semantics.ReadTargetPaths(input),
             HeaderDetail = ToolInputPreview(block),
             Evidence = InferenceEvidence.Observed,
+            UsageMeasurements = usage,
+            Model = model,
+            AssistantStepId = RuntimeJson.String(message, "id") ?? uuid,
+            Skill = _semantics.ReadSkill(
+                toolName,
+                input,
+                row,
+                message,
+                block,
+                line.NormalizedPath),
             EnrichmentOnly = true,
             ExcludeFromSummary = true
         };
 
-        if (RuntimeJson.IsMcpPrefixed(toolName))
+        if (mcp.IsMcp || RuntimeJson.IsMcpPrefixed(toolName))
         {
             builder.Tone = ObservationTone.Mcp;
         }
@@ -241,22 +349,26 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
         string? uuid)
     {
         string? toolCallId = RuntimeJson.String(block, "tool_use_id");
-        bool isError = row.TryGetProperty("toolUseResult", out JsonElement result) &&
-            result.TryGetProperty("interrupted", out JsonElement interrupted) &&
-            interrupted.ValueKind == JsonValueKind.True;
+        bool isError = _semantics.IsToolFailure(row, block);
+        string status = _semantics.ToolResultStatus(row, block, isError);
 
         var builder = new InterpretationBuilder("tool_result")
         {
             SessionId = line.NativeSessionId,
             TurnId = promptId,
+            SubagentId = AgentId(line, row),
+            SubagentType = RuntimeJson.String(row, "attributionAgent", "agentType", "agent_type"),
             ToolCallId = toolCallId,
             Role = isError ? ObservationRole.ToolFailure : ObservationRole.ToolSuccess,
             EventKind = isError ? CanonicalEventKind.ToolFailed : CanonicalEventKind.ToolSucceeded,
             // No directional arrow; it nests under its tool's PreToolUse node.
             Direction = ObservationDirection.None,
             HeaderDetail = ToolResultPreview(row),
+            Status = status,
             MatchStrategy = ToolCallMatchStrategy.ToolCallId,
             Evidence = InferenceEvidence.Observed,
+            CountsAsFailure = isError,
+            TargetFilePaths = _semantics.ReadTargetPaths(block, row),
             EnrichmentOnly = true,
             ExcludeFromSummary = true
         };
@@ -271,46 +383,259 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
             index, TranscriptCompleteness.Complete, uuid, turnId: promptId, toolCallId: toolCallId));
     }
 
-    // Reads Claude usage as typed measurements: input/cache are cumulative
-    // snapshots; output is per model step; thinking tokens are output detail.
-    private static IReadOnlyList<UsageMeasurement> ReadUsage(JsonElement message, string? recordId)
+    private IReadOnlyList<HookObservation> SystemRow(
+        TranscriptLine line,
+        JsonElement row)
     {
-        if (!message.TryGetProperty("usage", out JsonElement usage) ||
-            usage.ValueKind != JsonValueKind.Object)
+        if (RuntimeJson.String(row, "subtype") != "turn_duration")
         {
             return [];
         }
 
-        string source = recordId ?? "unknown";
-        List<UsageMeasurement> measurements = [];
+        string? promptId = RuntimeJson.String(row, "promptId") ?? line.TurnHint;
+        double? duration = RuntimeJson.Double(row, "durationMs", "duration_ms");
+        string source = RuntimeJson.String(row, "uuid") ??
+            $"turn-duration:{line.NormalizedPath}:{line.LineNumber}";
+        IReadOnlyList<UsageMeasurement> measurements = duration is double durationMs
+            ? [new UsageMeasurement(
+                "turn_duration",
+                (long)Math.Round(durationMs),
+                "ms",
+                UsageScope.Turn,
+                UsageBehavior.Delta,
+                source)]
+            : [];
 
-        AddMeasurement(measurements, usage, "input_tokens", "tokens", UsageBehavior.CumulativeSnapshot, source);
-        AddMeasurement(measurements, usage, "output_tokens", "tokens", UsageBehavior.Delta, source);
-        AddMeasurement(measurements, usage, "cache_read_input_tokens", "tokens", UsageBehavior.CumulativeSnapshot, source);
-        AddMeasurement(measurements, usage, "cache_creation_input_tokens", "tokens", UsageBehavior.CumulativeSnapshot, source);
-
-        if (usage.TryGetProperty("output_tokens_details", out JsonElement details) &&
-            details.ValueKind == JsonValueKind.Object)
+        var builder = new InterpretationBuilder("turn_duration")
         {
-            AddMeasurement(measurements, details, "thinking_tokens", "tokens", UsageBehavior.Delta, source);
+            SessionId = RuntimeJson.String(row, "sessionId", "session_id") ?? line.NativeSessionId,
+            TurnId = promptId,
+            SubagentId = AgentId(line, row),
+            Role = ObservationRole.Message,
+            HeaderDetail = duration is double milliseconds
+                ? HookObservation.FormatDuration(TimeSpan.FromMilliseconds(milliseconds))
+                : null,
+            Evidence = InferenceEvidence.Observed,
+            UsageMeasurements = measurements,
+            EnrichmentOnly = true,
+            MetadataOnly = true,
+            ExcludeFromSummary = true
+        };
+
+        JsonObject payload = CloneToObject(row);
+        if (duration is double value)
+        {
+            payload["duration_ms"] = value;
         }
 
-        return measurements;
+        return [Emit(
+            line,
+            payload,
+            builder.Build(),
+            line.Provenance(0, TranscriptCompleteness.Complete, source, turnId: promptId))];
     }
 
-    private static void AddMeasurement(
-        List<UsageMeasurement> measurements,
-        JsonElement container,
-        string name,
-        string unit,
-        UsageBehavior behavior,
-        string source)
+    private IReadOnlyList<HookObservation> CostState(
+        TranscriptLine line,
+        JsonElement row)
     {
-        if (RuntimeJson.Long(container, name) is long value)
+        string source = RuntimeJson.String(row, "uuid") ??
+            $"cost-state:{line.NormalizedPath}:{line.LineNumber}";
+        IReadOnlyList<UsageMeasurement> usage = _semantics.ReadCostState(row, source);
+        if (usage.Count == 0)
         {
-            measurements.Add(new UsageMeasurement(name, value, unit, UsageScope.Turn, behavior, source));
+            return [];
         }
+
+        var builder = new InterpretationBuilder("cost-state")
+        {
+            SessionId = RuntimeJson.String(row, "sessionId", "session_id") ?? line.NativeSessionId,
+            Role = ObservationRole.Message,
+            Status = "latest-snapshot",
+            Evidence = InferenceEvidence.Observed,
+            UsageMeasurements = usage,
+            EnrichmentOnly = true,
+            MetadataOnly = true,
+            ExcludeFromSummary = true
+        };
+
+        return [Emit(
+            line,
+            CloneToObject(row),
+            builder.Build(),
+            line.Provenance(0, TranscriptCompleteness.Complete, source))];
     }
+
+    private IReadOnlyList<HookObservation> Attachment(
+        TranscriptLine line,
+        JsonElement row)
+    {
+        if (!row.TryGetProperty("attachment", out JsonElement attachment) ||
+            attachment.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
+
+        string? attachmentType = RuntimeJson.String(attachment, "type");
+        if (attachmentType == "prompt_snapshot")
+        {
+            return SystemPromptSnapshot(line, row, attachment);
+        }
+
+        if (attachmentType is not ("skill_listing" or "skill_activated"))
+        {
+            return [];
+        }
+
+        SkillEvidenceStage stage = attachmentType == "skill_activated"
+            ? SkillEvidenceStage.Invoked
+            : SkillEvidenceStage.Available;
+        string? promptId = RuntimeJson.String(row, "promptId") ?? line.TurnHint;
+        string? recordId = RuntimeJson.String(row, "uuid");
+        List<HookObservation> observations = [];
+        int index = 0;
+        foreach (string skill in _semantics.ReadSkillNames(attachment))
+        {
+            var builder = new InterpretationBuilder(attachmentType)
+            {
+                SessionId = RuntimeJson.String(row, "sessionId", "session_id") ?? line.NativeSessionId,
+                TurnId = promptId,
+                SubagentId = AgentId(line, row),
+                Role = ObservationRole.Message,
+                AssistantText = skill,
+                HeaderDetail = skill,
+                Evidence = InferenceEvidence.Observed,
+                Skill = new SkillEvidence(
+                    skill,
+                    stage,
+                    InferenceEvidence.Observed,
+                    line.NormalizedPath),
+                EnrichmentOnly = true,
+                MetadataOnly = true,
+                ExcludeFromSummary = true
+            };
+            JsonObject payload = new()
+            {
+                ["type"] = attachmentType,
+                ["skill"] = skill,
+                ["stage"] = stage.ToString()
+            };
+            observations.Add(Emit(
+                line,
+                payload,
+                builder.Build(),
+                line.Provenance(
+                    index++,
+                    TranscriptCompleteness.Complete,
+                    recordId,
+                    turnId: promptId)));
+        }
+
+        return observations;
+    }
+
+    private IReadOnlyList<HookObservation> SystemPromptSnapshot(
+        TranscriptLine line,
+        JsonElement row,
+        JsonElement attachment)
+    {
+        SystemPromptContent? systemPrompt =
+            _semantics.ReadSystemPrompt(attachment);
+        if (systemPrompt is null)
+        {
+            return [];
+        }
+
+        string? promptId = RuntimeJson.String(row, "promptId") ?? line.TurnHint;
+        string? recordId = RuntimeJson.String(row, "uuid");
+        string? parentRecordId = RuntimeJson.String(row, "parentUuid");
+        var builder = new InterpretationBuilder("prompt_snapshot")
+        {
+            SessionId = RuntimeJson.String(row, "sessionId", "session_id") ??
+                line.NativeSessionId,
+            TurnId = promptId,
+            SubagentId = AgentId(line, row),
+            Role = ObservationRole.SystemPrompt,
+            EventKind = CanonicalEventKind.SystemPromptSnapshot,
+            Direction = ObservationDirection.Input,
+            AssistantText = systemPrompt.Text,
+            SystemPrompt = systemPrompt,
+            HeaderDetail = $"System prompt \u00b7 {PromptSummary(systemPrompt)}",
+            Evidence = InferenceEvidence.Observed,
+            ExcludeFromSummary = true
+        };
+        if (builder.SubagentId is null)
+        {
+            builder.ScopeOverride = ObservationScope.Session;
+        }
+
+        JsonObject payload = new()
+        {
+            ["type"] = "prompt_snapshot",
+            ["content_hash"] = systemPrompt.ContentHash,
+            ["part_count"] = systemPrompt.PartCount
+        };
+        builder.Fields(
+            new FieldSpec(FieldSpecKind.Scalar, "content_hash"),
+            new FieldSpec(FieldSpecKind.Scalar, "part_count"));
+
+        return
+        [
+            Emit(
+                line,
+                payload,
+                builder.Build(),
+                line.Provenance(
+                    0,
+                    TranscriptCompleteness.Complete,
+                    recordId,
+                    parentRecordId,
+                    promptId))
+        ];
+    }
+
+    private HookObservation UsageOnly(
+        TranscriptLine line,
+        JsonElement row,
+        string? promptId,
+        string? uuid,
+        string? parentUuid,
+        string? model,
+        IReadOnlyList<UsageMeasurement> usage)
+    {
+        var builder = new InterpretationBuilder("assistant.usage")
+        {
+            SessionId = line.NativeSessionId,
+            TurnId = promptId,
+            SubagentId = AgentId(line, row),
+            Role = ObservationRole.Message,
+            Model = model,
+            AssistantStepId = uuid,
+            UsageMeasurements = usage,
+            Evidence = InferenceEvidence.Observed,
+            EnrichmentOnly = true,
+            MetadataOnly = true,
+            ExcludeFromSummary = true
+        };
+        JsonObject payload = new()
+        {
+            ["type"] = "assistant.usage",
+            ["model"] = model
+        };
+        return Emit(
+            line,
+            payload,
+            builder.Build(),
+            line.Provenance(
+                0,
+                TranscriptCompleteness.Complete,
+                uuid,
+                parentUuid,
+                promptId));
+    }
+
+    private static string? AgentId(TranscriptLine line, JsonElement row) =>
+        line.AgentId ?? RuntimeJson.String(row, "agentId", "agent_id");
 
     // A short preview of the tool result so the nested result node is readable
     // (stdout, else the tool_result content string, else interrupted state).
@@ -372,6 +697,14 @@ internal sealed class ClaudeTranscriptDialectParser : TranscriptDialectParserBas
         return thinkingTokens is long tokens
             ? $"opaque \u00b7 {signaturePart} \u00b7 {HookObservation.FormatTokens(tokens)} thinking tokens"
             : $"opaque \u00b7 {signaturePart}";
+    }
+
+    private static string PromptSummary(SystemPromptContent prompt)
+    {
+        string parts = prompt.PartCount == 1
+            ? "1 part"
+            : $"{prompt.PartCount} parts";
+        return $"{parts} \u00b7 {prompt.CharacterCount:N0} chars";
     }
 
     private static string? Preview(string? text)

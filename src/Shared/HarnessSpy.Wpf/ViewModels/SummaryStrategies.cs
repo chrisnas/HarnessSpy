@@ -14,7 +14,8 @@ internal interface ISummaryStrategy
         IEnumerable<TreeNodeViewModel> nodes,
         bool isSession,
         int turnCount,
-        int abortedTurnCount);
+        int abortedTurnCount,
+        IEnumerable<TranscriptEvidence>? containerEvidence = null);
 }
 
 internal class SharedTraitSummaryStrategy : ISummaryStrategy
@@ -23,8 +24,14 @@ internal class SharedTraitSummaryStrategy : ISummaryStrategy
         IEnumerable<TreeNodeViewModel> nodes,
         bool isSession,
         int turnCount,
-        int abortedTurnCount) =>
-        NodeSummaryBuilder.Build(nodes, isSession, turnCount, abortedTurnCount);
+        int abortedTurnCount,
+        IEnumerable<TranscriptEvidence>? containerEvidence = null) =>
+        NodeSummaryBuilder.Build(
+            nodes,
+            isSession,
+            turnCount,
+            abortedTurnCount,
+            containerEvidence);
 }
 
 // The Cursor, Claude and Copilot strategies currently share the trait-based
@@ -51,11 +58,17 @@ internal static class SummaryStrategies
         IEnumerable<TreeNodeViewModel> nodes,
         bool isSession,
         int turnCount,
-        int abortedTurnCount)
+        int abortedTurnCount,
+        IEnumerable<TranscriptEvidence>? containerEvidence = null)
     {
         List<TreeNodeViewModel> materialized = nodes as List<TreeNodeViewModel> ?? [.. nodes];
         return Resolve(DominantHarness(materialized))
-            .Build(materialized, isSession, turnCount, abortedTurnCount);
+            .Build(
+                materialized,
+                isSession,
+                turnCount,
+                abortedTurnCount,
+                containerEvidence);
     }
 
     private static ISummaryStrategy Resolve(string harnessId) => harnessId switch

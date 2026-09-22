@@ -6,17 +6,24 @@ namespace HarnessSpy.Core.Sessions.Copilot;
 
 internal sealed class CopilotMcpIdentity
 {
-    public CopilotMcpIdentity(string? serverName, string? toolName)
+    public CopilotMcpIdentity(
+        string? serverName,
+        string? toolName,
+        bool isExplicitMcp = false)
     {
         ServerName = serverName;
         ToolName = toolName;
+        IsExplicitMcp = isExplicitMcp;
     }
 
     public string? ServerName { get; }
 
     public string? ToolName { get; }
 
+    public bool IsExplicitMcp { get; }
+
     public bool IsMcp =>
+        IsExplicitMcp ||
         !string.IsNullOrWhiteSpace(ServerName) ||
         !string.IsNullOrWhiteSpace(ToolName);
 }
@@ -133,6 +140,10 @@ internal sealed class CopilotToolSemantics
             data,
             "mcpToolName",
             "mcp_tool_name");
+        bool isExplicitMcp = string.Equals(
+            _json.String(data, "kind"),
+            "mcp",
+            StringComparison.OrdinalIgnoreCase);
 
         foreach (string nestedName in new[]
         {
@@ -160,6 +171,10 @@ internal sealed class CopilotToolSemantics
             tool ??= explicitMcpTool;
 
             string? kind = _json.String(nested.Value, "kind");
+            isExplicitMcp |= string.Equals(
+                kind,
+                "mcp",
+                StringComparison.OrdinalIgnoreCase);
             if (tool is null &&
                 (nestedName == "promptRequest" ||
                  string.Equals(kind, "mcp", StringComparison.OrdinalIgnoreCase)))
@@ -170,6 +185,10 @@ internal sealed class CopilotToolSemantics
             JsonElement? approval = _json.Object(nested.Value, "approval");
             if (approval is not null)
             {
+                isExplicitMcp |= string.Equals(
+                    _json.String(approval.Value, "kind"),
+                    "mcp",
+                    StringComparison.OrdinalIgnoreCase);
                 server ??= _json.String(
                     approval.Value,
                     "mcpServerName",
@@ -181,7 +200,7 @@ internal sealed class CopilotToolSemantics
             }
         }
 
-        return new CopilotMcpIdentity(server, tool);
+        return new CopilotMcpIdentity(server, tool, isExplicitMcp);
     }
 
     private void CollectPaths(

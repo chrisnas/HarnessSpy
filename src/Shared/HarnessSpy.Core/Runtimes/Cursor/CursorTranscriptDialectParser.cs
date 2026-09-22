@@ -42,6 +42,7 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
         var builder = new InterpretationBuilder("user")
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
             Role = ObservationRole.PromptSubmitted,
             EventKind = CanonicalEventKind.PromptSubmitted,
             Direction = ObservationDirection.Input,
@@ -51,12 +52,13 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
             ExcludeFromSummary = true
         };
 
-        if (TryReadAttachedSkill(prompt) is string skill)
+        if (TryReadAttachedSkill(prompt) is AttachedSkill skill)
         {
             builder.Skill = new SkillEvidence(
-                skill,
+                skill.Name,
                 SkillEvidenceStage.Attached,
-                InferenceEvidence.Observed);
+                InferenceEvidence.Observed,
+                skill.Path);
         }
 
         JsonObject payload = new()
@@ -64,8 +66,20 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
             ["role"] = "user",
             ["prompt"] = prompt
         };
+        if (builder.Skill is SkillEvidence attached)
+        {
+            payload["skill"] = attached.SkillName;
+            payload["skill_path"] = attached.SourcePath;
+        }
 
-        return Emit(line, payload, builder.Build(), line.Provenance(0, TranscriptCompleteness.Complete));
+        return Emit(
+            line,
+            payload,
+            builder.Build(),
+            line.Provenance(
+                0,
+                TranscriptCompleteness.Complete,
+                turnId: line.TurnHint));
     }
 
     private IReadOnlyList<HookObservation> AssistantStep(TranscriptLine line, JsonElement row)
@@ -81,18 +95,32 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
         bool hasTool = blocks.Any(block => RuntimeJson.String(block, "type") == "tool_use");
 
         List<HookObservation> observations = [];
+        // Emit tools before their companion text so reconciliation can bind the
+        // assistant-step commentary to the first canonical tool hook it finds.
         for (int index = 0; index < blocks.Length; index++)
         {
             JsonElement block = blocks[index];
             string? type = RuntimeJson.String(block, "type");
-            if (type == "text")
-            {
-                observations.Add(TextBlock(line, block, index, thought: hasTool));
-            }
-            else if (type == "tool_use")
+            if (type == "tool_use")
             {
                 observations.Add(ToolBlock(line, block, index));
             }
+        }
+
+        for (int index = 0; index < blocks.Length; index++)
+        {
+            JsonElement block = blocks[index];
+            if (RuntimeJson.String(block, "type") != "text" ||
+                IsRedactedText(RuntimeJson.String(block, "text")))
+            {
+                continue;
+            }
+
+            observations.Add(TextBlock(
+                line,
+                block,
+                index,
+                thought: hasTool));
         }
 
         return observations;
@@ -104,6 +132,7 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
         var builder = new InterpretationBuilder(thought ? "text" : "text")
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
             AssistantText = text,
             HoverText = text,
             Role = thought ? ObservationRole.AgentThought : ObservationRole.AgentResponse,
@@ -112,6 +141,7 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
             Tone = thought ? ObservationTone.Thought : ObservationTone.Normal,
             HeaderDetail = Preview(text),
             Evidence = InferenceEvidence.Heuristic,
+            AssistantStepId = AssistantStepId(line),
             EnrichmentOnly = true,
             ExcludeFromSummary = true
         };
@@ -122,7 +152,14 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
             ["text"] = text
         };
 
-        return Emit(line, payload, builder.Build(), line.Provenance(index, TranscriptCompleteness.Complete));
+        return Emit(
+            line,
+            payload,
+            builder.Build(),
+            line.Provenance(
+                index,
+                TranscriptCompleteness.Complete,
+                turnId: line.TurnHint));
     }
 
     private HookObservation ToolBlock(TranscriptLine line, JsonElement block, int index)
@@ -130,10 +167,22 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
         string toolName = RuntimeJson.String(block, "name") ?? "tool_use";
         bool isDiscovery = toolName == "GetDynamicTools";
         bool isDynamicCall = toolName == "CallDynamicTool";
+        JsonElement input = ToolInput(block);
+        string? mcpServer = RuntimeJson.String(
+            input,
+            "namespace",
+            "server",
+            "serverName",
+            "server_name");
+        string? mcpTool = RuntimeJson.String(
+            input,
+            "toolName",
+            "tool_name");
 
         var builder = new InterpretationBuilder(toolName)
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
             ToolName = toolName,
             Role = ObservationRole.ToolRequest,
             EventKind = CanonicalEventKind.ToolRequested,
@@ -141,7 +190,12 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
             ToolKind = ToolKind(toolName),
             TargetFilePath = ToolInputValue(block, "file_path", "path"),
             HeaderDetail = ToolInputPreview(block) ?? toolName,
-            Evidence = InferenceEvidence.Heuristic
+            McpServerName = mcpServer,
+            McpToolName = mcpTool,
+            Evidence = InferenceEvidence.Heuristic,
+            AssistantStepId = AssistantStepId(line),
+            EnrichmentOnly = true,
+            ExcludeFromSummary = true
         };
 
         if (isDynamicCall)
@@ -156,7 +210,14 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
 
         JsonObject payload = CloneToObject(block);
 
-        return Emit(line, payload, builder.Build(), line.Provenance(index, TranscriptCompleteness.Complete));
+        return Emit(
+            line,
+            payload,
+            builder.Build(),
+            line.Provenance(
+                index,
+                TranscriptCompleteness.Complete,
+                turnId: line.TurnHint));
     }
 
     private HookObservation TurnEnded(TranscriptLine line, JsonElement row)
@@ -166,6 +227,7 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
         var builder = new InterpretationBuilder("turn_ended")
         {
             SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
             Role = ObservationRole.TurnStop,
             EventKind = CanonicalEventKind.TurnCompleted,
             Direction = ObservationDirection.Output,
@@ -179,19 +241,26 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
         };
 
         JsonObject payload = CloneToObject(row);
-        return Emit(line, payload, builder.Build(), line.Provenance(0, TranscriptCompleteness.Complete));
+        return Emit(
+            line,
+            payload,
+            builder.Build(),
+            line.Provenance(
+                0,
+                TranscriptCompleteness.Complete,
+                turnId: line.TurnHint));
     }
 
     private static string? ToolInputValue(JsonElement block, params string[] names)
     {
-        if (!block.TryGetProperty("input", out JsonElement input) ||
-            input.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        return RuntimeJson.String(input, names);
+        return RuntimeJson.String(ToolInput(block), names);
     }
+
+    private static JsonElement ToolInput(JsonElement block) =>
+        block.TryGetProperty("input", out JsonElement input) &&
+        input.ValueKind == JsonValueKind.Object
+            ? input
+            : default;
 
     private static string? ToolInputPreview(JsonElement block)
     {
@@ -229,7 +298,7 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
 
     // Extracts a manually attached skill name from the injected
     // <manually_attached_skills> block without trusting arbitrary prompt XML.
-    private static string? TryReadAttachedSkill(string? prompt)
+    private static AttachedSkill? TryReadAttachedSkill(string? prompt)
     {
         if (string.IsNullOrEmpty(prompt))
         {
@@ -243,18 +312,54 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
             return null;
         }
 
+        int blockEnd = prompt.IndexOf(
+            "</manually_attached_skills>",
+            start,
+            StringComparison.Ordinal);
+        if (blockEnd < 0)
+        {
+            blockEnd = prompt.Length;
+        }
+
         int nameIndex = prompt.IndexOf("name:", start, StringComparison.OrdinalIgnoreCase);
-        if (nameIndex < 0)
+        if (nameIndex < 0 || nameIndex >= blockEnd)
         {
             return null;
         }
 
         int valueStart = nameIndex + "name:".Length;
         int end = prompt.IndexOfAny(['\n', '\r'], valueStart);
+        if (end < 0 || end > blockEnd)
+        {
+            end = blockEnd;
+        }
+
         string value = end < 0 ? prompt[valueStart..] : prompt[valueStart..end];
         value = value.Trim();
-        return string.IsNullOrEmpty(value) ? null : value;
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        int pathIndex = prompt.IndexOf("Path:", valueStart, StringComparison.OrdinalIgnoreCase);
+        string? path = null;
+        if (pathIndex >= 0 && pathIndex < blockEnd)
+        {
+            int pathStart = pathIndex + "Path:".Length;
+            int pathEnd = prompt.IndexOfAny(['\n', '\r'], pathStart);
+            if (pathEnd < 0 || pathEnd > blockEnd)
+            {
+                pathEnd = blockEnd;
+            }
+
+            path = (pathEnd < 0 ? prompt[pathStart..] : prompt[pathStart..pathEnd]).Trim();
+        }
+
+        return new AttachedSkill(value, string.IsNullOrWhiteSpace(path) ? null : path);
     }
+
+    private static string AssistantStepId(TranscriptLine line) =>
+        $"cursor-step:{line.FileGeneration}:{line.ByteOffset}";
 
     private static string? Preview(string? text)
     {
@@ -267,4 +372,12 @@ internal sealed class CursorTranscriptDialectParser : TranscriptDialectParserBas
         const int maxLength = 60;
         return oneLine.Length <= maxLength ? oneLine : oneLine[..maxLength].TrimEnd() + "\u2026";
     }
+
+    private static bool IsRedactedText(string? text) =>
+        string.Equals(
+            text?.Trim(),
+            "[REDACTED]",
+            StringComparison.Ordinal);
+
+    private sealed record AttachedSkill(string Name, string? Path);
 }

@@ -210,12 +210,12 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
         _capture.WriteManifest(binding.ScopedSessionId, new TranscriptSessionManifest(
             binding.ScopedSessionId,
             binding.DialectId,
-            binding.Cursor.NormalizedPath,
-            ParserVersion: 2,
-            TranscriptBindingJournal.ReconcilerVersion,
-            binding.CaptureState,
-            [binding.SourceId],
-            binding.NativeSessionId));
+            ContractVersion: null,
+            ParserVersion: 3,
+            ReconcilerVersion: TranscriptBindingJournal.ReconcilerVersion,
+            CaptureState: binding.CaptureState,
+            SourceFiles: [binding.SourceId],
+            NativeSessionId: binding.NativeSessionId));
     }
 
     public async ValueTask DisposeAsync()

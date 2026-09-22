@@ -164,6 +164,8 @@ public sealed class HookObservation
     // True for a transcript fragment that only enriches a canonical hook node.
     public bool IsEnrichmentOnly => Interpretation.EnrichmentOnly;
 
+    public bool IsMetadataOnly => Interpretation.MetadataOnly;
+
     public string? ToolUseId => Interpretation.ToolCallId;
 
     public IReadOnlyList<string> BatchToolCallIds => Interpretation.BatchToolCallIds;
@@ -176,7 +178,15 @@ public sealed class HookObservation
 
     public string? Text => Interpretation.AssistantText;
 
+    public SystemPromptContent? SystemPrompt => Interpretation.SystemPrompt;
+
     public string? McpServerName => Interpretation.McpServerName;
+
+    public string? McpToolName => Interpretation.McpToolName;
+
+    public string? Model => Interpretation.Model;
+
+    public string? AssistantStepId => Interpretation.AssistantStepId;
 
     public string? Status => Interpretation.Status;
 
@@ -199,6 +209,7 @@ public sealed class HookObservation
         : TargetFilePath is string path ? [path] : [];
 
     public string? SkillName =>
+        Interpretation.Skill?.SkillName ??
         TryGetSkillName(TargetFilePath) ??
         TryGetInvokedSkillName(ToolName, Payload);
 
@@ -228,9 +239,81 @@ public sealed class HookObservation
             ApplyFieldSpec(fields, spec);
         }
 
+        AddInterpretationFields(fields);
         AddDurationField(fields);
         AddSpawningProcessField(fields);
         return fields;
+    }
+
+    private void AddInterpretationFields(List<PayloadField> fields)
+    {
+        AddDerivedField(fields, "model", Model);
+        AddDerivedField(fields, "assistant step id", AssistantStepId);
+        if (!HasPayloadField("mcp_server_name", "mcpServerName"))
+        {
+            AddDerivedField(fields, "MCP server", McpServerName);
+        }
+
+        if (!HasPayloadField("mcp_tool_name", "mcpToolName"))
+        {
+            AddDerivedField(fields, "MCP tool", McpToolName);
+        }
+
+        if (Interpretation.Skill is SkillEvidence skill)
+        {
+            AddDerivedField(fields, "skill", skill.SkillName);
+            AddDerivedField(fields, "skill stage", skill.Stage.ToString());
+            AddDerivedField(fields, "skill evidence", skill.Evidence.ToString());
+            AddDerivedField(fields, "skill source", skill.SourcePath);
+        }
+
+        foreach (UsageMeasurement usage in Interpretation.UsageMeasurements)
+        {
+            AddDerivedField(
+                fields,
+                $"usage.{usage.Name}",
+                $"{usage.Value:N0} {usage.Unit} \u00b7 {usage.Scope} \u00b7 {usage.Behavior}");
+        }
+
+        if (Provenance is not ObservationProvenance provenance)
+        {
+            return;
+        }
+
+        AddDerivedField(fields, "source dialect", provenance.DialectId);
+        AddDerivedField(fields, "source path", provenance.NormalizedPath);
+        AddDerivedField(fields, "source line", provenance.LineNumber.ToString());
+        AddDerivedField(fields, "record id", provenance.RecordId);
+        AddDerivedField(fields, "parent record id", provenance.ParentRecordId);
+        AddDerivedField(fields, "native turn id", provenance.TurnId);
+        AddDerivedField(fields, "interaction id", provenance.InteractionId);
+        AddDerivedField(fields, "tool call id", provenance.ToolCallId);
+        AddDerivedField(fields, "provenance assistant step id", provenance.AssistantStepId);
+        AddDerivedField(fields, "evidence confidence", Interpretation.Evidence.ToString());
+    }
+
+    private bool HasPayloadField(params string[] names)
+    {
+        if (Payload.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        return names.Any(name => Payload.TryGetProperty(name, out _));
+    }
+
+    private static void AddDerivedField(
+        List<PayloadField> fields,
+        string name,
+        string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) ||
+            fields.Any(field => StringComparer.OrdinalIgnoreCase.Equals(field.Name, name)))
+        {
+            return;
+        }
+
+        fields.Add(new PayloadField(name, value));
     }
 
     private void ApplyFieldSpec(List<PayloadField> fields, FieldSpec spec)

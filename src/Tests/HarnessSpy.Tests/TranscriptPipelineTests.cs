@@ -72,6 +72,40 @@ public sealed class TranscriptPipelineTests
     }
 
     [Fact]
+    public void CaptureManifestMergesMainAndSubagentSources()
+    {
+        TranscriptCaptureStore capture = new(TempDir());
+        capture.WriteManifest("ClaudeCode:ClaudeCode:s1", new TranscriptSessionManifest(
+            "ClaudeCode:ClaudeCode:s1",
+            DialectIds.ClaudeTranscript,
+            ContractVersion: null,
+            ParserVersion: 2,
+            ReconcilerVersion: 2,
+            CaptureState: EnrichmentCaptureState.LiveCaptured,
+            SourceFiles: ["main"],
+            NativeSessionId: "s1"));
+        capture.WriteManifest("ClaudeCode:ClaudeCode:s1", new TranscriptSessionManifest(
+            "ClaudeCode:ClaudeCode:s1",
+            DialectIds.ClaudeTranscript,
+            ContractVersion: null,
+            ParserVersion: 2,
+            ReconcilerVersion: 2,
+            CaptureState: EnrichmentCaptureState.LiveCaptured,
+            SourceFiles: ["agent-a1"],
+            NativeSessionId: "s1"));
+
+        string manifestPath = Path.Combine(
+            capture.SidecarDirectory("ClaudeCode:ClaudeCode:s1"),
+            "manifest.json");
+        TranscriptSessionManifest manifest =
+            JsonSerializer.Deserialize<TranscriptSessionManifest>(
+                File.ReadAllText(manifestPath),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.Equal(["agent-a1", "main"], manifest.SourceFiles);
+        Assert.Null(manifest.ContractVersion);
+    }
+
+    [Fact]
     public void ReconcilerAttachesTranscriptToolToHookByToolUseId()
     {
         ObservationReconciler reconciler = new();
@@ -85,6 +119,7 @@ public sealed class TranscriptPipelineTests
         ObservationChange change = Assert.Single(reconciler.Reconcile(transcriptTool));
         Assert.Equal(ObservationChangeKind.AttachEvidence, change.Kind);
         Assert.Equal(preToolUse.EventId, change.TargetEventId);
+        Assert.Equal(InferenceEvidence.Observed, change.BindingEvidence);
     }
 
     [Fact]
@@ -114,6 +149,7 @@ public sealed class TranscriptPipelineTests
         ObservationChange requestChange = Assert.Single(reconciler.Reconcile(request));
         Assert.Equal(ObservationChangeKind.AttachEvidence, requestChange.Kind);
         Assert.Equal(hook.EventId, requestChange.TargetEventId);
+        Assert.Equal(InferenceEvidence.Heuristic, requestChange.BindingEvidence);
 
         HookObservation execution = Assert.Single(CopilotTranscript(
             """{"type":"tool.execution_start","id":"e1","data":{"interactionId":"i1","turnId":"3","toolCallId":"call_1","toolName":"view"}}"""));
@@ -264,6 +300,71 @@ public sealed class TranscriptPipelineTests
 
         Assert.Equal(ObservationChangeKind.AttachEvidence, matched.Kind);
         Assert.Equal(hook.EventId, matched.TargetEventId);
+        Assert.Equal(InferenceEvidence.Heuristic, matched.BindingEvidence);
+    }
+
+    [Fact]
+    public void CursorSignaturesNormalizeHookAndTranscriptToolSchemas()
+    {
+        ToolCorrelationSignatureBuilder builder = new();
+
+        HookObservation readHook = CursorHook(
+            """{"hook_event_name":"preToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_input":{"file_path":"C:\\Repo\\Program.cs"}}""");
+        HookObservation readTranscript = Assert.Single(CursorTranscript(
+            """{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"C:\\Repo\\Program.cs"}}]}}"""));
+        Assert.Equal(
+            builder.Build(readHook),
+            builder.Build(readTranscript));
+
+        HookObservation shellHook = CursorHook(
+            """{"hook_event_name":"preToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Shell","tool_input":{"command":"dotnet test","cwd":"","timeout":120000}}""");
+        HookObservation shellTranscript = Assert.Single(CursorTranscript(
+            """{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"dotnet test","description":"Run tests","block_until_ms":120000}}]}}"""));
+        Assert.Equal(
+            builder.Build(shellHook),
+            builder.Build(shellTranscript));
+
+        HookObservation globHook = CursorHook(
+            """{"hook_event_name":"preToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Grep","tool_input":{"pattern":"","file_path":"C:\\Repo","glob":"**/*.cs","output_mode":"files_with_matches"}}""");
+        HookObservation globTranscript = Assert.Single(CursorTranscript(
+            """{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Glob","input":{"target_directory":"C:\\Repo","glob_pattern":"**/*.cs"}}]}}"""));
+        Assert.Equal(
+            builder.Build(globHook),
+            builder.Build(globTranscript));
+
+        HookObservation mcpHook = CursorHook(
+            """{"hook_event_name":"beforeMCPExecution","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"get_duplicated_strings","mcp_server_name":"dotnet-dstrings","tool_input":"{\"dumpPath\":\"C:\\\\dump.dmp\",\"countThreshold\":32}"}""");
+        HookObservation mcpTranscript = Assert.Single(CursorTranscript(
+            """{"role":"assistant","message":{"content":[{"type":"tool_use","name":"CallDynamicTool","input":{"namespace":"user-dotnet-dstrings","toolName":"get_duplicated_strings","mcpDetails":{"description":"scan"},"arguments":{"dumpPath":"C:\\dump.dmp","countThreshold":32}}}]}}"""));
+        Assert.Equal(
+            builder.Build(mcpHook),
+            builder.Build(mcpTranscript));
+
+        ObservationReconciler reconciler = new();
+        reconciler.Reconcile(mcpHook);
+        ObservationChange mcpMatch =
+            Assert.Single(reconciler.Reconcile(mcpTranscript));
+        Assert.Equal(ObservationChangeKind.AttachEvidence, mcpMatch.Kind);
+        Assert.Equal(mcpHook.EventId, mcpMatch.TargetEventId);
+    }
+
+    [Fact]
+    public void ReconcilerAttachesCursorResponseWithRedactionMarker()
+    {
+        ObservationReconciler reconciler = new();
+        HookObservation hook = CursorHook(
+            """{"hook_event_name":"afterAgentResponse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"text":"Analysis complete."}""");
+        Assert.Equal(
+            ObservationChangeKind.Add,
+            Assert.Single(reconciler.Reconcile(hook)).Kind);
+
+        HookObservation transcript = Assert.Single(CursorTranscript(
+            """{"role":"assistant","message":{"content":[{"type":"text","text":"Analysis complete.\n\n[REDACTED]"}]}}"""));
+        ObservationChange matched =
+            Assert.Single(reconciler.Reconcile(transcript));
+
+        Assert.Equal(ObservationChangeKind.AttachEvidence, matched.Kind);
+        Assert.Equal(hook.EventId, matched.TargetEventId);
     }
 
     [Fact]
@@ -315,7 +416,8 @@ public sealed class TranscriptPipelineTests
         {
             lock (gate)
             {
-                return changes.Any(c => c.Observation.IsTranscriptSourced);
+                return changes.Any(c => c.Observation.IsTranscriptSourced) &&
+                    changes.Any(c => !c.Observation.IsTranscriptSourced);
             }
         });
 
@@ -431,15 +533,19 @@ public sealed class TranscriptPipelineTests
         lock (gate)
         {
             Assert.NotEmpty(captured);
-            Assert.All(captured, observation =>
+            Assert.All(captured.Where(observation => !observation.IsMetadataOnly), observation =>
                 Assert.Equal("transcript-derived-1", observation.GenerationId));
+            Assert.All(captured.Where(observation => observation.IsMetadataOnly), observation =>
+                Assert.Null(observation.GenerationId));
         }
 
         IReadOnlyList<HookObservation> reloaded =
             new TranscriptReplayLoader().Load(payloadsDir);
         Assert.NotEmpty(reloaded);
-        Assert.All(reloaded, observation =>
+        Assert.All(reloaded.Where(observation => !observation.IsMetadataOnly), observation =>
             Assert.Equal("transcript-derived-1", observation.GenerationId));
+        Assert.All(reloaded.Where(observation => observation.IsMetadataOnly), observation =>
+            Assert.Null(observation.GenerationId));
     }
 
     [Fact]
@@ -678,6 +784,53 @@ public sealed class TranscriptPipelineTests
         string line = JsonSerializer.Serialize(envelope, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.True(HookObservation.TryParse(line, out HookObservation? observation));
         return observation!;
+    }
+
+    private static HookObservation CursorHook(string payloadJson)
+    {
+        using JsonDocument payload = JsonDocument.Parse(payloadJson);
+        ObservationEnvelope envelope = new(
+            ObservationEnvelope.CurrentIngressVersion,
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow,
+            HookProvider.Cursor,
+            HookSurface.CursorIde,
+            HookSurface.CursorIde,
+            ObservationSourceKind.Hook,
+            null,
+            payload.RootElement.GetProperty("hook_event_name").GetString(),
+            "test",
+            null,
+            "valid",
+            payload.RootElement.Clone());
+        string line = JsonSerializer.Serialize(
+            envelope,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.True(HookObservation.TryParse(
+            line,
+            out HookObservation? observation));
+        return observation!;
+    }
+
+    private static IReadOnlyList<HookObservation> CursorTranscript(
+        string raw)
+    {
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(
+                DialectIds.CursorTranscript);
+        return parser.Parse(new TranscriptLine(
+            raw,
+            "C:/cursor.jsonl",
+            0,
+            1,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.Cursor,
+            HookSurface.CursorIde,
+            DialectIds.CursorTranscript,
+            "Cursor:CursorIde:c1",
+            "c1",
+            TurnHint: "transcript-cursor-turn:1"));
     }
 
     private static IReadOnlyList<HookObservation> CopilotTranscript(string raw)
