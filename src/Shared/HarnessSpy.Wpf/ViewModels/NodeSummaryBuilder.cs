@@ -1,5 +1,6 @@
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Runtimes;
+using HarnessSpy.Core.Runtimes.Cursor;
 using HarnessSpy.Core.Services;
 
 namespace HarnessSpy.Wpf.ViewModels;
@@ -238,6 +239,17 @@ internal static class NodeSummaryBuilder
                     .FirstOrDefault(static evidence =>
                         evidence.ToolKind == CanonicalToolKind.Mcp ||
                         evidence.McpServerName is not null);
+
+                // A transcript-only tool request that never matched a hook is
+                // still a real call the agent made, so count it once here. Its
+                // fragment is excluded from Absorb (ExcludeFromSummary), and the
+                // matched-and-nested duplicates are marked secondary, so this is
+                // the only place such a call is tallied.
+                if (IsCountableTranscriptTool(node, observation))
+                {
+                    AbsorbTranscriptTool(observation, tools, mcp, fileAccess);
+                }
+
                 Absorb(
                     observation,
                     identityEvidence,
@@ -539,6 +551,35 @@ internal static class NodeSummaryBuilder
             bucketId,
             timestamp,
             IsAuthoritative: true));
+    }
+
+    // A transcript tool node contributes to the summary only when it is the
+    // primary representation of its call: transcript-sourced, a tool request,
+    // and not a secondary node nested under a matching hook.
+    private static bool IsCountableTranscriptTool(
+        TreeNodeViewModel node,
+        HookObservation observation) =>
+        observation.IsTranscriptSourced &&
+        !node.IsSecondaryToolNode &&
+        observation.Interpretation.Role == ObservationRole.ToolRequest;
+
+    private static void AbsorbTranscriptTool(
+        HookObservation observation,
+        Dictionary<string, CountAccumulator> tools,
+        Dictionary<string, CountAccumulator> mcp,
+        FileAccessAccumulator fileAccess)
+    {
+        if (CursorToolSemantics.IsMcpExecution(
+                observation.ToolKind,
+                observation.McpToolName ?? observation.ToolName,
+                observation.McpServerName))
+        {
+            AddCount(mcp, McpKey(observation));
+            return;
+        }
+
+        AddCount(tools, observation.ToolName ?? observation.ToolKind.ToString());
+        fileAccess.Record(observation.ToolKind, observation.TargetFilePaths);
     }
 
     private static void AddCount(Dictionary<string, CountAccumulator> map, string name)

@@ -1,5 +1,6 @@
 using System.Globalization;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Runtimes.Cursor;
 using HarnessSpy.Core.Services;
 using HarnessSpy.Core.Sessions;
 
@@ -403,9 +404,14 @@ public sealed class SessionNodeSummaryBuilder
         item.Role == ObservationRole.ToolRequest ||
         item.EventKind == CanonicalEventKind.ToolRequested;
 
+    // Only genuine MCP executions feed the MCP KPI. Cursor's dynamic-tool
+    // discovery calls (GetDynamicTools / get_mcp_tools) are ordinary tools, so
+    // they stay in the Tools table instead of inflating the MCP count.
     private static bool IsMcp(SessionEventRecord item) =>
-        item.ToolKind == CanonicalToolKind.Mcp ||
-        !string.IsNullOrWhiteSpace(item.McpServerName);
+        CursorToolSemantics.IsMcpExecution(
+            item.ToolKind,
+            item.McpToolName ?? item.ToolName ?? item.NativeName,
+            item.McpServerName);
 
     private static bool IsThought(SessionEventRecord item) =>
         item.Role == ObservationRole.AgentThought ||

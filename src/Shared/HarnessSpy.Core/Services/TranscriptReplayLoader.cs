@@ -140,6 +140,21 @@ public sealed class TranscriptReplayLoader
             TranscriptRowScanner.RowMeta meta = TranscriptRowScanner.Read(raw);
             string? turnHint = turnTracker.Observe(meta);
 
+            // Sparse dialects (Cursor) carry no per-row clock. Fall back to the
+            // capture time recorded when the row was first durably stored rather
+            // than replay time, so a replayed transcript keeps its original
+            // ordering relative to hooks instead of collapsing to "now".
+            DateTimeOffset? observedAtUtc = meta.Timestamp;
+            if (observedAtUtc is null &&
+                root.TryGetProperty("capturedAtUtc", out JsonElement capturedElement) &&
+                capturedElement.ValueKind == JsonValueKind.String &&
+                DateTimeOffset.TryParse(
+                    capturedElement.GetString(),
+                    out DateTimeOffset capturedAtUtc))
+            {
+                observedAtUtc = capturedAtUtc;
+            }
+
             TranscriptLine line = new(
                 raw,
                 path,
@@ -155,7 +170,7 @@ public sealed class TranscriptReplayLoader
                 agentId,
                 CapturedPath: path,
                 ContractVersion: manifest.ContractVersion,
-                ObservedAtUtc: meta.Timestamp,
+                ObservedAtUtc: observedAtUtc,
                 TurnHint: turnHint);
 
             return [.. parser.Parse(line)];

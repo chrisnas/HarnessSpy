@@ -1432,6 +1432,21 @@ public sealed class SessionTreeProjector
             new("Format", source.Format)
         ];
         AddSourceLocation(rows, "Source", source);
+
+        // A reconciled Cursor tool call keeps the provenance of every source
+        // that observed it, so both the transcript and Desktop origins remain
+        // inspectable under the single canonical node.
+        for (int index = 0; index < record.SupplementalProvenance.Count; index++)
+        {
+            SessionSourceProvenance supplemental = record.SupplementalProvenance[index];
+            string prefix = $"Also observed by {index + 1}";
+            rows.Add(new SessionDetailRow(
+                prefix,
+                $"{supplemental.SourceKind} \u00b7 {supplemental.Format}"));
+            rows.Add(new SessionDetailRow($"{prefix} path", supplemental.Path));
+            AddSourceLocation(rows, prefix, supplemental);
+        }
+
         return rows;
     }
 

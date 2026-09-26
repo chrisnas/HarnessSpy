@@ -84,6 +84,16 @@ them, but never fabricates native IDs when they are absent.
 - The parser marks `GetDynamicTools` with MCP tone and classifies
   `CallDynamicTool` as MCP. It does not currently create a
   `DynamicToolDiscoveryFor` edge or join the before/after MCP hook triple.
+- Summary KPIs classify tools through `CursorToolSemantics`
+  ([CursorToolSemantics.cs](../src/Shared/HarnessSpy.Core/Runtimes/Cursor/CursorToolSemantics.cs)):
+  `GetDynamicTools`/`get_mcp_tools` are dynamic-tool discovery, counted as
+  tools but never as MCP executions. Only real executions (`CallDynamicTool`
+  and Desktop's flattened `mcp-<server>-<tool>`) feed the MCP count.
+- A transcript-only tool request that never matches a hook is counted once in
+  CursorSpy's tool KPI; the matched-and-nested duplicate is marked secondary so
+  it is not double counted. A parallel wave made only of transcript-only calls
+  shows no duration, and a mixed wave derives its duration from hook-anchored
+  members alone (transcript rows carry no clock).
 - Content blocks from one assistant row share a derived assistant-step key
   based on transcript provenance. This can group matching hook tool requests as
   parallel without fabricating a provider-native id.

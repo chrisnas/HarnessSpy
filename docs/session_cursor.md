@@ -330,6 +330,22 @@ discarded. A transcript-only orphan with actual events is retained.
   result is nested under the nearest earlier request with that ID.
 - Requests from the same assistant step are marked parallel when more than one
   is present. The tree inserts a `Parallel · N calls` group.
+- When a session is described by both the transcript and the Desktop SQLite
+  store, each logical tool call is observed once per source. After turn
+  consolidation, `CursorSessionEventReconciler`
+  ([CursorSessionEventReconciler.cs](Shared/HarnessSpy.Core/Sessions/Cursor/CursorSessionEventReconciler.cs))
+  pairs those records within a turn (by `ToolCallId`, then by the
+  `CursorToolSemantics` correlation key that unifies Desktop aliases such as
+  `run_terminal_command_v2`↔`Shell`) and emits one canonical event. The
+  canonical event keeps Desktop's timestamp/status/duration/result binding,
+  adopts the transcript's agent-facing name, arguments, and parallel grouping,
+  and records the other source under `SupplementalProvenance` so both origins
+  stay inspectable. Tool-request counts therefore reflect real calls rather than
+  double counting.
+- MCP KPIs count only genuine executions. `GetDynamicTools`/`get_mcp_tools`
+  discovery calls remain visible as tools but are excluded from the MCP count;
+  `CallDynamicTool` (and its Desktop `mcp-<server>-<tool>` counterpart) count
+  once.
 - Native tool names are preserved. `ToolClassifier` adds a canonical category
   such as `FileRead`, `Shell`, `Mcp`, or `Agent`.
 - MCP identity comes from structured server/tool fields in the tool object or

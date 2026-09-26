@@ -1562,14 +1562,45 @@ public sealed class MainWindowViewModel : ObservableObject
     private static void UpdateWaveNode(TreeNodeViewModel waveNode)
     {
         int count = waveNode.Children.Count;
-        DateTimeOffset waveStart = waveNode.Children.Min(c => c.Observation!.ObservedAtUtc);
-        DateTimeOffset waveEnd = waveNode.Children.Max(c => GetCallEnd(c));
-        TimeSpan waveDuration = waveEnd - waveStart;
+
+        // Only hook-anchored members carry a real clock. Transcript-only tool
+        // requests have no native timestamp, so including them would stretch the
+        // wave across the whole capture window (the transcript is often written
+        // in one burst at turn end). Bound the wave with anchored members alone;
+        // a wave made entirely of transcript-only calls shows no duration.
+        TreeNodeViewModel[] anchored = waveNode.Children
+            .Where(IsDurationAnchored)
+            .ToArray();
 
         waveNode.Header = $"\u2225 Parallel \u00b7 {count} calls";
+        if (anchored.Length == 0)
+        {
+            waveNode.Summary = string.Empty;
+            return;
+        }
+
+        DateTimeOffset waveStart = anchored.Min(c => c.Observation!.ObservedAtUtc);
+        DateTimeOffset waveEnd = anchored.Max(GetCallEnd);
+        TimeSpan waveDuration = waveEnd - waveStart;
         waveNode.Summary = waveDuration > TimeSpan.Zero
             ? HookObservation.FormatDuration(waveDuration)
             : string.Empty;
+    }
+
+    // A tool call has a trustworthy interval only when it comes from a hook
+    // (real capture time), or it already carries a completion child or an
+    // explicit duration. Transcript-only requests fail all three.
+    private static bool IsDurationAnchored(TreeNodeViewModel node)
+    {
+        HookObservation? observation = node.Observation;
+        if (observation is null)
+        {
+            return false;
+        }
+
+        return !observation.IsTranscriptSourced ||
+            observation.DurationMs is not null ||
+            IsCompletedToolCall(node);
     }
 
     private static bool IsCompletedToolCall(TreeNodeViewModel node)
@@ -2527,6 +2558,15 @@ public sealed class MainWindowViewModel : ObservableObject
                         ObservationRole.AgentResponse))
                 {
                     TreeNodeViewModel toolChild = CreateObservationNode(change.Observation);
+
+                    // This transcript tool is the same logical call as the hook
+                    // it nests under, so it must not be counted again in the
+                    // summary on top of that hook.
+                    if (change.Observation.Interpretation.Role == ObservationRole.ToolRequest)
+                    {
+                        toolChild.MarkSecondaryToolNode();
+                    }
+
                     InsertChronologically(node.Children, toolChild);
                     node.IsExpanded = true;
                 }
@@ -2567,6 +2607,9 @@ public sealed class MainWindowViewModel : ObservableObject
 
                     if (keepVisibleChild)
                     {
+                        // The transcript tool now lives beneath its canonical
+                        // hook, so exclude it from summary tool counts.
+                        transcriptNode.MarkSecondaryToolNode();
                         ReparentUnder(hookNode, transcriptNode);
                     }
 

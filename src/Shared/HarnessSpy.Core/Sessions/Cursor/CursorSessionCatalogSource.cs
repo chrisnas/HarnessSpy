@@ -16,6 +16,7 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
     private readonly CursorPlanCatalogSource _planSource;
     private readonly CursorPlanActivityExtractor _planActivityExtractor = new();
     private readonly SessionCatalogMerger _merger = new();
+    private readonly CursorSessionEventReconciler _eventReconciler = new();
     private readonly CursorJsonReader _json = new();
     private readonly IReadOnlyList<string> _watchRoots;
 
@@ -409,11 +410,14 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
             .ThenBy(turn => turn.Id, StringComparer.Ordinal)
             .Select((turn, index) => turn with { Number = index + 1 })
             .ToArray();
-        return session with
+
+        // Collapse the transcript/SQLite duplicate of each tool call into one
+        // canonical event so counts and the timeline reflect real activity.
+        return _eventReconciler.Reconcile(session with
         {
             Turns = ordered,
             Metadata = metadata
-        };
+        });
     }
 
     private void RemoveInheritedSideChatTranscriptTurns(

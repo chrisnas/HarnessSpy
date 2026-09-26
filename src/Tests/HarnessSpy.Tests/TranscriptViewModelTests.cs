@@ -167,6 +167,11 @@ public sealed class TranscriptViewModelTests
             turn.Children,
             node => node.Observation?.HookEventName is
                 "afterMCPExecution" or "postToolUse" or "CallDynamicTool");
+
+        // The single MCP lifecycle counts once; the adopted transcript
+        // CallDynamicTool does not add a second MCP call or a native tool.
+        Assert.Equal(1, turn.NodeSummary!.McpCallCount);
+        Assert.Equal(0, turn.NodeSummary!.ToolCallCount);
     }
 
     [Fact]
@@ -247,6 +252,48 @@ public sealed class TranscriptViewModelTests
             node => node.Observation?.IsTranscriptSourced == true &&
                 node.Observation.Interpretation.Role ==
                     ObservationRole.AgentThought);
+    }
+
+    [Fact]
+    public void CursorMixedParallelWaveCountsTranscriptToolWithoutFabricatedDuration()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        HookObservation readHook = CursorHook(
+            """{"hook_event_name":"preToolUse","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"tool_name":"Read","tool_input":{"file_path":"C:\\Repo\\Program.cs"},"tool_use_id":"r1"}""");
+        Apply(viewModel, reconciler, readHook);
+
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.CursorTranscript);
+        foreach (HookObservation fragment in parser.Parse(CursorLine(
+                     """{"role":"assistant","message":{"content":[{"type":"text","text":"Inspecting source files."},{"type":"tool_use","name":"Read","input":{"path":"C:\\Repo\\Program.cs"}},{"type":"tool_use","name":"Glob","input":{"target_directory":"C:\\Repo","glob_pattern":"**/*.cs"}}]}}""",
+                     "c1",
+                     "transcript-cursor-turn:1")))
+        {
+            Apply(viewModel, reconciler, fragment);
+        }
+
+        HookObservation stop = CursorHook(
+            """{"hook_event_name":"stop","conversation_id":"c1","generation_id":"g1","workspace_roots":["C:\\Repo"],"status":"completed"}""");
+        Apply(viewModel, reconciler, stop);
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        TreeNodeViewModel wave = Assert.Single(
+            turn.Children,
+            node => node.Kind == TreeNodeKind.ParallelWave);
+
+        // The transcript-only Glob has no real clock, so a mixed wave must not
+        // fabricate an hours-long duration from it.
+        Assert.Equal(string.Empty, wave.Summary);
+
+        // The matched hook Read plus the transcript-only Glob count once each.
+        Assert.Equal(2, turn.NodeSummary!.ToolCallCount);
+
+        // The transcript-only wave sorts before the turn's stop, never after it.
+        TreeNodeViewModel stopNode = Assert.Single(
+            turn.Children,
+            node => node.Observation?.IsStop == true);
+        Assert.True(turn.Children.IndexOf(wave) < turn.Children.IndexOf(stopNode));
     }
 
     [Fact]

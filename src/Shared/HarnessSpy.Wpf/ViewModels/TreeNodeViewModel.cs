@@ -147,6 +147,17 @@ public sealed class TreeNodeViewModel : ObservableObject
 
     public bool WasPromotedFromTranscript => _promotedFromTranscript;
 
+    // True for a transcript tool node that is shown beneath the canonical hook
+    // it corresponds to (as a visible child) rather than as its own logical
+    // call. Summaries skip these so a matched transcript tool never counts on
+    // top of the hook that already represents it.
+    public bool IsSecondaryToolNode { get; private set; }
+
+    public void MarkSecondaryToolNode()
+    {
+        IsSecondaryToolNode = true;
+    }
+
     public bool IsSession => Kind == TreeNodeKind.Session;
 
     public bool IsGeneration => Kind == TreeNodeKind.Generation;

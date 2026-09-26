@@ -121,6 +121,12 @@ public sealed record SessionEventRecord
     public SkillEvidence? Skill { get; init; }
 
     public required SessionSourceProvenance Provenance { get; init; }
+
+    // Additional provenances contributed by other sources that describe the
+    // same logical event. Populated when Cursor's transcript and Desktop SQLite
+    // records for one tool call are reconciled into a single canonical event so
+    // both origins stay inspectable without duplicating the timeline.
+    public IReadOnlyList<SessionSourceProvenance> SupplementalProvenance { get; init; } = [];
 }
 
 public sealed record SessionTurn(
