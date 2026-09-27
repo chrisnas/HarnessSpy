@@ -1,11 +1,11 @@
 # SessionViewer: Cursor sessions
 
-Implementation snapshot: 2026-09-06.
+Implementation snapshot: 2026-09-27 (`c72bd09`).
 
 This document describes what the current `SessionViewer` implementation
 actually reads and how it reconstructs Cursor sessions. It is intentionally
 different from the hook-side transcript enrichment contract in
-[`Transcripts_Cursor.md`](../src/Transcripts_Cursor.md): SessionViewer is a
+[`Transcripts_Cursor.md`](Transcripts_Cursor.md): SessionViewer is a
 passive, file-backed catalog and does not require Cursor hooks, HarnessSpy
 payloads, the Cursor SDK, or a running Cursor session.
 It also does not use `ObservationReconciler`, which belongs to the separate
@@ -14,12 +14,17 @@ hook/transcript enrichment pipeline documented in
 
 ## Current scope
 
-SessionViewer combines two independent Cursor sources:
+SessionViewer combines two independent Cursor conversation sources plus plan
+artifacts:
 
 1. provider-owned agent transcript JSONL;
-2. Cursor Desktop's internal SQLite state.
+2. Cursor Desktop's internal SQLite state;
+3. `%USERPROFILE%\.cursor\plans\*.plan.md`, correlated with plan activity
+   extracted from the transcripts.
 
-Both are read concurrently and merged. Cursor Desktop, Cursor Agent CLI, and
+The transcript and Desktop sources are read concurrently and merged. The plan
+scan contributes a separate artifact/activity fragment that is bound after the
+session catalog is merged. Cursor Desktop, Cursor Agent CLI, and
 background-agent transcripts can share IDs and layouts, so SessionViewer
 currently reports all reconstructed entries as `HookSurface.CursorIde`.
 Source provenance is the reliable way to tell how an entry was reconstructed;
@@ -39,18 +44,26 @@ flowchart LR
         WorkspaceJson["workspaceStorage\\&lt;id&gt;\\workspace.json"]
     end
 
+    subgraph PlanStore["%USERPROFILE%\\.cursor\\plans"]
+        PlanMd["*.plan.md"]
+    end
+
     MainJsonl --> TranscriptSource["CursorTranscriptSessionCatalogSource"]
     ChildJsonl --> TranscriptSource
     LegacyJsonl --> TranscriptSource
     GlobalDb --> DesktopSource["CursorDesktopSessionCatalogSource"]
     WorkspaceDb --> DesktopSource
     WorkspaceJson --> DesktopSource
+    PlanMd --> PlanSource["CursorPlanCatalogSource"]
 
     TranscriptSource --> CursorSource["CursorSessionCatalogSource"]
     DesktopSource --> CursorSource
-    CursorSource --> Merger["identity normalization + merge"]
-    Merger --> Catalog["SessionCatalogEntry[]"]
-    ProcessProbe["Cursor process probe"] --> Catalog
+    PlanSource --> CursorSource
+    CursorSource --> Coordinator["SessionCatalogCoordinator<br/>cross-provider merge + process correlation"]
+    ProcessProbe["Cursor process probe"] --> Coordinator
+    Coordinator --> PlanAssembler["SessionPlanCatalogAssembler"]
+    Coordinator --> Catalog["SessionCatalogEntry[]"]
+    PlanAssembler --> Catalog
     Catalog --> Tree["workspace / session / turn / event tree"]
 ```
 
@@ -64,13 +77,14 @@ flowchart LR
 | Global Desktop DB | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` | Composer catalog, title, workspace, selection, relationships, conversation headers, bubble content |
 | Workspace Desktop DB | `%APPDATA%\Cursor\User\workspaceStorage\<workspace-id>\state.vscdb` | Workspace-scoped copies of Composer metadata and bubbles |
 | Workspace manifest | `%APPDATA%\Cursor\User\workspaceStorage\<workspace-id>\workspace.json` | Mapping from the opaque storage directory to a folder/workspace path |
+| Plan artifact | `%USERPROFILE%\.cursor\plans\*.plan.md` | Current plan body/front matter; ownership and revisions come from transcript plan activity |
 | Running processes | Windows process inventory for `Cursor`, `cursor-agent`, and `agent` | Positive open-session hints from resume/session/path/CWD arguments; selected Desktop Composer corroboration |
 
-SessionViewer watches `.jsonl`, `.vscdb`, `.vscdb-wal`, and `workspace.json`
-changes below those roots. Notifications are recursive and debounced by 450 ms.
-A recovery rescan runs every 60 seconds by default. A change refreshes only the
-affected provider source; the coordinator retains cached Claude and Copilot
-results.
+SessionViewer watches `.jsonl`, `.vscdb`, `.vscdb-wal`, `workspace.json`, and
+plan `.md` changes below those roots. Notifications are recursive and debounced
+by 450 ms. A recovery rescan runs every 60 seconds by default; the setting is
+clamped to 5-3600 seconds. A change refreshes only the affected provider
+source; the coordinator retains cached Claude and Copilot results.
 
 The harness filter controls the projected tree, not discovery. Selecting only
 Claude, for example, does not prevent Cursor files from being scanned and
@@ -333,10 +347,11 @@ discarded. A transcript-only orphan with actual events is retained.
 - When a session is described by both the transcript and the Desktop SQLite
   store, each logical tool call is observed once per source. After turn
   consolidation, `CursorSessionEventReconciler`
-  ([CursorSessionEventReconciler.cs](Shared/HarnessSpy.Core/Sessions/Cursor/CursorSessionEventReconciler.cs))
+  ([CursorSessionEventReconciler.cs](../src/Shared/HarnessSpy.Core/Sessions/Cursor/CursorSessionEventReconciler.cs))
   pairs those records within a turn (by `ToolCallId`, then by the
   `CursorToolSemantics` correlation key that unifies Desktop aliases such as
-  `run_terminal_command_v2`↔`Shell`) and emits one canonical event. The
+  `run_terminal_command_v2`↔`Shell` and `edit_file_v2`↔`Write`) and emits one
+  canonical event. The
   canonical event keeps Desktop's timestamp/status/duration/result binding,
   adopts the transcript's agent-facing name, arguments, and parallel grouping,
   and records the other source under `SupplementalProvenance` so both origins
@@ -392,6 +407,7 @@ entrypoint, but current passive builders do not reliably provide that field.
 flowchart TD
     Folder["folder path nodes"] --> Workspace["WorkspaceContext"]
     Workspace --> Session["Cursor session"]
+    Session --> Plan["bound plans"]
     Session --> Turn["Turn: prompt preview"]
     Turn --> Thought["thought / response"]
     Turn --> Parallel["Parallel group"]
@@ -408,9 +424,13 @@ currently populate neither `UsageMeasurements` nor `SkillEvidence`, so token
 and skill sections are absent. Prompt events supply the turn title and are
 intentionally not repeated as child nodes.
 
-Although events expose `ExcludeFromSummary`, the current
-`SessionNodeSummaryBuilder` does not inspect that flag; summary membership is
-determined by canonical role/tool-kind checks.
+`SessionNodeSummaryBuilder` normally filters events marked
+`ExcludeFromSummary`. Tool requests, thoughts, compaction, and subagent
+start/stop roles remain eligible because they carry structural information used
+by those specific KPIs. Role/tool-kind checks then decide which section receives
+the event. In particular, `CursorToolSemantics.IsMcpExecution` keeps
+`GetDynamicTools`/`get_mcp_tools` in the tool count but out of the MCP execution
+count.
 
 ## Plans
 
@@ -421,13 +441,13 @@ created them.
   is parsed as YAML front matter (`name`, `overview`, `todos`, `isProject`) plus
   a markdown body. Workspace-local plan directories are capability-gated until an
   observed `isProject: true` artifact proves that layout.
-- The transcript `CreatePlan` tool call is the creation evidence. A plan file is
-  bound to a session when the file and exactly one `CreatePlan` call produce the
-  same normalized structured key (`name` + `overview` + todo `id`/`content`
-  pairs). Todo `status` is ignored because `CreatePlan` never carries one, so a
-  plan whose todos were later completed still matches. This binding is
-  `Corroborated`; the containing turn is `Derived` because Cursor transcripts
-  have no native generation ID.
+- Structured `CreatePlan` and `UpdatePlan` tool inputs provide creation/binding
+  evidence. A plan file is bound to a session when the file and exactly one such
+  call produce the same normalized structured key (`name` + `overview` + todo
+  `id`/`content` pairs). Todo `status` is ignored because the creation input
+  does not carry its later state, so a plan whose todos were completed still
+  matches. This binding is `Corroborated`; the containing turn is `Derived`
+  because Cursor transcripts have no native generation ID.
 - An explicit `.plan.md` path found in a file tool or an `ApplyPatch` body is a
   stronger `ExplicitPlanPath` (`Observed`) binding. A plan read (not written) by
   another session is a reference and never establishes ownership.
@@ -435,10 +455,11 @@ created them.
   (`Ambiguous`) rather than being guessed onto one of them.
 - The observed-update count is stateless: it is the number of distinct
   normalized plan-body contents after creation, recomputed on every scan.
-  `CreatePlan` supplies the initial body; the current file supplies the latest.
-  Cursor `ApplyPatch` edits expose only a diff, so they are counted as opaque
-  evidence and surface as a `partial` marker rather than an exact count. Only the
-  plan body participates in the count; front-matter todo-status changes do not.
+  A structured plan tool can supply an initial body; the current file supplies
+  the latest. Cursor plan-file edits expose no complete resulting document, so
+  they are counted as opaque evidence and surface as a `partial` marker rather
+  than an exact count. Only the plan body participates in the count;
+  front-matter todo-status changes do not.
 - Bound plans appear directly under their session (before its turns), and the
   `CreatePlan`/plan-edit event is rendered as a linked `Plan created`/`Plan
   updated` node instead of a duplicate tool node. Unbound plans appear under the
@@ -460,6 +481,9 @@ created them.
   database itself may be larger.
 - Process command lines often omit Desktop conversation IDs. Open state is
   therefore conservative except for selected-Composer corroboration.
+- Focused `CursorParityReconciliationTests` use synthetic dual-source turns.
+  There is not yet one end-to-end fixture in which the same captured
+  conversation is read from both transcript JSONL and Desktop SQLite.
 - Raw provenance can contain prompts, source code, command output, absolute
   paths, and secrets. Treat exports as sensitive.
 
@@ -484,6 +508,8 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Sessions/Cursor/CursorPlanCatalogSource.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Cursor/CursorPlanActivityExtractor.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Cursor/CursorPlanDocument.cs`
+- `src/Shared/HarnessSpy.Core/Sessions/Cursor/CursorSessionEventReconciler.cs`
+- `src/Shared/HarnessSpy.Core/Runtimes/Cursor/CursorToolSemantics.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Plans/SessionPlanCatalogAssembler.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Cursor/CursorTranscriptSessionCatalogSource.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Cursor/CursorTranscriptFileReader.cs`
@@ -501,3 +527,4 @@ Useful checks:
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionNodeSummaryBuilder.cs`
 - `src/Tests/HarnessSpy.Tests/SessionCatalogSourceTests.cs`
+- `src/Tests/HarnessSpy.Tests/CursorParityReconciliationTests.cs`

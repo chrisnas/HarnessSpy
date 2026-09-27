@@ -1,6 +1,6 @@
 # SessionViewer: GitHub Copilot CLI sessions
 
-Implementation snapshot: 2026-09-26.
+Implementation snapshot: 2026-09-27 (`c72bd09`).
 
 This document describes the current GitHub Copilot CLI catalog used by
 `SessionViewer`. The implemented source is the local Copilot CLI
@@ -8,7 +8,7 @@ This document describes the current GitHub Copilot CLI catalog used by
 history, `session-store.db`, and SDK-owned remote sessions are not cataloged.
 
 The hook-side enrichment parser has a narrower contract:
-[`Transcripts_Copilot.md`](../src/Transcripts_Copilot.md).
+[`Transcripts_Copilot.md`](Transcripts_Copilot.md).
 SessionViewer does not use `ObservationReconciler`; that class belongs to the
 hook/transcript enrichment pipeline documented in
 [`architecture.md`](../src/architecture.md#transcript-source-implemented).
@@ -16,19 +16,22 @@ hook/transcript enrichment pipeline documented in
 ## Current scope
 
 One catalog entry is reconstructed from an `events.jsonl` stream plus optional
-`workspace.yaml`. Current directory layout takes precedence over the legacy
-flat file. Process command lines can enrich the final open/closed state.
+`workspace.yaml` and colocated `plan.md`. Current directory layout takes
+precedence over the legacy flat file. Process command lines can enrich the
+final open/closed state.
 
 ```mermaid
 flowchart LR
     Home["COPILOT_HOME or %USERPROFILE%\\.copilot"] --> State["session-state"]
     State --> Current["&lt;session-id&gt;\\events.jsonl"]
     State --> Workspace["&lt;session-id&gt;\\workspace.yaml"]
+    State --> Plan["&lt;session-id&gt;\\plan.md"]
     State --> Legacy["&lt;session-id&gt;.jsonl"]
     State -. not read .-> Store["session-store.db"]
 
     Current --> Reader["CopilotCliSessionReader"]
     Workspace --> Reader
+    Plan --> Reader
     Legacy --> Reader
     Reader --> Projector["CopilotSessionProjector"]
     Process["copilot / matching node process"] --> Correlator["ProcessSessionCorrelator"]
@@ -53,7 +56,8 @@ supports `~`, `~/...`, and `~\...`.
 |---|---|---|
 | Current event stream | `session-state\<session-id>\events.jsonl` | Session lifecycle/context, prompts, turns, reasoning, assistant responses, tools, permissions, subagents, skills, usage, errors |
 | Workspace metadata | `session-state\<session-id>\workspace.yaml` | ID check, CWD, Git root, repository, branch, title, client/host, creation/update times |
-| Legacy event stream | `session-state\<session-id>.jsonl` | Same event processing without workspace YAML |
+| Session plan | `session-state\<session-id>\plan.md` | Current plan artifact, bound by its containing session directory |
+| Legacy event stream | `session-state\<session-id>.jsonl` | Same event processing without workspace YAML or directory-bound `plan.md` |
 | Running process | `copilot` or `node` containing `@github/copilot`/`copilot-cli` | Resume/session ID, transcript path, CWD, and PID hints |
 
 If both layouts exist for the same ID, only the current directory layout is
@@ -62,16 +66,15 @@ used. A current directory without `events.jsonl` is ignored.
 The source does **not** read:
 
 - `session-store.db`;
-- `plan.md`;
 - `checkpoints\`;
 - `files\`;
 - VS Code `chatSessions`;
 - Copilot SDK APIs or cloud-agent endpoints.
 
-The whole `session-state` root is watched recursively. `.jsonl` and
-`workspace.yaml` changes trigger an affected-provider refresh after a 450 ms
-debounce; a full recovery scan runs every 60 seconds by default. Harness
-filtering happens only when projecting the merged catalog.
+The whole `session-state` root is watched recursively. `.jsonl`,
+`workspace.yaml`, and plan `.md` changes trigger an affected-provider refresh
+after a 450 ms debounce; a full recovery scan runs every 60 seconds by default.
+Harness filtering happens only when projecting the merged catalog.
 
 ### Practical guidance
 
@@ -131,7 +134,7 @@ updated_at: 2026-09-05T08:05:00Z
 | Repository | `repository`, `repository_name`, `repositoryName` | Metadata |
 | Branch | `branch`, `git_branch`, `gitBranch` | Metadata |
 | Title | `name`, `title` | Preferred session title |
-| Client | `client_name`, `clientName` | Chooses Copilot app versus CLI opener |
+| Client | `client_name`, `clientName` | Exact `github/autopilot` selects the `ghapp://` opener; every other value uses the CLI |
 | Host | `host_type`, `hostType` | Metadata |
 | Created | `created_at`, `createdAt`, `creation_time` | Session start candidate |
 | Updated | `updated_at`, `updatedAt`, `update_time` | Last-activity candidate |
@@ -156,7 +159,8 @@ Each non-empty UTF-8 line is expected to be an object:
   "agentId": "optional-agent",
   "ephemeral": false,
   "data": {
-    "turnId": "turn-1"
+    "turnId": "0",
+    "interactionId": "interaction-1"
   }
 }
 ```
@@ -168,7 +172,7 @@ Each non-empty UTF-8 line is expected to be an object:
 | `timestamp` | ISO or numeric seconds/milliseconds/microseconds/nanoseconds |
 | `parentId` | Previous/source record relationship only; never semantic tree nesting |
 | `agentId` | Subagent attribution |
-| `ephemeral` | Sets `SessionEventRecord.ExcludeFromSummary`; the current SessionViewer summary builder does not yet consume that marker |
+| `ephemeral` | Sets `SessionEventRecord.ExcludeFromSummary`; ordinary ephemeral rows are filtered from summaries, with explicit structural exceptions for tool requests, thoughts, compaction, and subagent lifecycle |
 | `data` | Event-specific object |
 
 When `data` is absent or not an object, SessionViewer processes top-level
@@ -190,7 +194,7 @@ contract version in provenance.
 | `session.context_changed`, `session.context_change` | CWD/Git/repository/branch | Ordered context history and current context |
 | `session.permissions_changed` | permission mode | Metadata |
 | `user.message` | `turnId`, `interactionId`, content, `agentMode` | Prompt and turn binding |
-| `system.message` | content/role, `skills[]` | Hidden message plus available-skill events |
+| `system.message` | content/role, `skills[]` | `role:"system"` becomes a session-level system-prompt snapshot; other roles become hidden turn/pending messages plus available-skill events when a turn is known |
 | `assistant.turn_start` / `assistant.turn_end` | turn/interaction IDs | Durable turn boundaries |
 | `assistant.reasoning` | readable content or opaque/encrypted value | Thought |
 | `assistant.message` | content, model, phase, duration/usage, `toolRequests[]` | Response, optional thought, parallel tool requests |
@@ -260,16 +264,25 @@ resolves a turn in this order:
 
 1. an agent ID already mapped to its parent turn;
 2. a known `toolCallId` and its request's turn;
-3. a previously mapped `interactionId`;
+3. a mapped `interactionId`, creating `interaction:<id>` when the event allows
+   turn creation;
 4. the active turn for the same agent;
 5. the most recent user-message turn for that agent;
 6. native `turnId` for older logs that expose no interaction;
-7. a synthetic `interaction:<id>` or `<family>:<sequence>` turn when creation
-   is allowed.
+7. a deterministic `<family>:<sequence>` synthetic turn when creation is
+   allowed.
 
-Repeated native `turnId` values from different interactions are never merged.
-Both the native cycle ID and interaction ID remain visible in provenance.
-Provider identities are `Observed`; a fully synthetic fallback is `Derived`.
+When `interactionId` is present, repeated native `turnId` values from different
+interactions stay separate. Legacy logs without `interactionId` are weaker:
+they can reuse a native `turnId` bucket, while a later user message may require
+a `user:<event-id>` fallback. Both the native cycle ID and interaction ID remain
+visible in provenance. Provider identities are `Observed`; a fully synthetic
+fallback is `Derived`.
+
+The passive catalog uses `interaction:<id>`. The hook-side transcript tracker
+uses the namespaced `transcript-interaction:<id>` until WPF projection aligns
+it with a hook-derived turn; both keys represent the same provider
+`interactionId` semantics.
 
 `parentId` is retained as source chronology and is deliberately not used for
 semantic nesting.
@@ -410,6 +423,8 @@ This is an activating operation; refresh/discovery remains passive.
 flowchart TD
     Folder["folder path"] --> Workspace["workspace"]
     Workspace --> Session["Copilot CLI session"]
+    Session --> SystemPrompts["System prompts"]
+    Session --> Plan["bound plan"]
     Session --> Turn["native or derived turn<br/>prompt shown in header"]
     Turn --> Reasoning["readable / opaque reasoning"]
     Turn --> Response["assistant response"]
@@ -423,10 +438,12 @@ flowchart TD
 
 Session and turn dashboards derive wall time, abort state, tools, MCP calls,
 thinking, compaction, usage, commands, target files, skills, and subagents from
-the canonical events. File lists represent successful logical calls, reuse the
-request path when a completion omits it, normalize rooted paths before
-deduplication, and extract paths from `apply_patch` headers. Unknown source
-events remain in
+the canonical events. File lists represent successful logical calls and also
+retain requests with no terminal outcome because the capture may be partial.
+A recorded failure removes the call from the successful list. The collector
+reuses the request path when a completion omits it, normalizes rooted paths
+before deduplication, and extracts paths from `apply_patch` headers. Unknown
+source events remain in
 `SessionCatalogEntry.Sources` but have no selectable event node and do not
 affect these summaries. Prompt events supply the turn title and are
 intentionally not repeated as child nodes.
@@ -436,14 +453,18 @@ intentionally not repeated as child nodes.
 Copilot CLI has the strongest 1:1 plan binding because a plan lives inside its
 session directory.
 
-- The optional `session-state\<session-id>\plan.md` is read within the same file
+- In the current directory layout, the optional
+  `session-state\<session-id>\plan.md` is read within the same file
   limits and safety checks as the event log. Its containing directory is the
   session identity, so the plan binds to that session as `Observed`
   (`CopilotSessionDirectory`).
-- The native `plan` tool and any write targeting `plan.md` are surfaced as linked
-  `Plan updated` activities under their turns. Copilot exposes no reliable full
-  resulting body for these, so they are opaque evidence and the plan node shows a
-  `partial` marker; the current `plan.md` supplies the authoritative latest body.
+- Legacy flat JSONL sessions have no containing plan path and therefore no
+  directory-bound plan artifact.
+- Native `plan`/`update_plan` tools and detected tool requests targeting
+  `plan.md` are surfaced as linked `Plan updated` activities under their turns.
+  Copilot exposes no reliable full resulting body for these, so they are opaque
+  evidence and the plan node shows a `partial` marker; the current `plan.md`
+  supplies the latest known body.
 - The observed-update count is stateless and content-hash based over the plan
   body. A `plan.md` with no prior materialized body correctly shows
   `0 observed updates`.
@@ -457,8 +478,9 @@ session directory.
   discovered; arbitrary nested stores are ignored.
 - `parentId` must not be used as a tool or subagent parent.
 - Synthetic turn binding is deterministic but not native evidence.
-- `ephemeral` records carry `ExcludeFromSummary`, but
-  `SessionNodeSummaryBuilder` currently does not filter on that flag.
+- `ephemeral` records carry `ExcludeFromSummary`. The summary builder normally
+  filters them, with explicit structural exceptions for tool requests,
+  thoughts, compaction, and subagent lifecycle.
 - Active writes can produce an incomplete tail or a snapshot shorter than the
   current file; the next refresh repairs it.
 - A whole event log above 2 GiB is skipped.
@@ -490,6 +512,7 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotPlanActivityExtractor.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Plans/SessionPlanCatalogAssembler.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotSessionProjector.cs`
+- `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotExecutionSemantics.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotWorkspaceReader.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotEventSemantics.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotSessionInfrastructure.cs`
@@ -502,3 +525,4 @@ Useful checks:
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionNodeSummaryBuilder.cs`
 - `src/Tests/HarnessSpy.Tests/SessionCatalogSourceTests.cs`
+- `src/Tests/HarnessSpy.Tests/CopilotConsistencyTests.cs`

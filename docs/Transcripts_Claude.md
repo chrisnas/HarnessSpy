@@ -1,7 +1,7 @@
 # Claude Code transcript extraction contract
 
 Authoritative spec that the Claude transcript parser
-([ClaudeTranscriptDialectParser.cs](Shared/HarnessSpy.Core/Runtimes/Claude/ClaudeTranscriptDialectParser.cs))
+([ClaudeTranscriptDialectParser.cs](../src/Shared/HarnessSpy.Core/Runtimes/Claude/ClaudeTranscriptDialectParser.cs))
 and its tests implement against. Update this file whenever the parser or a
 fixture changes.
 
@@ -13,16 +13,23 @@ pipeline:
 
 - `ClaudeTranscriptDialectParser` emits visible assistant thinking plus
   tool evidence, and projects high-value `turn_duration`, `cost-state`, and
-  skill attachments as metadata-only turn/session evidence. Other row families
-  remain durable source evidence without timeline nodes.
+  skill attachments as metadata-only turn/session evidence. It also projects
+  `prompt_snapshot` attachments as session- or subagent-scoped system prompts.
+  Other row families remain durable source evidence without timeline nodes.
 - SessionViewer uses `Sessions/Claude/ClaudeSessionCatalogBuilder.cs`. It reads
   main, recovery, and recursively nested subagent JSONL, optional
-  `sessions-index.json`, and subagent `.meta.json` files.
+  `sessions-index.json`, subagent `.meta.json` files, and `plans\*.md`.
 - SessionViewer additionally projects `turn_duration`, `compact_boundary`,
-  `skill_listing`, `skill_activated`, titles, modes, permission modes, and the
-  latest `cost-state` snapshot into its catalog model or metadata.
+  `skill_listing`, `skill_activated`, `prompt_snapshot`, titles, modes,
+  permission modes, and the latest `cost-state` snapshot into its catalog model
+  or metadata. Assistant `text` is a visible response in SessionViewer but
+  remains enrichment-only in the Spy parser.
 
-See [`session_claude.md`](../docs/session_claude.md) for the complete
+Both paths reuse `ClaudeTranscriptSemantics` and
+`SystemPromptTextNormalizer` for row meaning. They do not share discovery,
+storage, or reconciliation.
+
+See [`session_claude.md`](session_claude.md) for the complete
 SessionViewer source and reconstruction contract.
 
 ## Discovery
@@ -46,11 +53,13 @@ SessionViewer source and reconstruction contract.
 
 | `type` | Handling |
 |--------|----------|
-| `assistant` | content blocks `thinking`, `text`, `tool_use` |
+| `assistant` | content blocks `thinking`, `redacted_thinking`, `text`, `tool_use` |
 | `user` | content blocks `text`, `tool_result` (+ structured `toolUseResult`) |
 | `mode`, `permission-mode`, `atis-latch`, `last-prompt`, `ai-title`, `agent-name`, `queue-operation`, `fork-context-ref` | metadata; durably captured, not turned into nodes |
 | `system` subtype `turn_duration` | typed turn-scoped duration/accounting evidence; other system subtypes remain raw capture |
-| `attachment` subtype `skill_listing` / `skill_activated` | metadata-only `Available` / `Invoked` skill evidence; other attachment subtypes remain raw capture |
+| `attachment` subtype `skill_listing` / `skill_activated` | metadata-only `Available` / `Invoked` skill evidence |
+| `attachment` subtype `prompt_snapshot` | normalized system-prompt snapshot; session-scoped unless attributed to a subagent |
+| other `attachment` subtype | raw capture only |
 | `file-history-snapshot`/`file-history-delta` | metadata; captured |
 | `cost-state` | metadata-only session snapshots for cost, lines, duration, and per-model usage; summary aggregation selects the latest final snapshot |
 
@@ -79,6 +88,7 @@ link steps by `uuid`/`parentUuid`; multi-block rows are tolerated.
 | assistant `usage` | typed measurements on the first projected assistant fragment, or hidden turn evidence when no block projects | source record plus typed snapshot/delta behavior |
 | `turn_duration` | metadata-only evidence on the owning turn | carried `promptId` |
 | `cost-state` | metadata-only session evidence and accounting rows | latest `FinalSnapshot` per metric |
+| `prompt_snapshot` | normalized system-prompt observation outside ordinary main-session turns | session scope, or subagent scope when `agentId` is present |
 | subagent transcript row | evidence carrying `SubagentId`, attached to matching `SubagentStart` when available | exact `agent_id` from binding/row |
 
 ## Provider-specific semantics
@@ -86,7 +96,7 @@ link steps by `uuid`/`parentUuid`; multi-block rows are tolerated.
 - The verified fixture contains opaque thinking: `thinking` is empty and
   `signature` is present but not human-readable; the token count is
   `usage.output_tokens_details.thinking_tokens`. The parser also supports
-  readable `thinking` text. SessionViewer additionally treats
+  readable `thinking` text. Both the Spy parser and SessionViewer treat
   `redacted_thinking` as opaque even when no signature is available.
 - Assistant usage is read once per assistant row and attached to the first
   projected block, or to metadata-only usage evidence when no block projects.
@@ -98,6 +108,9 @@ link steps by `uuid`/`parentUuid`; multi-block rows are tolerated.
 - The shared Claude transcript semantics recognize interruption, explicit
   error/success fields, denial state, and error payloads in both live Spy and
   SessionViewer.
+- System-prompt snapshots are normalized and hashed through the shared
+  `SystemPromptTextNormalizer`; repeated snapshots are coalesced by the WPF
+  projection rather than duplicated under every turn.
 - `deferred_tools_delta` is availability metadata, not an invocation.
 
 ## Skill / usage / opaque states

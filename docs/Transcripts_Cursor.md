@@ -1,7 +1,7 @@
 # Cursor transcript extraction contract
 
 Authoritative spec that the Cursor transcript parser
-([CursorTranscriptDialectParser.cs](Shared/HarnessSpy.Core/Runtimes/Cursor/CursorTranscriptDialectParser.cs))
+([CursorTranscriptDialectParser.cs](../src/Shared/HarnessSpy.Core/Runtimes/Cursor/CursorTranscriptDialectParser.cs))
 and its tests implement against. Update this file whenever the parser or a
 fixture changes.
 
@@ -21,14 +21,17 @@ passive-history reader:
 - SessionViewer also joins transcript history with Cursor Desktop SQLite.
   None of those SQLite records pass through `CursorTranscriptDialectParser`.
 
-See [`session_cursor.md`](../docs/session_cursor.md) for the complete
-SessionViewer source and reconstruction contract.
+See [`session_cursor.md`](session_cursor.md) for the complete SessionViewer
+source and reconstruction contract, and
+[`architecture.md`](../src/architecture.md#transcript-source-implemented) for
+the hook-side discovery/capture pipeline.
 
 ## Discovery
 
 - Path field: `transcript_path` on Cursor hook payloads.
-- Availability: always null on `sessionStart` and commonly for the first 2-7
-  events; the registry backfills once the path first appears.
+- Availability: always null on `sessionStart` and commonly absent from the
+  first few observed events; the registry backfills once the path first
+  appears. The exact count is an observed producer detail, not a parser rule.
 - Location/naming: `%USERPROFILE%\.cursor\projects\<slug>\agent-transcripts\<conversation_id>\<conversation_id>.jsonl`.
 - Subagent transcript pointer: none observed. Cursor subagent transcript
   discovery is capability-gated until a real capture proves its path/schema.
@@ -55,21 +58,30 @@ SessionViewer reader is limited to those two block types.
 ## Native ids and correlation keys
 
 The verified sparse Cursor rows carry no timestamps, record IDs,
-conversation/generation IDs, or tool-call IDs. Correlation in this parser is
-therefore heuristic. SessionViewer accepts those fields when newer rows provide
-them, but never fabricates native IDs when they are absent.
+conversation/generation IDs, or tool-call IDs. Correlation is therefore
+heuristic. Before parsing, `TranscriptTurnTracker` derives one
+`transcript-cursor-turn:N` key for each span from a user row through its
+`turn_ended` row. If discovery starts after the user row, the first assistant
+or `turn_ended` row starts a fallback interaction.
+
+When prompt or tool evidence later binds to a hook turn, the WPF projection
+aliases the derived transcript key to the hook's `generation_id` and moves any
+already-projected transcript children into that turn. A genuinely unmatched
+interaction keeps its namespaced key. SessionViewer accepts optional native
+fields when newer rows provide them, but never fabricates native IDs when they
+are absent.
 
 | Concern | Hook (authoritative) | Transcript |
 |---------|----------------------|------------|
 | Session | `conversation_id`/`session_id` | none (reuses the discovering hook's scoped session) |
-| Turn | `generation_id` | none; the current parser does not correlate prompt/stop fragments to a hook turn |
+| Turn | `generation_id` | no native ID; derived `transcript-cursor-turn:N`, then aliased to the matching hook turn when evidence binds |
 | Tool call | `tool_use_id` | none; tool requests attempt a queued signature match |
 
 ## Extraction-to-hook mapping
 
 | Transcript field/record | Target | Reconciliation key |
 |-------------------------|--------|--------------------|
-| user `text` | evidence on `beforeSubmitPrompt` when normalized `<user_query>` text matches; fallback transcript prompt otherwise | provider-scoped session + normalized prompt text, FIFO |
+| user `text` | evidence on `beforeSubmitPrompt` when normalized `<user_query>` text matches; fallback transcript prompt otherwise; a match also aliases the derived transcript turn | provider-scoped session + normalized prompt text, FIFO |
 | `<manually_attached_skills>` | `Attached` skill evidence on the canonical prompt, including source path | parsed from `name:`/`Path:` inside the block |
 | any `tool_use` | matching canonical pre-tool node when possible | provider-scoped session + canonical tool kind + normalized complete input; FIFO for repeated signatures |
 | unmatched `tool_use` | standalone transcript tool node | no safe match |
@@ -89,6 +101,9 @@ them, but never fabricates native IDs when they are absent.
   `GetDynamicTools`/`get_mcp_tools` are dynamic-tool discovery, counted as
   tools but never as MCP executions. Only real executions (`CallDynamicTool`
   and Desktop's flattened `mcp-<server>-<tool>`) feed the MCP count.
+- SessionViewer uses the same `CursorToolSemantics` classification rules after
+  its separate `CursorSessionEventReconciler`; it does not reuse the live
+  hook/transcript reconciliation pipeline.
 - A transcript-only tool request that never matches a hook is counted once in
   CursorSpy's tool KPI; the matched-and-nested duplicate is marked secondary so
   it is not double counted. A parallel wave made only of transcript-only calls

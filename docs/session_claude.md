@@ -1,6 +1,6 @@
 # SessionViewer: Claude Code sessions
 
-Implementation snapshot: 2026-09-06.
+Implementation snapshot: 2026-09-27 (`c72bd09`).
 
 This document describes the current file-backed Claude Code catalog used by
 `SessionViewer`. It does not describe Claude Desktop, Cowork, claude.ai chat,
@@ -8,7 +8,7 @@ or Managed Agents. SessionViewer does not require Claude hooks or a Claude
 Agent SDK sidecar and does not resume a session while refreshing.
 
 The hook-side transcript enrichment contract remains separate:
-[`Transcripts_Claude.md`](../src/Transcripts_Claude.md).
+[`Transcripts_Claude.md`](Transcripts_Claude.md).
 SessionViewer does not use `ObservationReconciler`; that class belongs to the
 hook/transcript enrichment pipeline documented in
 [`architecture.md`](../src/architecture.md#transcript-source-implemented).
@@ -22,11 +22,13 @@ SessionViewer reconstructs one Claude catalog entry from:
 - recoverable orphaned/superseded main JSONL;
 - recursively discovered subagent JSONL;
 - subagent `.meta.json` relationship metadata;
+- plan artifacts from `plans\*.md` plus plan activity found in transcripts;
 - optional current-process evidence.
 
 ```mermaid
 flowchart LR
     Config["CLAUDE_CONFIG_DIR or %USERPROFILE%\\.claude"] --> Projects["projects\\&lt;encoded-project&gt;"]
+    Config --> Plans["plans\\*.md"]
     Projects --> Index["sessions-index.json"]
     Projects --> Main["&lt;session-id&gt;.jsonl"]
     Projects --> Recovery["&lt;session-id&gt;.orphaned-*.jsonl<br/>&lt;session-id&gt;.jsonl.superseded-*"]
@@ -39,10 +41,13 @@ flowchart LR
     Recovery --> Accumulator
     AgentLog --> Accumulator
     AgentMeta --> Accumulator
+    Plans --> PlanFragment["plan artifacts"]
     Process["claude process + claude agents --json"] --> Correlator["ProcessSessionCorrelator"]
     Accumulator --> Entry["SessionCatalogEntry"]
     Entry --> Correlator
-    Correlator --> Tree["workspace / session / turn / event tree"]
+    Correlator --> PlanAssembler["SessionPlanCatalogAssembler"]
+    PlanFragment --> PlanAssembler
+    PlanAssembler --> Tree["workspace / session / plan / turn / event tree"]
 ```
 
 ## Configuration root and source locations
@@ -64,16 +69,17 @@ expands Windows environment variables and supports `~`, `~/...`, and `~\...`.
 | Superseded recovery | `projects\<encoded-project>\<session-id>.jsonl.superseded-*` | Recoverable earlier main-session history |
 | Subagent transcript | `projects\<encoded-project>\<session-id>\subagents\...\*.jsonl` | Child-agent content, IDs, turns, tools, usage |
 | Subagent metadata | `projects\<encoded-project>\<session-id>\subagents\...\*.meta.json` | Agent metadata and parent `toolUseId` provenance |
+| Plan artifact | `plans\*.md` | Current plan body plus binding/revision activity extracted from transcripts |
 | Live agents | `claude agents --json` and process command lines | Session ID, transcript path, CWD, PID, positive open-state evidence |
 
 SessionViewer does **not** currently read `.claude\history.jsonl`,
-`stats-cache.json`, file history, plans, tasks, debug logs, or Agent SDK
-session APIs. Those files may exist but are not catalog sources.
+`stats-cache.json`, file history, tasks, debug logs, or Agent SDK session APIs.
+Those files may exist but are not catalog sources.
 
-The project tree is watched recursively. Changes to `.jsonl` and
-`sessions-index.json` trigger an immediate provider refresh after a 450 ms
-debounce. Other files, including subagent `.meta.json`, are picked up by the
-recovery scan that runs every 60 seconds by default. The harness filter is
+The project and plan roots are watched recursively. Changes to `.jsonl`,
+`sessions-index.json`, and plan `.md` files trigger a provider refresh after a
+450 ms debounce. Other files, including subagent `.meta.json`, are picked up by
+the recovery scan that runs every 60 seconds by default. The harness filter is
 applied after discovery, so hiding Claude does not disable its scanner.
 
 ### Tips for reliable discovery
@@ -184,10 +190,12 @@ trailing commas, comments, and a valid final line without `\n`.
 | other `system` | arbitrary | Raw session metadata/provenance |
 | `attachment` + `skill_listing` | skill arrays/content | `Available` skill evidence |
 | `attachment` + `skill_activated` | skill arrays/content | `Invoked` skill evidence |
+| `attachment` + `prompt_snapshot` | `systemPrompt` string/array | Session-level system-prompt snapshot, outside ordinary turns |
+| `attachment` + `plan_mode` / `plan_mode_exit` | `planFilePath` and prompt identity | Observed plan ownership/reference activity |
 | other `attachment` | arbitrary | Raw session metadata/provenance |
 | `mode`, `permission-mode` | current mode | Session mode; permission mode wins |
 | `ai-title`, `custom-title`, `agent-name`, `last-prompt` | title/prompt values | Session title and metadata |
-| `cost-state` | cumulative totals and `modelUsage` | Latest main-file snapshot only |
+| `cost-state` | cumulative totals and `modelUsage` | Newest main/recovery snapshot by timestamp; normal main wins ties |
 | `fork-context-ref` | parent session/UUID/agent | Subagent lineage metadata |
 | any other type | arbitrary | Preserved as `claude.raw...` metadata and source provenance |
 
@@ -296,6 +304,16 @@ modification time is the final last-activity fallback.
 - `uuid`/`parentUuid` are retained as provenance links but do not create nested
   tree nodes.
 
+### Session-level system prompts
+
+`prompt_snapshot` attachments are normalized and stored in
+`SessionCatalogEntry.SessionEvents`, not as children of a conversation turn.
+The tree groups them before the turns, coalescing repeated snapshots by content
+hash and agent ID and showing a new entry when the prompt changes. They are
+marked `ExcludeFromSummary` so prompt text does not become an ordinary message,
+thought, or tool KPI. Skill and usage aggregation still inspect their own typed
+evidence independently.
+
 ### Tool and parallel-call binding
 
 ```mermaid
@@ -365,10 +383,11 @@ Repeated usage is deduplicated by assistant message ID plus the raw usage
 object. Measurements are attached to the first projected content block in that
 assistant row, or to a synthetic hidden usage event when no content exists.
 
-Only the newest valid main-transcript `cost-state` is projected. It can add
+Only the newest valid main or recovery `cost-state` is projected. Timestamp
+wins first; a normal-main snapshot wins a tie with recovery. It can add
 session-final snapshots for API/tool/total duration, lines added/removed,
 `totalCostUSD` converted to integer `micro-usd`, and per-model token/cache/web
-search values. Recovery snapshots lose ties to normal-main snapshots.
+search values.
 
 For each token family, the dashboard uses the maximum non-delta snapshot when
 one exists; only when no snapshot exists does it sum deltas. It therefore does
@@ -411,6 +430,8 @@ state; catalog refresh itself is read-only.
 flowchart TD
     Folder["folder path"] --> Workspace["workspace"]
     Workspace --> Session["Claude session"]
+    Session --> SystemPrompts["System prompts"]
+    Session --> Plans["bound plans"]
     Session --> Turn["promptId / inferred turn"]
     Turn --> Thought["thinking / redacted thinking"]
     Turn --> Response["assistant text"]
@@ -429,9 +450,12 @@ file does not fabricate `SubagentStart`/`SubagentStop`; those summary rows need
 corresponding canonical events. Prompt events supply the turn title and are
 intentionally not repeated as child nodes.
 
-`ExcludeFromSummary` is retained on structural/tool/cost events, but the
-current `SessionNodeSummaryBuilder` does not filter on that flag. Its canonical
-role and tool-kind checks determine what contributes to each summary.
+`SessionNodeSummaryBuilder` normally filters events marked
+`ExcludeFromSummary`, while retaining tool requests, thoughts, compaction, and
+subagent lifecycle roles needed by those KPIs. Usage/accounting aggregation and
+skill lists inspect their typed measurements/evidence separately, so hidden
+cost or skill attachment rows can still contribute to the corresponding
+dashboard section.
 
 ## Plans
 
@@ -442,10 +466,13 @@ high confidence.
   and are returned even when the originating session transcript has been deleted.
 - A `plan_mode`/`plan_mode_exit` attachment names the `planFilePath` for the
   active session and prompt, which binds the plan file to that session and turn
-  as `Observed`. `Write`/`Edit` into a `plans` directory and `ExitPlanMode` (whose
-  input carries the full plan body) supply revision content; an exact path plus
-  session id is `Observed`, and a carried rather than explicit prompt id makes the
-  turn binding `Derived`.
+  as `Observed`. `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` into a
+  `plans` directory contribute update activity. Only `Write` and
+  `ExitPlanMode` (whose input carries the full plan body) materialize revision
+  content; the edit variants remain opaque. An exact path plus session id is
+  `Observed`. The prompt id can be carried from the last unambiguous transcript
+  row when it is absent from the attachment; the current plan activity still
+  records `Observed` evidence because the plan path itself is explicit.
 - A global plan with no matching transcript stays an orphan under the top-level
   **Orphan Plans** root, grouped by provider then workspace.
 - The observed-update count is stateless and content-hash based. `Write` and
@@ -470,6 +497,9 @@ high confidence.
   accumulation behavior to avoid this.
 - `total_cost_usd` is provider-reported transcript data, not independent
   billing verification.
+- System-prompt and skill-tool projection have focused fixtures, but recovery
+  overlap, index conflicts, and Claude plan binding do not yet have equivalent
+  end-to-end coverage.
 - Raw source rows can contain prompts, source files, tool results, credentials,
   and absolute paths.
 
@@ -492,6 +522,8 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Sessions/Claude/ClaudeTranscriptFileReader.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Claude/ClaudeSessionIndexReader.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Claude/ClaudeSessionCatalogBuilder.cs`
+- `src/Shared/HarnessSpy.Core/Runtimes/Claude/ClaudeTranscriptSemantics.cs`
+- `src/Shared/HarnessSpy.Core/Runtimes/SystemPromptTextNormalizer.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionCatalogCoordinator.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionViewerSettingsService.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Process/ClaudeRunningSessionProbe.cs`
@@ -501,3 +533,4 @@ Useful checks:
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionNodeSummaryBuilder.cs`
 - `src/Tests/HarnessSpy.Tests/SessionCatalogSourceTests.cs`
+- `src/Tests/HarnessSpy.Tests/SessionTreeProjectorTests.cs`
