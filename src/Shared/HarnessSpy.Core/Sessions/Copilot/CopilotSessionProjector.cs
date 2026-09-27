@@ -417,7 +417,12 @@ internal sealed class CopilotSessionProjector
             byteOffset,
             nativeRecordId,
             parentId,
-            ContractVersion: _contractVersion);
+            ContractVersion: _contractVersion,
+            NativeTurnId: ReadTurnId(data),
+            InteractionId: _json.String(
+                data,
+                "interactionId",
+                "interaction_id"));
         _sources.Add(provenance);
 
         CopilotEnvelopeContext context = new()
@@ -627,6 +632,7 @@ internal sealed class CopilotSessionProjector
                 _sawLifecycleRecord = true;
                 _lastOpenOrder = context.Order;
                 ClearCurrentShutdownAggregate();
+                ClearActiveTurnContext();
 
                 string? sessionId = _json.String(data, "sessionId");
                 if (sessionId is not null &&
@@ -662,6 +668,7 @@ internal sealed class CopilotSessionProjector
                 _lastOpenOrder = context.Order;
                 _resumeCount++;
                 ClearCurrentShutdownAggregate();
+                ClearActiveTurnContext();
                 _currentModel =
                     _json.String(data, "selectedModel", "model") ??
                     _currentModel;
@@ -689,6 +696,7 @@ internal sealed class CopilotSessionProjector
                     context.EventIdBase,
                     "usage.final",
                     UsageBehavior.FinalSnapshot);
+                ClearActiveTurnContext();
                 return true;
 
             case "session.usage_checkpoint":
@@ -749,14 +757,14 @@ internal sealed class CopilotSessionProjector
     private void HandleUserMessage(CopilotEnvelopeContext context)
     {
         string? nativeTurnId = ReadTurnId(context.Data);
-        string turnId = ResolveTurn(
-            context.Data,
-            context.AgentId,
-            allowCreate: true,
-            preferredSyntheticPrefix: "user")!;
+        string turnId = ResolveUserTurn(context);
         CopilotTurnBuilder turn = GetOrCreateTurn(
             turnId,
-            nativeTurnId is null
+            nativeTurnId is null &&
+            _json.String(
+                context.Data,
+                "interactionId",
+                "interaction_id") is null
                 ? InferenceEvidence.Derived
                 : InferenceEvidence.Observed);
         if (context.AgentId is null)
@@ -789,7 +797,7 @@ internal sealed class CopilotSessionProjector
                 Role = ObservationRole.PromptSubmitted,
                 EventKind = CanonicalEventKind.PromptSubmitted,
                 Direction = ObservationDirection.Input,
-                TurnId = nativeTurnId ?? turnId,
+                TurnId = turnId,
                 PromptText = prompt,
                 Mode = mode,
                 Status = _json.String(context.Data, "delivery"),
@@ -799,7 +807,6 @@ internal sealed class CopilotSessionProjector
 
     private void HandleSystemMessage(CopilotEnvelopeContext context)
     {
-        string? nativeTurnId = ReadTurnId(context.Data);
         string? turnId = ResolveTurn(
             context.Data,
             context.AgentId,
@@ -822,7 +829,7 @@ internal sealed class CopilotSessionProjector
                     Role = ObservationRole.SystemPrompt,
                     EventKind = CanonicalEventKind.SystemPromptSnapshot,
                     Direction = ObservationDirection.Input,
-                    TurnId = nativeTurnId ?? turnId,
+                    TurnId = turnId,
                     Text = systemPrompt.Text,
                     SystemPrompt = systemPrompt,
                     Status = role,
@@ -838,7 +845,7 @@ internal sealed class CopilotSessionProjector
                 NativeName = context.Type,
                 Role = ObservationRole.Message,
                 Direction = ObservationDirection.Input,
-                TurnId = nativeTurnId ?? turnId,
+                TurnId = turnId,
                 Text = content,
                 Status = role,
                 AgentId = context.AgentId,
@@ -898,7 +905,7 @@ internal sealed class CopilotSessionProjector
                     NativeName = "skill.available",
                     Role = ObservationRole.InstructionsLoaded,
                     ToolKind = CanonicalToolKind.Task,
-                    TurnId = nativeTurnId ?? turnId,
+                    TurnId = turnId,
                     AgentId = context.AgentId,
                     Skill = new SkillEvidence(
                         name,
@@ -922,7 +929,11 @@ internal sealed class CopilotSessionProjector
             preferredSyntheticPrefix: "turn")!;
         CopilotTurnBuilder turn = GetOrCreateTurn(
             turnId,
-            nativeTurnId is null
+            nativeTurnId is null &&
+            _json.String(
+                context.Data,
+                "interactionId",
+                "interaction_id") is null
                 ? InferenceEvidence.Derived
                 : InferenceEvidence.Observed);
         if (context.AgentId is null)
@@ -944,14 +955,6 @@ internal sealed class CopilotSessionProjector
             {
                 _activeTurnsByAgent.Remove(agentKey);
             }
-
-            if (_lastUserTurnsByAgent.TryGetValue(
-                agentKey,
-                out string? lastUserTurn) &&
-                lastUserTurn.Equals(turnId, StringComparison.Ordinal))
-            {
-                _lastUserTurnsByAgent.Remove(agentKey);
-            }
         }
 
         AddToTurn(
@@ -972,7 +975,7 @@ internal sealed class CopilotSessionProjector
                 Tone = isStart
                     ? ObservationTone.Normal
                     : ObservationTone.Stop,
-                TurnId = nativeTurnId ?? turnId,
+                TurnId = turnId,
                 AgentId = context.AgentId,
                 ExcludeFromSummary = true
             });
@@ -980,7 +983,6 @@ internal sealed class CopilotSessionProjector
 
     private void HandleAssistantReasoning(CopilotEnvelopeContext context)
     {
-        string? nativeTurnId = ReadTurnId(context.Data);
         string? turnId = ResolveTurn(
             context.Data,
             context.AgentId,
@@ -1012,7 +1014,7 @@ internal sealed class CopilotSessionProjector
                 Evidence = opaque
                     ? InferenceEvidence.Opaque
                     : InferenceEvidence.Observed,
-                TurnId = nativeTurnId ?? turnId,
+                TurnId = turnId,
                 Text = text,
                 Model = _json.String(context.Data, "model"),
                 AgentId = context.AgentId,
@@ -1034,7 +1036,11 @@ internal sealed class CopilotSessionProjector
             preferredSyntheticPrefix: "assistant")!;
         GetOrCreateTurn(
             turnId,
-            nativeTurnId is null
+            nativeTurnId is null &&
+            _json.String(
+                context.Data,
+                "interactionId",
+                "interaction_id") is null
                 ? InferenceEvidence.Derived
                 : InferenceEvidence.Observed);
         if (context.AgentId is null)
@@ -1071,7 +1077,7 @@ internal sealed class CopilotSessionProjector
                     ? CanonicalEventKind.ProviderSpecific
                     : CanonicalEventKind.AssistantMessage,
                 Direction = ObservationDirection.Output,
-                TurnId = nativeTurnId ?? turnId,
+                TurnId = turnId,
                 AssistantStepId = assistantStepId,
                 Text = content,
                 Model = model,
@@ -1095,16 +1101,15 @@ internal sealed class CopilotSessionProjector
                     Role = ObservationRole.AgentThought,
                     EventKind = CanonicalEventKind.AssistantThought,
                     Tone = ObservationTone.Thought,
-                    TurnId = nativeTurnId ?? turnId,
+                    TurnId = turnId,
                     AssistantStepId = assistantStepId,
                     Text = reasoningText,
                     Model = model,
                     AgentId = context.AgentId
                 });
         }
-
-        if (HasNonNullProperty(context.Data, "reasoningOpaque") ||
-            HasNonNullProperty(context.Data, "encryptedContent"))
+        else if (HasNonNullProperty(context.Data, "reasoningOpaque") ||
+                 HasNonNullProperty(context.Data, "encryptedContent"))
         {
             AddToTurn(
                 turnId,
@@ -1117,7 +1122,7 @@ internal sealed class CopilotSessionProjector
                     EventKind = CanonicalEventKind.AssistantThought,
                     Tone = ObservationTone.Thought,
                     Evidence = InferenceEvidence.Opaque,
-                    TurnId = nativeTurnId ?? turnId,
+                    TurnId = turnId,
                     AssistantStepId = assistantStepId,
                     Model = model,
                     Status = "opaque",
@@ -1140,7 +1145,6 @@ internal sealed class CopilotSessionProjector
                 context,
                 request,
                 turnId,
-                nativeTurnId ?? turnId,
                 assistantStepId,
                 parallelGroupId,
                 requestCount > 1,
@@ -1150,7 +1154,6 @@ internal sealed class CopilotSessionProjector
 
     private void HandleToolRequest(CopilotEnvelopeContext context)
     {
-        string? nativeTurnId = ReadTurnId(context.Data);
         string turnId = ResolveTurn(
             context.Data,
             context.AgentId,
@@ -1163,7 +1166,6 @@ internal sealed class CopilotSessionProjector
             context,
             context.Data,
             turnId,
-            nativeTurnId ?? turnId,
             assistantStepId,
             null,
             false,
@@ -1174,7 +1176,6 @@ internal sealed class CopilotSessionProjector
         CopilotEnvelopeContext context,
         JsonElement request,
         string turnId,
-        string nativeTurnId,
         string assistantStepId,
         string? parallelGroupId,
         bool isParallel,
@@ -1212,7 +1213,7 @@ internal sealed class CopilotSessionProjector
                 Tone = mcp.IsMcp
                     ? ObservationTone.Mcp
                     : ObservationTone.Normal,
-                TurnId = nativeTurnId,
+                TurnId = turnId,
                 AssistantStepId = assistantStepId,
                 ParallelGroupId = parallelGroupId,
                 ToolCallId = toolCallId,
@@ -1224,7 +1225,7 @@ internal sealed class CopilotSessionProjector
                 AgentId = context.AgentId,
                 Task = task,
                 IsParallelCandidate = isParallel,
-                TargetPaths = _toolSemantics.TargetPaths(request)
+                TargetPaths = _toolSemantics.TargetPaths(request, toolName)
             });
     }
 
@@ -1235,7 +1236,6 @@ internal sealed class CopilotSessionProjector
         string? toolCallId = ReadToolCallId(context.Data);
         _tools.TryGetValue(toolCallId ?? string.Empty, out CopilotToolCorrelation? known);
 
-        string? nativeTurnId = ReadTurnId(context.Data);
         string? turnId = known?.TurnId ?? ResolveTurn(
             context.Data,
             context.AgentId,
@@ -1316,7 +1316,7 @@ internal sealed class CopilotSessionProjector
                     : mcp.IsMcp
                         ? ObservationTone.Mcp
                         : ObservationTone.Normal,
-                TurnId = nativeTurnId ?? turnId,
+                TurnId = turnId,
                 AssistantStepId = known.AssistantStepId,
                 ParallelGroupId = known.ParallelGroupId,
                 ToolCallId = toolCallId,
@@ -1333,7 +1333,9 @@ internal sealed class CopilotSessionProjector
                 DurationMs = durationMs,
                 IsFailure = isFailure,
                 IsAborted = isAborted,
-                TargetPaths = _toolSemantics.TargetPaths(context.Data)
+                TargetPaths = _toolSemantics.TargetPaths(
+                    context.Data,
+                    toolName)
             });
     }
 
@@ -1343,7 +1345,6 @@ internal sealed class CopilotSessionProjector
     {
         string? toolCallId = ReadToolCallId(context.Data);
         _tools.TryGetValue(toolCallId ?? string.Empty, out CopilotToolCorrelation? known);
-        string? nativeTurnId = ReadTurnId(context.Data);
         string? turnId = known?.TurnId ?? ResolveTurn(
             context.Data,
             context.AgentId,
@@ -1392,7 +1393,7 @@ internal sealed class CopilotSessionProjector
                 Tone = mcp.IsMcp
                     ? ObservationTone.Mcp
                     : ObservationTone.Permission,
-                TurnId = nativeTurnId ?? turnId,
+                TurnId = turnId,
                 AssistantStepId = known?.AssistantStepId,
                 ParallelGroupId = known?.ParallelGroupId,
                 ToolCallId = toolCallId,
@@ -1403,7 +1404,9 @@ internal sealed class CopilotSessionProjector
                 AgentId = context.AgentId,
                 IsFailure = denied,
                 IsAborted = denied,
-                TargetPaths = _toolSemantics.TargetPaths(context.Data),
+                TargetPaths = _toolSemantics.TargetPaths(
+                    context.Data,
+                    toolName),
                 ExcludeFromSummary = true
             });
     }
@@ -1469,7 +1472,7 @@ internal sealed class CopilotSessionProjector
                     ? ObservationDirection.Input
                     : ObservationDirection.Output,
                 ToolKind = CanonicalToolKind.Agent,
-                TurnId = ReadTurnId(context.Data) ?? turnId,
+                TurnId = turnId,
                 AssistantStepId = known?.AssistantStepId,
                 ToolCallId = toolCallId,
                 ToolName = known?.ToolName,
@@ -1527,7 +1530,7 @@ internal sealed class CopilotSessionProjector
                 Role = ObservationRole.InstructionsLoaded,
                 ToolKind = CanonicalToolKind.Task,
                 Direction = ObservationDirection.Input,
-                TurnId = ReadTurnId(context.Data) ?? turnId,
+                TurnId = turnId,
                 AgentId = context.AgentId,
                 Skill = new SkillEvidence(
                     skillName,
@@ -1571,9 +1574,7 @@ internal sealed class CopilotSessionProjector
                 Tone = failure
                     ? ObservationTone.Failure
                     : ObservationTone.Normal,
-                TurnId = ReadTurnId(context.Data) ??
-                    _json.String(context.Data, "turn") ??
-                    turnId,
+                TurnId = turnId,
                 Text = ReadModelText(context.Data),
                 Model = model,
                 Status = _json.String(context.Data, "kind", "status"),
@@ -1609,7 +1610,7 @@ internal sealed class CopilotSessionProjector
                 Role = ObservationRole.RuntimeError,
                 EventKind = CanonicalEventKind.RuntimeError,
                 Tone = ObservationTone.Failure,
-                TurnId = ReadTurnId(context.Data) ?? turnId,
+                TurnId = turnId,
                 Text = _json.Text(context.Data, "message", "error"),
                 Status = _json.String(context.Data, "errorType", "statusCode"),
                 AgentId = context.AgentId,
@@ -1645,7 +1646,7 @@ internal sealed class CopilotSessionProjector
                     ? CanonicalEventKind.CompactionCompleted
                     : CanonicalEventKind.CompactionStarted,
                 Tone = ObservationTone.Compaction,
-                TurnId = ReadTurnId(context.Data) ?? turnId,
+                TurnId = turnId,
                 Status = _json.String(context.Data, "trigger", "reason"),
                 AgentId = context.AgentId
             });
@@ -1752,34 +1753,37 @@ internal sealed class CopilotSessionProjector
             return tool.TurnId;
         }
 
-        string? nativeTurnId = ReadTurnId(data);
-        string? interactionId = _json.String(data, "interactionId");
-        if (nativeTurnId is not null)
+        string? interactionId =
+            _json.String(data, "interactionId", "interaction_id");
+        if (interactionId is not null)
         {
-            if (interactionId is not null &&
-                _interactionTurns.TryGetValue(
+            if (_interactionTurns.TryGetValue(
                     interactionId,
-                    out string? interactionTurn) &&
-                interactionTurn.StartsWith(
-                    "interaction:",
-                    StringComparison.Ordinal) &&
-                !interactionTurn.Equals(nativeTurnId, StringComparison.Ordinal))
+                    out string? interactionTurn))
             {
-                MergeTurn(interactionTurn, nativeTurnId);
+                return interactionTurn;
             }
 
-            if (interactionId is not null)
+            if (allowCreate)
             {
-                _interactionTurns[interactionId] = nativeTurnId;
+                string created = $"interaction:{interactionId}";
+                _interactionTurns[interactionId] = created;
+                return created;
             }
 
-            return nativeTurnId;
-        }
+            string interactionAgentKey = AgentKey(agentId);
+            if (_activeTurnsByAgent.TryGetValue(
+                    interactionAgentKey,
+                    out string? activeInteractionTurn) ||
+                _lastUserTurnsByAgent.TryGetValue(
+                    interactionAgentKey,
+                    out activeInteractionTurn))
+            {
+                _interactionTurns[interactionId] = activeInteractionTurn;
+                return activeInteractionTurn;
+            }
 
-        if (interactionId is not null &&
-            _interactionTurns.TryGetValue(interactionId, out string? mappedTurn))
-        {
-            return mappedTurn;
+            return null;
         }
 
         string agentKey = AgentKey(agentId);
@@ -1793,20 +1797,46 @@ internal sealed class CopilotSessionProjector
             return userTurn;
         }
 
+        string? nativeTurnId = ReadTurnId(data);
+        if (nativeTurnId is not null &&
+            (allowCreate || _turns.ContainsKey(nativeTurnId)))
+        {
+            return nativeTurnId;
+        }
+
         if (!allowCreate)
         {
             return null;
         }
 
-        string synthetic = interactionId is null
-            ? $"{preferredSyntheticPrefix}:{_turnCreationSequence}"
-            : $"interaction:{interactionId}";
+        return $"{preferredSyntheticPrefix}:{_turnCreationSequence}";
+    }
+
+    private string ResolveUserTurn(CopilotEnvelopeContext context)
+    {
+        string? interactionId =
+            _json.String(context.Data, "interactionId", "interaction_id");
         if (interactionId is not null)
         {
-            _interactionTurns[interactionId] = synthetic;
+            if (_interactionTurns.TryGetValue(
+                    interactionId,
+                    out string? existing))
+            {
+                return existing;
+            }
+
+            string interactionTurn = $"interaction:{interactionId}";
+            _interactionTurns[interactionId] = interactionTurn;
+            return interactionTurn;
         }
 
-        return synthetic;
+        string? nativeTurnId = ReadTurnId(context.Data);
+        if (nativeTurnId is not null && !_turns.ContainsKey(nativeTurnId))
+        {
+            return nativeTurnId;
+        }
+
+        return $"user:{context.EventIdBase}";
     }
 
     private CopilotTurnBuilder GetOrCreateTurn(
@@ -1958,21 +1988,29 @@ internal sealed class CopilotSessionProjector
         _currentAggregateMetadataKeys.Clear();
     }
 
+    private void ClearActiveTurnContext()
+    {
+        _activeTurnsByAgent.Clear();
+        _lastUserTurnsByAgent.Clear();
+        _agentParentTurns.Clear();
+    }
+
     private string? ResolveExistingModelTurn(CopilotEnvelopeContext context)
     {
-        string? nativeTurnId =
-            ReadTurnId(context.Data) ??
-            _json.String(context.Data, "turn");
-        if (nativeTurnId is not null && _turns.ContainsKey(nativeTurnId))
-        {
-            return nativeTurnId;
-        }
-
-        return ResolveTurn(
+        string? resolved = ResolveTurn(
             context.Data,
             context.AgentId,
             allowCreate: false,
             preferredSyntheticPrefix: "model");
+        if (resolved is not null)
+        {
+            return resolved;
+        }
+
+        string? nativeTurnId = _json.String(context.Data, "turn");
+        return nativeTurnId is not null && _turns.ContainsKey(nativeTurnId)
+            ? nativeTurnId
+            : null;
     }
 
     private DateTimeOffset? ReadTimestamp(

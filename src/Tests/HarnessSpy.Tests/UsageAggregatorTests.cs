@@ -99,6 +99,88 @@ public sealed class UsageAggregatorTests
                 static name => name.Contains("input", StringComparison.OrdinalIgnoreCase)));
     }
 
+    [Fact]
+    public void AgentModelMirrorDoesNotDuplicatePerModelFinalSnapshots()
+    {
+        UsageAggregator aggregator = new();
+        UsageSample[] samples =
+        [
+            Sample(
+                "modelMetrics.gpt.usage.reasoningTokens",
+                1028,
+                UsageScope.Session,
+                UsageBehavior.FinalSnapshot,
+                "end",
+                "session",
+                1),
+            Sample(
+                "agentMetrics.main.modelMetrics.gpt.usage.reasoningTokens",
+                1028,
+                UsageScope.Session,
+                UsageBehavior.FinalSnapshot,
+                "end",
+                "session",
+                1),
+            Sample(
+                "modelMetrics.mai.usage.reasoningTokens",
+                320,
+                UsageScope.Session,
+                UsageBehavior.FinalSnapshot,
+                "end",
+                "session",
+                1),
+            Sample(
+                "agentMetrics.main.modelMetrics.mai.usage.reasoningTokens",
+                320,
+                UsageScope.Session,
+                UsageBehavior.FinalSnapshot,
+                "end",
+                "session",
+                1)
+        ];
+
+        Assert.Equal(
+            1348,
+            aggregator.Aggregate(
+                samples,
+                static name => name.Contains(
+                    "reasoning",
+                    StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public void AgentModelBreakdownsAreSummedWithoutTopLevelModelMetrics()
+    {
+        UsageAggregator aggregator = new();
+        UsageSample[] samples =
+        [
+            Sample(
+                "agentMetrics.first.modelMetrics.gpt.usage.reasoningTokens",
+                10,
+                UsageScope.Session,
+                UsageBehavior.FinalSnapshot,
+                "end",
+                "session",
+                1),
+            Sample(
+                "agentMetrics.second.modelMetrics.gpt.usage.reasoningTokens",
+                20,
+                UsageScope.Session,
+                UsageBehavior.FinalSnapshot,
+                "end",
+                "session",
+                1)
+        ];
+
+        Assert.Equal(
+            30,
+            aggregator.Aggregate(
+                samples,
+                static name => name.Contains(
+                    "reasoning",
+                    StringComparison.OrdinalIgnoreCase)));
+    }
+
     private static UsageSample Sample(
         string name,
         long value,

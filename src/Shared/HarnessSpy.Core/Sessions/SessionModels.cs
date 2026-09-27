@@ -32,7 +32,9 @@ public sealed record SessionSourceProvenance(
     string? RecordId = null,
     string? ParentRecordId = null,
     string? DatabaseKey = null,
-    string? ContractVersion = null);
+    string? ContractVersion = null,
+    string? NativeTurnId = null,
+    string? InteractionId = null);
 
 public sealed record SessionFileBinding(
     string Path,

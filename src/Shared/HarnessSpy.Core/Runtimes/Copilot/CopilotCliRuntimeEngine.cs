@@ -14,6 +14,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
     // MCP calls arrive flattened as "<server>-<tool>" with no marker, so a
     // per-session classifier learns their identity from the permission events.
     private readonly CopilotMcpToolClassifier _mcp = new();
+    private readonly PatchTargetPathExtractor _patchTargetPaths = new();
 
     public override string HarnessId => HarnessIds.GitHubCopilot;
 
@@ -30,14 +31,15 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
 
         string? sessionId = RuntimeJson.String(payload, "sessionId", "session_id");
         string? toolName = RuntimeJson.String(payload, "toolName", "tool_name");
-        string? targetFilePath = RuntimeJson.ToolInputString(payload, "toolArgs", "path", "file_path")
-            ?? RuntimeJson.ToolInputString(payload, "tool_input", "path", "file_path");
+        IReadOnlyList<string> targetFilePaths = TargetPaths(payload, toolName);
+        string? targetFilePath = targetFilePaths.FirstOrDefault();
 
         var b = new InterpretationBuilder(name)
         {
             SessionId = sessionId,
             ToolName = toolName,
             TargetFilePath = targetFilePath,
+            TargetFilePaths = targetFilePaths,
             PromptText = RuntimeJson.String(payload, "prompt", "initialPrompt"),
             AssistantText = RuntimeJson.String(payload, "response"),
             Status = RuntimeJson.String(payload, "stopReason"),
@@ -232,6 +234,55 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
         }
 
         return b.Build();
+    }
+
+    private IReadOnlyList<string> TargetPaths(
+        JsonElement payload,
+        string? toolName)
+    {
+        HashSet<string> paths = new(StringComparer.OrdinalIgnoreCase);
+        string? direct =
+            RuntimeJson.ToolInputString(
+                payload,
+                "toolArgs",
+                "path",
+                "file_path",
+                "filePath") ??
+            RuntimeJson.ToolInputString(
+                payload,
+                "tool_input",
+                "path",
+                "file_path",
+                "filePath");
+        if (!string.IsNullOrWhiteSpace(direct))
+        {
+            paths.Add(direct);
+        }
+
+        if (!string.Equals(
+                toolName,
+                "apply_patch",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return paths.ToArray();
+        }
+
+        foreach (string container in new[] { "toolArgs", "tool_input" })
+        {
+            if (payload.ValueKind != JsonValueKind.Object ||
+                !payload.TryGetProperty(container, out JsonElement arguments) ||
+                arguments.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            foreach (string path in _patchTargetPaths.Extract(arguments.GetString()))
+            {
+                paths.Add(path);
+            }
+        }
+
+        return paths.ToArray();
     }
 
     // Copilot CLI exposes the session transcript on agentStop (and, when

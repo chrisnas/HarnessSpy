@@ -1491,6 +1491,8 @@ public sealed class SessionTreeProjector
 
         AddDetail(rows, $"{prefix} record ID", source.RecordId);
         AddDetail(rows, $"{prefix} parent record ID", source.ParentRecordId);
+        AddDetail(rows, $"{prefix} native turn ID", source.NativeTurnId);
+        AddDetail(rows, $"{prefix} interaction ID", source.InteractionId);
         AddDetail(rows, $"{prefix} database key", source.DatabaseKey);
         AddDetail(rows, $"{prefix} contract", source.ContractVersion);
     }

@@ -10,6 +10,8 @@ public sealed class SessionNodeSummaryBuilder
 {
     private readonly UsageAggregator _usageAggregator = new();
     private readonly UsageNameClassifier _usageNames = new();
+    private readonly SessionFileAccessCollector _fileAccessCollector = new();
+    private readonly CommandTextExtractor _commandTextExtractor = new();
 
     public NodeSummary Build(SessionCatalogEntry session)
     {
@@ -210,20 +212,25 @@ public sealed class SessionNodeSummaryBuilder
                 .Where(static item =>
                     IsToolRequest(item) &&
                     item.ToolKind == CanonicalToolKind.Shell)
-                .Select(static item => Preview(item.PromptText ?? item.Text))
+                .Select(item => _commandTextExtractor.Extract(
+                    item.PromptText ?? item.Text))
                 .Where(static item => !string.IsNullOrWhiteSpace(item))
                 .Cast<string>()
                 .Distinct(StringComparer.Ordinal)
                 .ToArray(),
-            ReadFiles = BuildFileRows(structuralEvents, CanonicalToolKind.FileRead),
+            ReadFiles = _fileAccessCollector.Collect(
+                structuralEvents,
+                CanonicalToolKind.FileRead),
             WrittenFiles =
             [
-                .. BuildFileRows(
+                .. _fileAccessCollector.Collect(
                     structuralEvents,
                     CanonicalToolKind.FileWrite,
                     CanonicalToolKind.FileEdit)
             ],
-            DeletedFiles = BuildFileRows(structuralEvents, CanonicalToolKind.FileDelete),
+            DeletedFiles = _fileAccessCollector.Collect(
+                structuralEvents,
+                CanonicalToolKind.FileDelete),
             Subagents = BuildSubagents(structuralEvents),
             Kpis = kpis,
             Accounting = accounting,
@@ -256,21 +263,6 @@ public sealed class SessionNodeSummaryBuilder
                 ? 0
                 : Math.Clamp(item.Duration / totalDuration * 100, 0, 100)
         }).ToArray();
-    }
-
-    private static IReadOnlyList<FileAccessRow> BuildFileRows(
-        IEnumerable<SessionEventRecord> events,
-        params CanonicalToolKind[] kinds)
-    {
-        HashSet<CanonicalToolKind> acceptedKinds = [.. kinds];
-        return events
-            .Where(item => acceptedKinds.Contains(item.ToolKind))
-            .SelectMany(static item => item.TargetPaths)
-            .Where(static path => !string.IsNullOrWhiteSpace(path))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .Select(static path => new FileAccessRow { FullPath = path })
-            .ToArray();
     }
 
     private static IReadOnlyList<SubagentSummary> BuildSubagents(

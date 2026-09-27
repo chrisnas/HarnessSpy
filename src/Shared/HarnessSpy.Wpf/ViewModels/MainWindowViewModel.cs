@@ -362,6 +362,11 @@ public sealed class MainWindowViewModel : ObservableObject
             return null;
         }
 
+        if (observation.IsSessionLifecycle)
+        {
+            return null;
+        }
+
         if (observation.IsTranscriptSourced &&
             observation.GenerationId is string transcriptTurnId &&
             _transcriptTurnAliases.TryGetValue(
@@ -950,7 +955,18 @@ public sealed class MainWindowViewModel : ObservableObject
 
         foreach (TreeNodeViewModel child in generationNode.Children)
         {
-            if (child.Kind != TreeNodeKind.ParallelWave || !child.Children.Remove(node))
+            if (child.Kind != TreeNodeKind.ParallelWave)
+            {
+                continue;
+            }
+
+            bool removed = false;
+            while (child.Children.Remove(node))
+            {
+                removed = true;
+            }
+
+            if (!removed)
             {
                 continue;
             }
@@ -1399,12 +1415,27 @@ public sealed class MainWindowViewModel : ObservableObject
                 continue;
             }
 
+            // Transcript evidence can establish the parallel group before the
+            // hook completion arrives. In that case this call is already a
+            // member; only its newly known duration needs to refresh the wave.
+            // Adding it again would put the same node in the collection twice
+            // and make recursive turn/session summaries double-count it.
+            if (child.Children.Contains(completedPre))
+            {
+                UpdateWaveNode(child);
+                return;
+            }
+
             DateTimeOffset waveStart = child.Children.Min(c => c.Observation!.ObservedAtUtc);
             DateTimeOffset waveEnd = child.Children.Max(c => GetCallEnd(c));
 
             if (preStart < waveEnd && preEnd > waveStart)
             {
-                generationNode.Children.Remove(completedPre);
+                if (!generationNode.Children.Remove(completedPre))
+                {
+                    return;
+                }
+
                 child.Children.Add(completedPre);
                 UpdateWaveNode(child);
                 return;
@@ -1476,7 +1507,8 @@ public sealed class MainWindowViewModel : ObservableObject
         TreeNodeViewModel? generation = path?.LastOrDefault(
             candidate => candidate.Kind == TreeNodeKind.Generation);
         if (generation is null ||
-            path!.Any(candidate => candidate.Kind == TreeNodeKind.ParallelWave))
+            path!.Any(candidate => candidate.Kind == TreeNodeKind.ParallelWave) ||
+            !generation.Children.Contains(toolNode))
         {
             return;
         }

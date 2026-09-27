@@ -42,6 +42,15 @@ public sealed class TranscriptTurnTracker
             return _currentTurnId;
         }
 
+        if (metadata.RecordType is
+            "session.start" or
+            "session.resume" or
+            "session.shutdown")
+        {
+            _currentTurnId = null;
+            return null;
+        }
+
         if (metadata.RecordType == "user.message")
         {
             _currentTurnId = ResolveOrCreateCopilotTurn(metadata.InteractionId);

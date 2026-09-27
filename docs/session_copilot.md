@@ -1,6 +1,6 @@
 # SessionViewer: GitHub Copilot CLI sessions
 
-Implementation snapshot: 2026-09-06.
+Implementation snapshot: 2026-09-26.
 
 This document describes the current GitHub Copilot CLI catalog used by
 `SessionViewer`. The implemented source is the local Copilot CLI
@@ -223,9 +223,12 @@ erDiagram
     SUBAGENT ||--o{ EVENT : "agentId"
 ```
 
-SessionViewer has no separate `Run` entity. Copilot's `turnId` (or a derived
-interaction turn) becomes `SessionTurn`; `messageId` becomes
-`AssistantStepId`; and `toolCallId` identifies each tool operation.
+SessionViewer has no separate `Run` entity. A Copilot `interactionId` (one user
+message and all of its internal model/tool cycles) becomes `SessionTurn`.
+The provider's `turnId` is an internal model-cycle identifier that restarts at
+zero for later interactions, so it is retained as source provenance rather
+than used as conversation identity. `messageId` becomes `AssistantStepId`, and
+`toolCallId` identifies each tool operation.
 
 ### Session identity and metadata
 
@@ -251,21 +254,22 @@ workspace.cwd > latest event cwd > Unknown workspace
 
 ### Turn resolution
 
-Copilot event versions do not always put `turnId` on every related record.
-SessionViewer resolves a turn in this order:
+Copilot event versions do not always put `interactionId` on every related
+record. SessionViewer treats each `user.message` as a conversation turn and
+resolves a turn in this order:
 
 1. an agent ID already mapped to its parent turn;
 2. a known `toolCallId` and its request's turn;
-3. native `turnId`;
-4. a previously mapped `interactionId`;
-5. the active turn for the same agent;
-6. the most recent user-message turn for that agent;
+3. a previously mapped `interactionId`;
+4. the active turn for the same agent;
+5. the most recent user-message turn for that agent;
+6. native `turnId` for older logs that expose no interaction;
 7. a synthetic `interaction:<id>` or `<family>:<sequence>` turn when creation
    is allowed.
 
-If a later record supplies a native `turnId`, an earlier synthetic
-interaction-based turn is merged into it and every tool/agent mapping is
-rewritten. Native turn evidence is `Observed`; synthetic binding is `Derived`.
+Repeated native `turnId` values from different interactions are never merged.
+Both the native cycle ID and interaction ID remain visible in provenance.
+Provider identities are `Observed`; a fully synthetic fallback is `Derived`.
 
 `parentId` is retained as source chronology and is deliberately not used for
 semantic nesting.
@@ -313,9 +317,12 @@ from properties such as `path`, `paths`, `file`, `filePath`, `targetPath`,
 
 - `assistant.reasoning.content`/`text`/`reasoningText` is readable,
   provider-exposed thought with `Observed` evidence.
-- `assistant.message.reasoningText` becomes a separate observed thought.
-- `reasoningOpaque` or `encryptedContent` becomes an `Opaque` thought with no
-  fabricated text.
+- `assistant.message.reasoningText` is the readable representation of that
+  message's thought.
+- If the same message also contains `reasoningOpaque` or `encryptedContent`,
+  SessionViewer keeps one observed readable thought rather than double-counting
+  the encrypted representation. Without readable text, it emits one `Opaque`
+  thought with no fabricated text.
 - Opaque content is not decrypted and should not be described as complete
   hidden chain-of-thought.
 
@@ -363,6 +370,9 @@ Final/checkpoint aggregates retain:
 
 Units remain `tokens`, `ms`, `nano-AIU`, `premium requests`, `requests`, or
 `provider units`. SessionViewer does not convert provider accounting into USD.
+When `agentMetrics.<agent>.modelMetrics.<model>` mirrors the same final values
+as top-level `modelMetrics.<model>`, summary token totals count that model once;
+the separately named raw accounting rows remain inspectable.
 A later `session.resume` clears stale final-shutdown aggregate keys before a
 new lifecycle segment.
 
@@ -413,7 +423,10 @@ flowchart TD
 
 Session and turn dashboards derive wall time, abort state, tools, MCP calls,
 thinking, compaction, usage, commands, target files, skills, and subagents from
-the canonical events. Unknown source events remain in
+the canonical events. File lists represent successful logical calls, reuse the
+request path when a completion omits it, normalize rooted paths before
+deduplication, and extract paths from `apply_patch` headers. Unknown source
+events remain in
 `SessionCatalogEntry.Sources` but have no selectable event node and do not
 affect these summaries. Prompt events supply the turn title and are
 intentionally not repeated as child nodes.

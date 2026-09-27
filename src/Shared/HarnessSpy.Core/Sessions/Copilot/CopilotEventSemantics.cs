@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Runtimes;
 
 namespace HarnessSpy.Core.Sessions.Copilot;
 
@@ -31,6 +32,7 @@ internal sealed class CopilotMcpIdentity
 internal sealed class CopilotToolSemantics
 {
     private readonly CopilotJsonValueReader _json;
+    private readonly PatchTargetPathExtractor _patchTargetPaths = new();
 
     public CopilotToolSemantics(CopilotJsonValueReader json)
     {
@@ -122,10 +124,21 @@ internal sealed class CopilotToolSemantics
         return CanonicalToolKind.Unknown;
     }
 
-    public IReadOnlyList<string> TargetPaths(JsonElement data)
+    public IReadOnlyList<string> TargetPaths(
+        JsonElement data,
+        string? nativeToolName = null)
     {
         HashSet<string> paths = new(StringComparer.OrdinalIgnoreCase);
-        CollectPaths(data, null, paths, depth: 0);
+        bool extractPatchTargets = string.Equals(
+            nativeToolName,
+            "apply_patch",
+            StringComparison.OrdinalIgnoreCase);
+        CollectPaths(
+            data,
+            null,
+            paths,
+            extractPatchTargets,
+            depth: 0);
         return paths.Take(256).ToArray();
     }
 
@@ -207,6 +220,7 @@ internal sealed class CopilotToolSemantics
         JsonElement value,
         string? propertyName,
         ISet<string> paths,
+        bool extractPatchTargets,
         int depth)
     {
         if (depth > 8 || paths.Count >= 256)
@@ -223,6 +237,7 @@ internal sealed class CopilotToolSemantics
                         property.Value,
                         property.Name,
                         paths,
+                        extractPatchTargets,
                         depth + 1);
                 }
                 break;
@@ -230,7 +245,12 @@ internal sealed class CopilotToolSemantics
             case JsonValueKind.Array:
                 foreach (JsonElement item in value.EnumerateArray())
                 {
-                    CollectPaths(item, propertyName, paths, depth + 1);
+                    CollectPaths(
+                        item,
+                        propertyName,
+                        paths,
+                        extractPatchTargets,
+                        depth + 1);
                 }
                 break;
 
@@ -238,6 +258,18 @@ internal sealed class CopilotToolSemantics
             {
                 string? path = value.GetString();
                 if (!string.IsNullOrWhiteSpace(path))
+                {
+                    paths.Add(path);
+                }
+
+                break;
+            }
+
+            case JsonValueKind.String when
+                extractPatchTargets &&
+                IsPatchProperty(propertyName):
+            {
+                foreach (string path in _patchTargetPaths.Extract(value.GetString()))
                 {
                     paths.Add(path);
                 }
@@ -265,6 +297,15 @@ internal sealed class CopilotToolSemantics
             propertyName.Equals("cwd", StringComparison.OrdinalIgnoreCase) ||
             propertyName.EndsWith("FilePath", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsPatchProperty(string? propertyName) =>
+        propertyName is not null &&
+        (propertyName.Equals("arguments", StringComparison.OrdinalIgnoreCase) ||
+         propertyName.Equals("args", StringComparison.OrdinalIgnoreCase) ||
+         propertyName.Equals("toolArgs", StringComparison.OrdinalIgnoreCase) ||
+         propertyName.Equals("tool_input", StringComparison.OrdinalIgnoreCase) ||
+         propertyName.Equals("patch", StringComparison.OrdinalIgnoreCase) ||
+         propertyName.Equals("diff", StringComparison.OrdinalIgnoreCase));
 }
 
 internal sealed class CopilotUsageExtractor

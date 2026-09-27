@@ -10,6 +10,7 @@ internal static class NodeSummaryBuilder
     private const int BadgeToolLimit = 3;
     private static readonly UsageAggregator UsageAggregator = new();
     private static readonly UsageNameClassifier UsageNames = new();
+    private static readonly CommandTextExtractor CommandTexts = new();
 
     public static NodeSummary Build(
         IEnumerable<TreeNodeViewModel> nodes,
@@ -65,6 +66,13 @@ internal static class NodeSummaryBuilder
                 usageSamples,
                 skills,
                 slashCommands);
+            if (isSession)
+            {
+                AbsorbLifecycleBoundary(
+                    evidence.Observation,
+                    ref start,
+                    ref end);
+            }
         }
 
         if (isSession)
@@ -166,7 +174,7 @@ internal static class NodeSummaryBuilder
             Thoughts = thoughtRows,
             Skills = skillRows.Select(row => row.Name).ToArray(),
             SkillDetails = skillRows,
-            Commands = slashCommands.ToArray(),
+            Commands = BuildCommands(materialized, slashCommands),
             ReadFiles = ToFileRows(fileAccess.Reads),
             WrittenFiles = ToFileRows(fileAccess.Writes),
             DeletedFiles = ToFileRows(fileAccess.Deletes),
@@ -459,6 +467,24 @@ internal static class NodeSummaryBuilder
         foreach (string slashCommand in observation.SlashCommands)
         {
             slashCommands.Add(slashCommand);
+        }
+    }
+
+    private static void AbsorbLifecycleBoundary(
+        HookObservation observation,
+        ref DateTimeOffset? start,
+        ref DateTimeOffset? end)
+    {
+        if (observation.Interpretation.Role == ObservationRole.SessionStart &&
+            (start is null || observation.ObservedAtUtc < start))
+        {
+            start = observation.ObservedAtUtc;
+        }
+
+        if (observation.Interpretation.Role == ObservationRole.SessionEnd &&
+            (end is null || observation.ObservedAtUtc > end))
+        {
+            end = observation.ObservedAtUtc;
         }
     }
 
@@ -809,6 +835,48 @@ internal static class NodeSummaryBuilder
     private static IReadOnlyList<FileAccessRow> ToFileRows(IReadOnlyCollection<string> paths) =>
         paths.Select(static path => new FileAccessRow { FullPath = path }).ToArray();
 
+    private static IReadOnlyList<string> BuildCommands(
+        IEnumerable<TreeNodeViewModel> nodes,
+        IEnumerable<string> slashCommands)
+    {
+        List<string> commands = [];
+        HashSet<string> seen = new(StringComparer.Ordinal);
+
+        Visit(nodes);
+        foreach (string slashCommand in slashCommands)
+        {
+            Add(slashCommand);
+        }
+
+        return commands;
+
+        void Visit(IEnumerable<TreeNodeViewModel> current)
+        {
+            foreach (TreeNodeViewModel node in current)
+            {
+                if (node.Observation is HookObservation observation &&
+                    observation.Interpretation.Role ==
+                        ObservationRole.ToolRequest &&
+                    observation.ToolKind == CanonicalToolKind.Shell &&
+                    (!observation.IsTranscriptSourced ||
+                     !node.IsSecondaryToolNode))
+                {
+                    Add(CommandTexts.Extract(observation.Payload));
+                }
+
+                Visit(node.Children);
+            }
+        }
+
+        void Add(string? command)
+        {
+            if (!string.IsNullOrWhiteSpace(command) && seen.Add(command))
+            {
+                commands.Add(command);
+            }
+        }
+    }
+
     private static IReadOnlyList<KpiItem> BuildKpis(
         bool isSession,
         int turnCount,
@@ -973,6 +1041,7 @@ internal static class NodeSummaryBuilder
 
     private sealed class FileAccessAccumulator
     {
+        private readonly FileAccessPathNormalizer _pathNormalizer = new();
         private readonly SortedSet<string> _reads = new(StringComparer.OrdinalIgnoreCase);
         private readonly SortedSet<string> _writes = new(StringComparer.OrdinalIgnoreCase);
         private readonly SortedSet<string> _deletes = new(StringComparer.OrdinalIgnoreCase);
@@ -1000,7 +1069,10 @@ internal static class NodeSummaryBuilder
 
             foreach (string path in paths)
             {
-                target.Add(path);
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    target.Add(_pathNormalizer.Normalize(path));
+                }
             }
         }
     }

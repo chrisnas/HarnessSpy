@@ -669,6 +669,89 @@ public sealed class TranscriptPipelineTests
         }
     }
 
+    [Fact]
+    public async Task ClaudeSessionEndDrainsFinalCostStateBeforeBoundary()
+    {
+        string payloadsDir = TempDir();
+        string transcriptPath = Path.Combine(TempDir(), "claude.jsonl");
+        File.WriteAllText(transcriptPath, string.Empty);
+
+        TranscriptCaptureStore capture = new(payloadsDir);
+        TranscriptBindingJournal journal = new(capture);
+        TranscriptSessionRegistry registry = new();
+        List<ObservationChange> changes = [];
+        object gate = new();
+
+        await using ObservationIngestionCoordinator coordinator = new(
+            registry,
+            capture,
+            journal,
+            (change, _) =>
+            {
+                lock (gate)
+                {
+                    changes.Add(change);
+                }
+
+                return Task.CompletedTask;
+            },
+            enableTranscripts: true,
+            pollInterval: TimeSpan.FromHours(1));
+        using CancellationTokenSource cts = new();
+        coordinator.Start(cts.Token);
+
+        HookObservation start =
+            ClaudeHookWithTranscript("s1", transcriptPath);
+        await coordinator.IngestHookAsync(start, cts.Token);
+        await WaitUntil(() =>
+        {
+            lock (gate)
+            {
+                return changes.Any(change =>
+                    change.Observation.EventId == start.EventId);
+            }
+        });
+
+        File.AppendAllText(
+            transcriptPath,
+            """
+            {"type":"cost-state","sessionId":"s1","totalCostUSD":0.5,"totalDuration":1200,"modelUsage":{"claude-sonnet-5":{"inputTokens":100,"outputTokens":20,"cacheReadInputTokens":50,"cacheCreationInputTokens":10}}}
+            """ + Environment.NewLine);
+
+        HookObservation end =
+            ClaudeSessionEndWithTranscript("s1", transcriptPath);
+        await coordinator.IngestHookAsync(end, cts.Token);
+        await WaitUntil(() =>
+        {
+            lock (gate)
+            {
+                return changes.Any(change =>
+                    change.Observation.EventId == end.EventId);
+            }
+        });
+
+        lock (gate)
+        {
+            int costIndex = changes.FindIndex(change =>
+                change.Observation.HookEventName == "cost-state");
+            int endIndex = changes.FindIndex(change =>
+                change.Observation.EventId == end.EventId);
+            Assert.True(costIndex >= 0);
+            Assert.True(costIndex < endIndex);
+        }
+
+        IReadOnlyList<HookObservation> replayed =
+            new TranscriptReplayLoader().Load(payloadsDir);
+        HookObservation cost = Assert.Single(
+            replayed,
+            observation => observation.HookEventName == "cost-state");
+        Assert.Contains(
+            cost.Interpretation.UsageMeasurements,
+            measurement =>
+                measurement.Name == "claude-sonnet-5.outputTokens" &&
+                measurement.Value == 20);
+    }
+
     private static async Task WaitUntil(Func<bool> condition)
     {
         for (int attempt = 0; attempt < 100; attempt++)
@@ -760,6 +843,19 @@ public sealed class TranscriptPipelineTests
         string line = JsonSerializer.Serialize(envelope, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.True(HookObservation.TryParse(line, out HookObservation? observation));
         return observation!;
+    }
+
+    private static HookObservation ClaudeSessionEndWithTranscript(
+        string sessionId,
+        string transcriptPath)
+    {
+        string escaped = transcriptPath.Replace("\\", "\\\\");
+        return ClaudeHook(
+            "{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"" +
+            sessionId +
+            "\",\"cwd\":\"C:\\\\Repo\",\"transcript_path\":\"" +
+            escaped +
+            "\",\"reason\":\"prompt_input_exit\"}");
     }
 
     private static HookObservation CursorHookWithTranscript(string conversationId, string transcriptPath)

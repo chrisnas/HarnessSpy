@@ -19,6 +19,7 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
     private readonly CopilotToolSemantics _toolSemantics;
     private readonly CopilotExecutionSemantics _executionSemantics;
     private readonly CopilotUsageExtractor _usageExtractor;
+    private readonly CopilotTimestampParser _timestampParser = new();
     private readonly SystemPromptTextNormalizer _systemPromptNormalizer = new();
 
     public CopilotCliTranscriptDialectParser()
@@ -48,6 +49,20 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
 
         return type switch
         {
+            "session.start" => [SessionLifecycle(
+                line,
+                type,
+                data,
+                id,
+                parentId,
+                identity)],
+            "session.resume" => [SessionLifecycle(
+                line,
+                type,
+                data,
+                id,
+                parentId,
+                identity)],
             "system.message" => SystemMessage(line, data, id, parentId, identity),
             "assistant.message" => AssistantMessage(line, data, id, parentId, identity),
             "assistant.reasoning" => [AssistantReasoning(line, data, id, parentId, identity)],
@@ -64,8 +79,62 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
             "session.context_changed" or "session.context_change" or
             "session.permissions_changed" =>
                 [SessionMetadata(line, type, data, id, parentId, identity)],
+            _ when type.StartsWith("model.", StringComparison.Ordinal) =>
+                ModelEvent(line, type, data, id, parentId, identity),
             _ => []
         };
+    }
+
+    private HookObservation SessionLifecycle(
+        TranscriptLine line,
+        string nativeType,
+        JsonElement data,
+        string? id,
+        string? parentId,
+        RowIdentity identity)
+    {
+        string timestampName = nativeType == "session.resume"
+            ? "resumeTime"
+            : "startTime";
+        if (_json.TryGetProperty(
+                data,
+                out JsonElement timestamp,
+                timestampName) &&
+            _timestampParser.Parse(timestamp) is DateTimeOffset lifecycleTimestamp)
+        {
+            line = line with { ObservedAtUtc = lifecycleTimestamp };
+        }
+
+        var builder = new InterpretationBuilder(nativeType)
+        {
+            SessionId = line.NativeSessionId,
+            Role = ObservationRole.SessionStart,
+            EventKind = CanonicalEventKind.SessionStarted,
+            Status = nativeType == "session.resume" ? "resume" : "start",
+            Evidence = InferenceEvidence.Observed,
+            EnrichmentOnly = true,
+            MetadataOnly = true,
+            ExcludeFromSummary = true
+        };
+        builder.ScopeOverride = ObservationScope.SessionLifecycle;
+
+        JsonObject payload = CloneToObject(data);
+        JsonElement context = _json.Object(data, "context") ?? data;
+        string? workspaceRoot =
+            _json.String(context, "gitRoot", "git_root") ??
+            _json.String(context, "cwd", "workingDirectory");
+        if (workspaceRoot is not null)
+        {
+            payload["cwd"] = workspaceRoot;
+        }
+
+        return Emit(line, payload, builder.Build(), line.Provenance(
+            0,
+            TranscriptCompleteness.Complete,
+            id,
+            parentId,
+            identity.NativeTurnId,
+            identity.InteractionId));
     }
 
     private IReadOnlyList<HookObservation> SystemMessage(
@@ -153,11 +222,12 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
             _usageExtractor.ExtractForEvent("assistant.message", data, sourceRecordId);
         bool usageAssigned = false;
 
-        if (RuntimeJson.String(data, "reasoningOpaque") is not null ||
-            RuntimeJson.String(data, "encryptedContent") is not null)
+        string? reasoningText = RuntimeJson.String(data, "reasoningText");
+        if (reasoningText is not null)
         {
-            observations.Add(OpaqueReasoning(
+            observations.Add(ReadableReasoning(
                 line,
+                reasoningText,
                 index++,
                 id,
                 parentId,
@@ -167,12 +237,11 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
                 usage));
             usageAssigned = true;
         }
-
-        if (RuntimeJson.String(data, "reasoningText") is string reasoningText)
+        else if (RuntimeJson.String(data, "reasoningOpaque") is not null ||
+                 RuntimeJson.String(data, "encryptedContent") is not null)
         {
-            observations.Add(ReadableReasoning(
+            observations.Add(OpaqueReasoning(
                 line,
-                reasoningText,
                 index++,
                 id,
                 parentId,
@@ -366,7 +435,8 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         string toolName = RuntimeJson.String(request, "name") ?? "tool";
         string? toolCallId = RuntimeJson.String(request, "toolCallId");
         TranscriptMcpIdentity mcp = _toolSemantics.ReadMcpIdentity(request);
-        IReadOnlyList<string> targetPaths = _toolSemantics.TargetPaths(request);
+        IReadOnlyList<string> targetPaths =
+            _toolSemantics.TargetPaths(request, toolName);
         string? targetFilePath = targetPaths.FirstOrDefault();
 
         var builder = new InterpretationBuilder(toolName)
@@ -427,7 +497,8 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
             (aborted ? "aborted" : null);
         string? resultText = _executionSemantics.ReadResultText(data);
         double? duration = _executionSemantics.ReadDuration(data);
-        IReadOnlyList<string> targetPaths = _toolSemantics.TargetPaths(data);
+        IReadOnlyList<string> targetPaths =
+            _toolSemantics.TargetPaths(data, toolName);
 
         var builder = new InterpretationBuilder(nativeType)
         {
@@ -654,7 +725,12 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
         var builder = new InterpretationBuilder(nativeType)
         {
             SessionId = line.NativeSessionId,
-            Role = ObservationRole.Message,
+            Role = final
+                ? ObservationRole.SessionEnd
+                : ObservationRole.Message,
+            EventKind = final
+                ? CanonicalEventKind.SessionEnded
+                : CanonicalEventKind.ProviderSpecific,
             Model = RuntimeJson.String(data, "model", "selectedModel", "currentModel"),
             Status = _executionSemantics.ReadStatus(data),
             HeaderDetail = final ? "final usage" : "usage checkpoint",
@@ -664,6 +740,10 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
             MetadataOnly = true,
             ExcludeFromSummary = true
         };
+        if (final)
+        {
+            builder.ScopeOverride = ObservationScope.SessionLifecycle;
+        }
 
         return Emit(line, CloneToObject(data), builder.Build(), line.Provenance(
             0,
@@ -719,6 +799,85 @@ internal sealed class CopilotCliTranscriptDialectParser : TranscriptDialectParse
             parentId,
             identity.NativeTurnId,
             identity.InteractionId));
+    }
+
+    private IReadOnlyList<HookObservation> ModelEvent(
+        TranscriptLine line,
+        string nativeType,
+        JsonElement data,
+        string? id,
+        string? parentId,
+        RowIdentity identity)
+    {
+        if (line.TurnHint is null)
+        {
+            return [];
+        }
+
+        bool failure =
+            nativeType.Contains(
+                "failure",
+                StringComparison.OrdinalIgnoreCase) ||
+            nativeType.Contains(
+                "error",
+                StringComparison.OrdinalIgnoreCase);
+        string sourceRecordId =
+            id ?? $"{line.NormalizedPath}:{line.LineNumber}";
+        IReadOnlyList<UsageMeasurement> usage =
+            _usageExtractor.ExtractForEvent(
+                nativeType,
+                data,
+                sourceRecordId);
+        if (!failure && usage.Count == 0)
+        {
+            return [];
+        }
+
+        var builder = new InterpretationBuilder(nativeType)
+        {
+            SessionId = line.NativeSessionId,
+            TurnId = line.TurnHint,
+            SubagentId = identity.AgentId,
+            Role = failure
+                ? ObservationRole.RuntimeError
+                : ObservationRole.Message,
+            EventKind = failure
+                ? CanonicalEventKind.RuntimeError
+                : CanonicalEventKind.ProviderSpecific,
+            Tone = failure
+                ? ObservationTone.Failure
+                : ObservationTone.Normal,
+            AssistantText = RuntimeJson.String(
+                data,
+                "content",
+                "text",
+                "message"),
+            Model = RuntimeJson.String(data, "model"),
+            Status = RuntimeJson.String(data, "kind", "status"),
+            CountsAsFailure = failure,
+            UsageMeasurements = usage,
+            Evidence = InferenceEvidence.Observed,
+            EnrichmentOnly = true,
+            MetadataOnly = !failure,
+            ExcludeFromSummary = true
+        };
+
+        JsonObject payload = CloneToObject(data);
+        if (_executionSemantics.ReadDuration(data) is double durationMs)
+        {
+            payload["duration_ms"] = durationMs;
+        }
+
+        return
+        [
+            Emit(line, payload, builder.Build(), line.Provenance(
+                0,
+                TranscriptCompleteness.Complete,
+                id,
+                parentId,
+                identity.NativeTurnId,
+                identity.InteractionId))
+        ];
     }
 
     private static string? Identifier(JsonElement element, params string[] names)

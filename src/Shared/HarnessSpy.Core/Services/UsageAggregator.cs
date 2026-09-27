@@ -30,6 +30,10 @@ public sealed class UsageAggregator
                     .Where(sample => !IsModelMetric(sample.Measurement.Name))
                     .ToArray();
             }
+            else
+            {
+                sessionSamples = RemoveMirroredAgentModelMetrics(sessionSamples);
+            }
 
             return AggregateBuckets(sessionSamples);
         }
@@ -123,6 +127,7 @@ public sealed class UsageAggregator
         UsageSample? final = bucket
             .Where(sample => sample.Measurement.Behavior == UsageBehavior.FinalSnapshot)
             .OrderBy(sample => sample.Timestamp)
+            .ThenBy(sample => SnapshotPreference(sample.Measurement.Name))
             .LastOrDefault();
         if (final is not null)
         {
@@ -146,6 +151,21 @@ public sealed class UsageAggregator
 
     private static string MetricIdentity(string name)
     {
+        string family = MetricFamily(name);
+        string[] parts = name.Split(
+            '.',
+            StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries);
+        if (!IsModelMetric(name))
+        {
+            return family;
+        }
+
+        return $"{ModelMetricOwner(parts)}:{family}";
+    }
+
+    private static string MetricFamily(string name)
+    {
         string[] parts = name.Split(
             '.',
             StringSplitOptions.RemoveEmptyEntries |
@@ -167,17 +187,7 @@ public sealed class UsageAggregator
                 "thinkingtoken" or "thinkingtokens" => "reasoningtokens",
             _ => family
         };
-
-        if (!IsModelMetric(name))
-        {
-            return family;
-        }
-
-        string model = parts.Length >= 2 &&
-            parts[0].Equals("modelMetrics", StringComparison.OrdinalIgnoreCase)
-                ? $"{parts[0]}.{parts[1]}"
-                : parts[0];
-        return $"{model}:{family}";
+        return family;
     }
 
     private static bool IsModelMetric(string name)
@@ -191,10 +201,116 @@ public sealed class UsageAggregator
             return false;
         }
 
-        return parts[0].Equals("modelMetrics", StringComparison.OrdinalIgnoreCase) ||
+        return parts.Any(static part =>
+                   part.Equals(
+                       "modelMetrics",
+                       StringComparison.OrdinalIgnoreCase)) ||
             parts[0].Equals("agentMetrics", StringComparison.OrdinalIgnoreCase) ||
             (!parts[0].Equals("usage", StringComparison.OrdinalIgnoreCase) &&
              !parts[0].Equals("tokenDetails", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string ModelMetricOwner(IReadOnlyList<string> parts)
+    {
+        for (int index = 0; index + 1 < parts.Count; index++)
+        {
+            if (parts[index].Equals(
+                    "modelMetrics",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (index >= 2 &&
+                    parts[0].Equals(
+                        "agentMetrics",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return $"agent:{parts[1]}:model:{parts[index + 1]}";
+                }
+
+                return $"model:{parts[index + 1]}";
+            }
+        }
+
+        if (parts.Count >= 2 &&
+            parts[0].Equals(
+                "agentMetrics",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return $"agent:{parts[1]}";
+        }
+
+        return $"model:{parts[0]}";
+    }
+
+    private static UsageSample[] RemoveMirroredAgentModelMetrics(
+        IReadOnlyList<UsageSample> samples)
+    {
+        HashSet<string> topLevelMetrics = samples
+            .Select(static sample => sample.Measurement.Name)
+            .Where(static name => name.StartsWith(
+                "modelMetrics.",
+                StringComparison.OrdinalIgnoreCase))
+            .Select(MirroredModelMetricIdentity)
+            .Where(static identity => identity is not null)
+            .Cast<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (topLevelMetrics.Count == 0)
+        {
+            return samples.ToArray();
+        }
+
+        return samples
+            .Where(sample =>
+            {
+                string name = sample.Measurement.Name;
+                if (!name.StartsWith(
+                        "agentMetrics.",
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !name.Contains(
+                        ".modelMetrics.",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                string? identity = MirroredModelMetricIdentity(name);
+                return identity is null || !topLevelMetrics.Contains(identity);
+            })
+            .ToArray();
+    }
+
+    private static string? MirroredModelMetricIdentity(string name)
+    {
+        string[] parts = name.Split(
+            '.',
+            StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries);
+        for (int index = 0; index + 1 < parts.Length; index++)
+        {
+            if (parts[index].Equals(
+                    "modelMetrics",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{parts[index + 1]}:{MetricFamily(name)}";
+            }
+        }
+
+        return null;
+    }
+
+    private static int SnapshotPreference(string name)
+    {
+        if (name.StartsWith(
+                "modelMetrics.",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return 2;
+        }
+
+        return name.Contains(
+            ".modelMetrics.",
+            StringComparison.OrdinalIgnoreCase)
+                ? 1
+                : 0;
     }
 
     private sealed record UsageMetricKey(string Name, string Unit);

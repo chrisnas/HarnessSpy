@@ -91,15 +91,14 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
                 WriteManifest(discovered);
             }
 
-            if (hook.Provider == HookProvider.GitHubCopilot &&
-                hook.Surface == HookSurface.CopilotCli &&
-                hook.Interpretation.Role is
-                    ObservationRole.TurnStop or ObservationRole.SessionEnd)
+            if (ShouldDrainBeforeBoundary(hook))
             {
-                // The path is normally already registered after the first
-                // turn. Pull its final complete rows before the stop clears
-                // fallback signature candidates; the next 200 ms poll would be
-                // too late and could detach the final tool lifecycle.
+                // The path is normally already registered. Pull final complete
+                // rows before a session boundary is projected; Claude writes
+                // its authoritative cost-state immediately before SessionEnd.
+                // Copilot additionally needs this at TurnStop before fallback
+                // signature candidates are cleared. The next poll is too late
+                // for either boundary.
                 foreach (TranscriptFileBinding binding in _registry.ActiveFiles()
                     .Where(binding =>
                         binding.ScopedSessionId == hook.ProviderScopedSessionId))
@@ -116,6 +115,12 @@ public sealed class ObservationIngestionCoordinator : IAsyncDisposable
             await _onChange(change, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private static bool ShouldDrainBeforeBoundary(HookObservation hook) =>
+        hook.Interpretation.Role == ObservationRole.SessionEnd ||
+        (hook.Provider == HookProvider.GitHubCopilot &&
+         hook.Surface == HookSurface.CopilotCli &&
+         hook.Interpretation.Role == ObservationRole.TurnStop);
 
     private async Task ProcessTranscriptLineAsync(
         TranscriptFileBinding binding,

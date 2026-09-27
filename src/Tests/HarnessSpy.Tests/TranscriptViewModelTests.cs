@@ -477,6 +477,63 @@ public sealed class TranscriptViewModelTests
     }
 
     [Fact]
+    public void ClaudeTranscriptParallelBatchCountsEachToolOnce()
+    {
+        ObservationReconciler reconciler = new();
+        MainWindowViewModel viewModel = new();
+        ITranscriptDialectParser parser =
+            TranscriptDialectParserRegistry.Resolve(DialectIds.ClaudeTranscript);
+        TranscriptLine transcriptLine = new(
+            """
+            {"type":"assistant","promptId":"p1","uuid":"step-1","sessionId":"s1","message":{"id":"message-1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"dotnet test A"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"dotnet test B"}}]}}
+            """,
+            "C:/t.jsonl",
+            0,
+            1,
+            1,
+            TranscriptFileRole.Main,
+            HookProvider.ClaudeCode,
+            HookSurface.ClaudeCode,
+            DialectIds.ClaudeTranscript,
+            $"{HookProvider.ClaudeCode}:{HookSurface.ClaudeCode}:s1",
+            "s1");
+        foreach (HookObservation transcriptTool in parser.Parse(transcriptLine))
+        {
+            Apply(viewModel, reconciler, transcriptTool);
+        }
+
+        Apply(viewModel, reconciler, ClaudeHook(
+            """{"hook_event_name":"PreToolUse","session_id":"s1","prompt_id":"p1","cwd":"C:\\Repo","tool_name":"Bash","tool_input":{"command":"dotnet test A"},"tool_use_id":"t1"}"""));
+        Apply(viewModel, reconciler, ClaudeHook(
+            """{"hook_event_name":"PreToolUse","session_id":"s1","prompt_id":"p1","cwd":"C:\\Repo","tool_name":"Bash","tool_input":{"command":"dotnet test B"},"tool_use_id":"t2"}"""));
+        Apply(viewModel, reconciler, ClaudeHook(
+            """{"hook_event_name":"PostToolUse","session_id":"s1","prompt_id":"p1","cwd":"C:\\Repo","tool_name":"Bash","tool_input":{"command":"dotnet test A"},"tool_use_id":"t1","duration_ms":20}"""));
+        Apply(viewModel, reconciler, ClaudeHook(
+            """{"hook_event_name":"PostToolUse","session_id":"s1","prompt_id":"p1","cwd":"C:\\Repo","tool_name":"Bash","tool_input":{"command":"dotnet test B"},"tool_use_id":"t2","duration_ms":20}"""));
+        Apply(viewModel, reconciler, ClaudeHook(
+            """{"hook_event_name":"PostToolBatch","session_id":"s1","prompt_id":"p1","cwd":"C:\\Repo","tool_calls":[{"tool_name":"Bash","tool_use_id":"t1"},{"tool_name":"Bash","tool_use_id":"t2"}]}"""));
+
+        TreeNodeViewModel turn = OnlyTurn(viewModel);
+        Assert.Equal(2, turn.NodeSummary!.ToolCallCount);
+        Assert.Equal(40, Assert.Single(turn.NodeSummary.Tools).DurationMs);
+        Assert.DoesNotContain(
+            turn.Children,
+            node => node.Kind == TreeNodeKind.ParallelWave);
+
+        TreeNodeViewModel batch = Assert.Single(
+            turn.Children,
+            node => node.Observation?.Interpretation.Role ==
+                ObservationRole.ToolBatch);
+        Assert.Equal(2, batch.Children.Count);
+        Assert.Equal(
+            2,
+            Descendants(turn).Count(node =>
+                node.Observation?.Interpretation.Role ==
+                    ObservationRole.ToolRequest &&
+                node.Observation.IsTranscriptSourced == false));
+    }
+
+    [Fact]
     public void CopilotTranscriptFragmentJoinsItsDerivedHookTurn()
     {
         ObservationReconciler reconciler = new();
