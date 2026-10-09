@@ -98,7 +98,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 b.Direction = ObservationDirection.Input;
                 b.OpensToolCall = true;
                 ApplyMcp(b, _mcp.ClassifyFlatName(sessionId, toolName));
-                b.HeaderDetail = ToolDetail(toolName, targetFilePath);
+                b.HeaderDetail = ToolUseDetail(payload, toolName, targetFilePath);
                 b.Fields(S("toolName"), J("toolArgs"));
                 break;
 
@@ -110,7 +110,7 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
                 // its request by tool name and canonical toolArgs.
                 b.MatchStrategy = ToolCallMatchStrategy.ToolSignature;
                 ApplyMcp(b, _mcp.ClassifyFlatName(sessionId, toolName));
-                b.HeaderDetail = ToolDetail(toolName, targetFilePath);
+                b.HeaderDetail = ToolUseDetail(payload, toolName, targetFilePath);
                 b.Fields(S("toolName"), J("toolArgs"), J("toolResult"));
                 break;
 
@@ -359,6 +359,23 @@ internal sealed class CopilotCliRuntimeEngine : HarnessRuntimeEngineBase
         return string.IsNullOrEmpty(targetFilePath)
             ? toolName
             : $"{toolName} \u00b7 {targetFilePath}";
+    }
+
+    private static string? ToolUseDetail(
+        JsonElement payload,
+        string? toolName,
+        string? targetFilePath)
+    {
+        string? detail = ToolDetail(toolName, targetFilePath);
+        if (ToolKind(toolName) != CanonicalToolKind.Shell)
+        {
+            return detail;
+        }
+
+        string? command =
+            RuntimeJson.ToolInputString(payload, "toolArgs", "command", "cmd", "script") ??
+            RuntimeJson.ToolInputString(payload, "tool_input", "command", "cmd", "script");
+        return JoinNonEmpty(detail, command);
     }
 
     private static string? Preview(string? text)
