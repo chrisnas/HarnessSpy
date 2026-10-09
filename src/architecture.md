@@ -99,14 +99,16 @@ chronological order.
 
 ## Profiles
 
+- Cursor registers 21 native events generated from `CursorHookCatalog`.
 - Claude Safe (28 events) and Full (32 events) are generated from
   `ClaudeHookCatalog`; neither registers `WorktreeCreate`. Full adds
   `MessageDisplay`, `FileChanged`, `Elicitation`, `ElicitationResult`.
 - Copilot CLI v1 registers 14 events; VS Code Local has its own eight-event
   catalog.
-- Generators (`ClaudeSettingsGenerator`, `CopilotSettingsGenerator`, exposed via
-  each hook's `--generate-settings` mode) stamp the real executable path so the
-  repository ships only a placeholder.
+- Generators (`CursorSettingsGenerator`, `ClaudeSettingsGenerator`,
+  `CopilotSettingsGenerator`, exposed via each hook's `--generate-settings`
+  mode) stamp the real executable path so the repository ships only a
+  placeholder.
 
 ## Privacy and transport
 

@@ -3,127 +3,127 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook sessionStart",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook sessionStart",
         "timeout": 5
       }
     ],
     "sessionEnd": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook sessionEnd",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook sessionEnd",
         "timeout": 5
       }
     ],
     "beforeSubmitPrompt": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeSubmitPrompt",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook beforeSubmitPrompt",
         "timeout": 5
       }
     ],
     "afterAgentThought": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterAgentThought",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook afterAgentThought",
         "timeout": 5
       }
     ],
     "afterAgentResponse": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterAgentResponse",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook afterAgentResponse",
         "timeout": 5
       }
     ],
     "preToolUse": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook preToolUse",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook preToolUse",
         "timeout": 5
       }
     ],
     "postToolUse": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook postToolUse",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook postToolUse",
         "timeout": 5
       }
     ],
     "postToolUseFailure": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook postToolUseFailure",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook postToolUseFailure",
         "timeout": 5
       }
     ],
     "beforeShellExecution": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeShellExecution",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook beforeShellExecution",
         "timeout": 5
       }
     ],
     "afterShellExecution": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterShellExecution",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook afterShellExecution",
         "timeout": 5
       }
     ],
     "beforeMCPExecution": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeMCPExecution",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook beforeMCPExecution",
         "timeout": 5
       }
     ],
     "afterMCPExecution": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterMCPExecution",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook afterMCPExecution",
         "timeout": 5
       }
     ],
     "beforeReadFile": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeReadFile",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook beforeReadFile",
         "timeout": 5
       }
     ],
     "afterFileEdit": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterFileEdit",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook afterFileEdit",
         "timeout": 5
       }
     ],
     "subagentStart": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook subagentStart",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook subagentStart",
         "timeout": 5
       }
     ],
     "subagentStop": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook subagentStop",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook subagentStop",
         "timeout": 5
       }
     ],
     "preCompact": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook preCompact",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook preCompact",
         "timeout": 5
       }
     ],
     "stop": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook stop",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook stop",
         "timeout": 5
       }
     ],
     "workspaceOpen": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook workspaceOpen",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook workspaceOpen",
         "timeout": 5
       }
     ],
     "beforeTabFileRead": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook beforeTabFileRead",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook beforeTabFileRead",
         "timeout": 5
       }
     ],
     "afterTabFileEdit": [
       {
-        "command": "C:\\dev\\research\\AI\\HarnessSpy\\src\\Hooks\\CursorSpy.Hook\\bin\\Debug\\net10.0\\CursorSpy.Hook.exe --hook afterTabFileEdit",
+        "command": "<CURSORSPY_HOOK_EXECUTABLE> --hook afterTabFileEdit",
         "timeout": 5
       }
     ]

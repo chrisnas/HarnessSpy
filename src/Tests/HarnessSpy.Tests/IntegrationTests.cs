@@ -3,12 +3,67 @@ using System.Text;
 using System.Text.Json;
 using HarnessSpy.Core.Hooks;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Runtimes.Cursor;
 using HarnessSpy.Core.Services;
 
 namespace HarnessSpy.Tests;
 
 public sealed class IntegrationTests
 {
+    [Theory]
+    [InlineData(
+        "--generate-settings",
+        @"C:\Program Files\HarnessSpy\CursorSpy.Hook.exe")]
+    [InlineData("--generateSettings", null)]
+    public async Task CursorHookProcessGeneratesSettings(
+        string generationArgument,
+        string? executablePath)
+    {
+        string outputPath = Path.Combine(
+            Path.GetTempPath(),
+            "CursorSpy.Settings." + Guid.NewGuid().ToString("N") + ".json");
+
+        try
+        {
+            ProcessStartInfo startInfo = new(HookExecutable("CursorSpy.Hook"))
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add(generationArgument);
+            startInfo.ArgumentList.Add(outputPath);
+            if (executablePath is not null)
+            {
+                startInfo.ArgumentList.Add(executablePath);
+            }
+
+            using Process process = Process.Start(startInfo)!;
+            string stdout = await process.StandardOutput.ReadToEndAsync();
+            string stderr = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            Assert.Equal(0, process.ExitCode);
+            Assert.Equal(string.Empty, stdout);
+            Assert.Contains($"Wrote Cursor profile to {outputPath}.", stderr);
+
+            string json = await File.ReadAllTextAsync(outputPath);
+            string expectedExecutablePath =
+                executablePath ?? CursorSettingsGenerator.ExecutablePlaceholder;
+            Assert.Equal(
+                CursorHookCatalog.NativeEvents,
+                CursorSettingsGenerator.ReadRegisteredEvents(json));
+            Assert.Equal(
+                CursorSettingsGenerator.Generate(expectedExecutablePath),
+                json);
+        }
+        finally
+        {
+            File.Delete(outputPath);
+        }
+    }
+
     [Theory]
     [InlineData("CursorSpy.Hook", "{}", null, "--event", "sessionStart")]
     [InlineData("ClaudeSpy.Hook", "", "CLAUDE_CODE_CHILD_SESSION", "--event", "SessionStart")]

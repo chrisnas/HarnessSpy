@@ -100,7 +100,12 @@ Merge `Config\Cursor\hooks.example.json` into either:
 - project: `.cursor\hooks.json`
 - user: `%USERPROFILE%\.cursor\hooks.json`
 
-All 21 native Cursor events are included.
+All 21 native Cursor events are generated from `CursorHookCatalog`. Regenerate
+the file and stamp your real executable path with:
+
+```powershell
+CursorSpy.Hook.exe --generate-settings <out> <CursorSpy.Hook.exe>
+```
 
 ### Claude Code
 

@@ -4,12 +4,50 @@ using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Runtimes;
 using HarnessSpy.Core.Runtimes.Claude;
 using HarnessSpy.Core.Runtimes.Copilot;
+using HarnessSpy.Core.Runtimes.Cursor;
 using HarnessSpy.Wpf.ViewModels;
 
 namespace HarnessSpy.Tests;
 
 public sealed class RuntimeArchitectureTests
 {
+    [Fact]
+    public void CommittedCursorExampleMatchesNativeCatalog()
+    {
+        string cursor = File.ReadAllText(ConfigPath("Cursor", "hooks.example.json"));
+
+        Assert.Equal(21, CursorHookCatalog.NativeEvents.Count);
+        Assert.Equal(
+            CursorHookCatalog.NativeEvents.OrderBy(x => x, StringComparer.Ordinal),
+            CursorSettingsGenerator.ReadRegisteredEvents(cursor)
+                .OrderBy(x => x, StringComparer.Ordinal));
+        Assert.Contains(
+            CursorSettingsGenerator.ExecutablePlaceholder,
+            cursor,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("C:\\dev\\research", cursor, StringComparison.Ordinal);
+        Assert.Equal(
+            CursorSettingsGenerator.Generate(CursorSettingsGenerator.ExecutablePlaceholder)
+                .ReplaceLineEndings("\n"),
+            cursor.ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void GenerateCursorSettingsQuotesExecutablePathContainingWhitespace()
+    {
+        const string executablePath = @"C:\Program Files\HarnessSpy\CursorSpy.Hook.exe";
+        string json = CursorSettingsGenerator.Generate(executablePath);
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        string? command = document.RootElement
+            .GetProperty("hooks")
+            .GetProperty("sessionStart")[0]
+            .GetProperty("command")
+            .GetString();
+
+        Assert.Equal($"\"{executablePath}\" --hook sessionStart", command);
+    }
+
     [Fact]
     public void ClaudeCatalogCoversDocumentedAndModelSwitchEvents()
     {
