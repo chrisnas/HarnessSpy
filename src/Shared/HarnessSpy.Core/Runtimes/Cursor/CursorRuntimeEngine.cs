@@ -375,6 +375,19 @@ internal sealed class CursorRuntimeEngine : HarnessRuntimeEngineBase
                 head = JoinNonEmpty(head, filePath);
             }
         }
+        else if (ToolKind(toolName) == CanonicalToolKind.Shell)
+        {
+            string? command = RuntimeJson.ToolInputString(
+                payload,
+                "tool_input",
+                "command",
+                "cmd",
+                "script");
+            if (!string.IsNullOrEmpty(command))
+            {
+                head = JoinNonEmpty(head, command);
+            }
+        }
 
         return head;
     }

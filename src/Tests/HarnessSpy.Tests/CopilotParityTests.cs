@@ -47,6 +47,24 @@ public sealed class CopilotParityTests
     }
 
     [Fact]
+    public void CliPowershellToolUseHeadersIncludeCommand()
+    {
+        HookObservation pre = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":5,"cwd":"C:\\Repo","toolName":"powershell","toolArgs":{"command":"dotnet test"}}""",
+            "preToolUse");
+        HookObservation post = ParseEnvelope(
+            HookProvider.GitHubCopilot,
+            HookSurface.CopilotCli,
+            """{"sessionId":"c1","timestamp":6,"cwd":"C:\\Repo","toolName":"powershell","toolArgs":"{\"command\":\"git status\"}"}""",
+            "postToolUse");
+
+        Assert.Equal("preToolUse · powershell · dotnet test", pre.OccurrenceHeader);
+        Assert.Equal("postToolUse · powershell · git status", post.OccurrenceHeader);
+    }
+
+    [Fact]
     public void CliSubagentsCorrelateHeuristicallyByName()
     {
         MainWindowViewModel viewModel = new();

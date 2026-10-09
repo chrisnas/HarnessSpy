@@ -402,6 +402,14 @@ public sealed class ProjectionTests
             ParsePayload("""{"hook_event_name":"postToolUse","tool_name":"Shell","model":"gpt-5"}""").OccurrenceHeader);
 
         Assert.Equal(
+            "preToolUse · Shell (gpt-5) · dotnet test",
+            ParsePayload("""{"hook_event_name":"preToolUse","tool_name":"Shell","model":"gpt-5","tool_input":{"command":"dotnet test"}}""").OccurrenceHeader);
+
+        Assert.Equal(
+            "postToolUse · PowerShell · git status",
+            ParsePayload("""{"hook_event_name":"postToolUse","tool_name":"PowerShell","tool_input":"{\"command\":\"git status\"}"}""").OccurrenceHeader);
+
+        Assert.Equal(
             "stop · completed · in 1.18M · out 8.15k · cache r 1.01M · cache w 173.96k",
             ParsePayload("""{"hook_event_name":"stop","status":"completed","input_tokens":1180993,"output_tokens":8146,"cache_read_tokens":1007022,"cache_write_tokens":173957}""").OccurrenceHeader);
 

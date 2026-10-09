@@ -9,6 +9,20 @@ namespace HarnessSpy.Tests;
 public sealed class ClaudeParityTests
 {
     [Fact]
+    public void ShellToolUseHeadersIncludeCommand()
+    {
+        HookObservation pre = Claude(
+            """{"hook_event_name":"PreToolUse","session_id":"s1","prompt_id":"p1","cwd":"C:\\Repo","tool_name":"Bash","tool_input":{"command":"dotnet test"},"tool_use_id":"t1"}""",
+            "2026-08-20T12:00:01Z");
+        HookObservation post = Claude(
+            """{"hook_event_name":"PostToolUse","session_id":"s1","prompt_id":"p1","cwd":"C:\\Repo","tool_name":"Bash","tool_input":"{\"command\":\"git status\"}","tool_use_id":"t1"}""",
+            "2026-08-20T12:00:02Z");
+
+        Assert.Equal("PreToolUse · Bash · dotnet test", pre.OccurrenceHeader);
+        Assert.Equal("PostToolUse · Bash · git status", post.OccurrenceHeader);
+    }
+
+    [Fact]
     public void PostToolUseNestsUnderPreToolUseByToolUseId()
     {
         MainWindowViewModel viewModel = new();

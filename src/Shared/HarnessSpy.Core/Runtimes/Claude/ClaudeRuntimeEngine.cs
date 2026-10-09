@@ -117,7 +117,7 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
                 b.Direction = ObservationDirection.Input;
                 b.OpensToolCall = true;
                 b.ToolCallId = RuntimeJson.String(payload, "tool_use_id");
-                b.HeaderDetail = ToolDetail(toolName, targetFilePath);
+                b.HeaderDetail = ToolUseDetail(payload, toolName, targetFilePath);
                 if (mcpServer is not null)
                 {
                     b.Tone = ObservationTone.Mcp;
@@ -141,7 +141,7 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
                 b.Direction = ObservationDirection.Output;
                 b.MatchStrategy = ToolCallMatchStrategy.ToolCallId;
                 b.ToolCallId = RuntimeJson.String(payload, "tool_use_id");
-                b.HeaderDetail = ToolDetail(toolName, targetFilePath);
+                b.HeaderDetail = ToolUseDetail(payload, toolName, targetFilePath);
                 if (mcpServer is not null)
                 {
                     b.Tone = ObservationTone.Mcp;
@@ -491,6 +491,26 @@ internal sealed class ClaudeRuntimeEngine : HarnessRuntimeEngineBase
         return string.IsNullOrEmpty(targetFilePath)
             ? toolName
             : $"{toolName} \u00b7 {targetFilePath}";
+    }
+
+    private static string? ToolUseDetail(
+        JsonElement payload,
+        string? toolName,
+        string? targetFilePath)
+    {
+        string? detail = ToolDetail(toolName, targetFilePath);
+        if (ToolKind(toolName) != CanonicalToolKind.Shell)
+        {
+            return detail;
+        }
+
+        string? command = RuntimeJson.ToolInputString(
+            payload,
+            "tool_input",
+            "command",
+            "cmd",
+            "script");
+        return JoinNonEmpty(detail, command);
     }
 
     private static string? BatchDetail(JsonElement payload)
