@@ -11,12 +11,18 @@ internal sealed class ClaudeTranscriptRow
         string rawContent,
         int lineNumber,
         long byteOffset,
+        int byteLength,
+        DateTimeOffset sourceLastWriteTimeUtc,
+        long sourceLength,
         JsonElement json)
     {
         Path = path;
         RawContent = rawContent;
         LineNumber = lineNumber;
         ByteOffset = byteOffset;
+        ByteLength = byteLength;
+        SourceLastWriteTimeUtc = sourceLastWriteTimeUtc;
+        SourceLength = sourceLength;
         Json = json;
     }
 
@@ -27,6 +33,12 @@ internal sealed class ClaudeTranscriptRow
     public int LineNumber { get; }
 
     public long ByteOffset { get; }
+
+    public int ByteLength { get; }
+
+    public DateTimeOffset SourceLastWriteTimeUtc { get; }
+
+    public long SourceLength { get; }
 
     public JsonElement Json { get; }
 }
@@ -106,6 +118,10 @@ internal sealed class ClaudeTranscriptFileReader
 
         long maximumFileBytes = Math.Max(0, _limits.MaximumFileBytes);
         long bytesToRead = Math.Min(file.Length, maximumFileBytes);
+        DateTimeOffset sourceLastWriteTimeUtc = new(
+            DateTime.SpecifyKind(
+                file.LastWriteTimeUtc,
+                DateTimeKind.Utc));
         if (file.Length > maximumFileBytes)
         {
             isComplete = false;
@@ -185,6 +201,8 @@ internal sealed class ClaudeTranscriptFileReader
                         lineTooLong,
                         lineNumber,
                         lineOffset,
+                        sourceLastWriteTimeUtc,
+                        file.Length,
                         maximumRecords,
                         rows,
                         warnings,
@@ -230,6 +248,8 @@ internal sealed class ClaudeTranscriptFileReader
                     lineTooLong,
                     lineNumber,
                     lineOffset,
+                    sourceLastWriteTimeUtc,
+                    file.Length,
                     maximumRecords,
                     rows,
                     warnings,
@@ -278,6 +298,8 @@ internal sealed class ClaudeTranscriptFileReader
         bool lineTooLong,
         int lineNumber,
         long lineOffset,
+        DateTimeOffset sourceLastWriteTimeUtc,
+        long sourceLength,
         int maximumRecords,
         List<ClaudeTranscriptRow> rows,
         List<string> warnings,
@@ -340,6 +362,9 @@ internal sealed class ClaudeTranscriptFileReader
                     raw,
                     lineNumber,
                     lineOffset,
+                    bytes.Length,
+                    sourceLastWriteTimeUtc,
+                    sourceLength,
                     document.RootElement.Clone()));
             }
         }

@@ -1,7 +1,6 @@
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Sessions;
 using HarnessSpy.Core.Sessions.Opening;
-using HarnessSpy.Core.Sessions.Process;
 using HarnessSpy.Core.Services;
 
 namespace HarnessSpy.Tests;
@@ -35,97 +34,28 @@ public sealed class SessionCatalogModelTests
     }
 
     [Fact]
-    public void ProcessCorrelatorRequiresPositiveSessionEvidence()
+    public async Task CoordinatorPreservesProviderLifecycleState()
     {
-        SessionCatalogEntry first = Session(
-            "claude:first",
-            "first",
-            HookProvider.ClaudeCode,
-            WorkspaceContext.FromRoot(@"C:\repo"),
-            "first",
-            []);
-        SessionCatalogEntry second = Session(
-            "claude:second",
-            "second",
-            HookProvider.ClaudeCode,
-            WorkspaceContext.FromRoot(@"C:\repo"),
-            "second",
-            []);
-        RunningSessionHint hint = new(
-            HookProvider.ClaudeCode,
-            42,
-            "claude.exe",
-            NativeSessionId: "second");
-
-        IReadOnlyList<SessionCatalogEntry> correlated =
-            new ProcessSessionCorrelator().Apply([first, second], [hint]);
-
-        Assert.Equal(SessionLifecycleState.Closed, correlated[0].LifecycleState);
-        Assert.Equal(SessionLifecycleState.Open, correlated[1].LifecycleState);
-        Assert.Equal(InferenceEvidence.Observed, correlated[1].LifecycleEvidence);
-    }
-
-    [Fact]
-    public void ProcessCorrelatorDoesNotUseAmbiguousWorkspace()
-    {
-        WorkspaceContext workspace = WorkspaceContext.FromRoot(@"C:\repo");
-        SessionCatalogEntry first = Session(
-            "copilot:first",
-            "first",
+        SessionCatalogEntry session = Session(
+            "copilot:active",
+            "active",
             HookProvider.GitHubCopilot,
-            workspace,
-            "first",
-            []);
-        SessionCatalogEntry second = Session(
-            "copilot:second",
-            "second",
-            HookProvider.GitHubCopilot,
-            workspace,
-            "second",
-            []);
-        RunningSessionHint hint = new(
-            HookProvider.GitHubCopilot,
-            42,
-            "copilot.exe",
-            WorkingDirectory: @"C:\repo",
-            Evidence: InferenceEvidence.Heuristic);
-
-        IReadOnlyList<SessionCatalogEntry> correlated =
-            new ProcessSessionCorrelator().Apply([first, second], [hint]);
-
-        Assert.All(
-            correlated,
-            session => Assert.Equal(SessionLifecycleState.Closed, session.LifecycleState));
-    }
-
-    [Fact]
-    public void SelectedCursorComposerRequiresCursorDesktopProcess()
-    {
-        SessionCatalogEntry selected = Session(
-            "cursor:selected",
-            "selected",
-            HookProvider.Cursor,
             WorkspaceContext.FromRoot(@"C:\repo"),
-            "selected",
+            "active",
             []) with
         {
-            IsSelectedInHarness = true
+            LifecycleState = SessionLifecycleState.Open,
+            LifecycleEvidence = InferenceEvidence.Observed
         };
-        RunningSessionHint unrelatedAgent = new(
-            HookProvider.Cursor,
-            42,
-            "agent.exe");
-        ProcessSessionCorrelator correlator = new();
+        await using SessionCatalogCoordinator coordinator = new(
+            [new FakeCatalogSource("copilot", [session])]);
 
-        SessionCatalogEntry closed = Assert.Single(
-            correlator.Apply([selected], [unrelatedAgent]));
-        SessionCatalogEntry open = Assert.Single(
-            correlator.Apply(
-                [selected],
-                [new RunningSessionHint(HookProvider.Cursor, 43, "Cursor.exe")]));
+        SessionCatalogUpdatedEventArgs result =
+            await coordinator.RefreshAsync();
 
-        Assert.Equal(SessionLifecycleState.Closed, closed.LifecycleState);
-        Assert.Equal(SessionLifecycleState.Open, open.LifecycleState);
+        SessionCatalogEntry actual = Assert.Single(result.Sessions);
+        Assert.Equal(SessionLifecycleState.Open, actual.LifecycleState);
+        Assert.Equal(InferenceEvidence.Observed, actual.LifecycleEvidence);
     }
 
     [Fact]
@@ -162,8 +92,7 @@ public sealed class SessionCatalogModelTests
         FakeCatalogSource sourceOne = new("one", [first]);
         FakeCatalogSource sourceTwo = new("two", [second]);
         await using SessionCatalogCoordinator coordinator = new(
-            [sourceOne, sourceTwo],
-            probes: []);
+            [sourceOne, sourceTwo]);
         SessionCatalogUpdatedEventArgs? notification = null;
         coordinator.Updated += (_, value) => notification = value;
 
@@ -186,8 +115,7 @@ public sealed class SessionCatalogModelTests
             []);
         MutableCatalogSource source = new([session]);
         await using SessionCatalogCoordinator coordinator = new(
-            [source],
-            probes: []);
+            [source]);
 
         SessionCatalogUpdatedEventArgs first =
             await coordinator.RefreshAsync();
@@ -203,58 +131,82 @@ public sealed class SessionCatalogModelTests
     }
 
     [Fact]
-    public async Task FileNotificationsDoNotCancelRunningRefresh()
+    public async Task ProviderFileChangesDoNotTriggerRefresh()
     {
-        string firstRoot = Path.Combine(
+        string root = Path.Combine(
             Path.GetTempPath(),
             "HarnessSpy.Tests",
-            Guid.NewGuid().ToString("N"),
-            "first");
-        string secondRoot = Path.Combine(
-            Path.GetDirectoryName(firstRoot)!,
-            "second");
-        Directory.CreateDirectory(firstRoot);
-        Directory.CreateDirectory(secondRoot);
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
 
-        BlockingCatalogSource first = new(firstRoot);
-        CountingCatalogSource second = new(secondRoot);
-        SessionCatalogCoordinator coordinator = new(
-            [first, second],
-            probes: [],
-            recoveryInterval: TimeSpan.FromHours(1));
+        CountingCatalogSource source = new(
+            root,
+            HookProvider.Cursor);
+        await using SessionCatalogCoordinator coordinator = new(
+            [source]);
         try
         {
             await coordinator.RefreshAsync();
-            coordinator.StartWatching();
-
             await System.IO.File.WriteAllTextAsync(
-                Path.Combine(firstRoot, "first.jsonl"),
+                Path.Combine(root, "session.jsonl"),
                 "{}");
-            await first.SecondScanStarted.Task.WaitAsync(
-                TimeSpan.FromSeconds(10));
+            await Task.Delay(TimeSpan.FromMilliseconds(750));
 
-            await System.IO.File.WriteAllTextAsync(
-                Path.Combine(firstRoot, "second.jsonl"),
-                "{}");
-            await Task.Delay(TimeSpan.FromSeconds(1));
-
-            Assert.False(first.SecondScanWasCancelled);
-            Assert.Equal(1, second.ScanCount);
-
-            first.ReleaseSecondScan();
-            await WaitUntilAsync(
-                () => first.ScanCount >= 3,
-                TimeSpan.FromSeconds(10));
-
-            Assert.False(first.SecondScanWasCancelled);
-            Assert.Equal(1, second.ScanCount);
+            Assert.Equal(1, source.ScanCount);
+            await coordinator.RefreshAsync();
+            Assert.Equal(2, source.ScanCount);
+            await coordinator.RefreshAsync();
+            Assert.Equal(2, source.ScanCount);
+            await coordinator.RefreshAsync(
+                new SessionRefreshRequest(
+                    SessionRefreshTrigger.RefreshButton,
+                    Mode: SessionRefreshMode.ForceFull));
+            Assert.Equal(3, source.ScanCount);
         }
         finally
         {
-            first.ReleaseSecondScan();
-            await coordinator.DisposeAsync();
-            Directory.Delete(Path.GetDirectoryName(firstRoot)!, recursive: true);
+            Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task CoordinatorScansOnlyExplicitEnabledProviders()
+    {
+        CountingCatalogSource cursor = new(
+            "cursor",
+            HookProvider.Cursor);
+        CountingCatalogSource claude = new(
+            "claude",
+            HookProvider.ClaudeCode);
+        await using SessionCatalogCoordinator coordinator = new(
+            [cursor, claude],
+            enabledProviders: [HookProvider.Cursor]);
+
+        await coordinator.RefreshAsync(
+            new SessionRefreshRequest(
+                SessionRefreshTrigger.Startup));
+
+        Assert.Equal(1, cursor.ScanCount);
+        Assert.Equal(0, claude.ScanCount);
+
+        coordinator.SetEnabledProviders(
+            [HookProvider.Cursor, HookProvider.ClaudeCode]);
+        await coordinator.RefreshAsync(
+            new SessionRefreshRequest(
+                SessionRefreshTrigger.HarnessSelection,
+                new HashSet<HookProvider> { HookProvider.ClaudeCode }));
+
+        Assert.Equal(1, cursor.ScanCount);
+        Assert.Equal(1, claude.ScanCount);
+
+        coordinator.SetEnabledProviders([HookProvider.ClaudeCode]);
+        await coordinator.RefreshAsync(
+            new SessionRefreshRequest(
+                SessionRefreshTrigger.RefreshButton,
+                Mode: SessionRefreshMode.ForceFull));
+
+        Assert.Equal(1, cursor.ScanCount);
+        Assert.Equal(2, claude.ScanCount);
     }
 
     [Fact]
@@ -354,14 +306,16 @@ public sealed class SessionCatalogModelTests
                 new SessionCatalogScanResult(Sessions, true, []));
     }
 
-    private sealed class CountingCatalogSource(string root)
+    private sealed class CountingCatalogSource(
+        string root,
+        HookProvider provider)
         : ISessionCatalogSource
     {
         private int _scanCount;
 
         public string Name => "counting";
 
-        public HookProvider Provider => HookProvider.ClaudeCode;
+        public HookProvider Provider => provider;
 
         public IReadOnlyList<string> WatchRoots => [root];
 
@@ -375,61 +329,4 @@ public sealed class SessionCatalogModelTests
         }
     }
 
-    private sealed class BlockingCatalogSource(string root)
-        : ISessionCatalogSource
-    {
-        private readonly TaskCompletionSource<bool> _secondScanStarted =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource<bool> _releaseSecondScan =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int _scanCount;
-        private int _secondScanWasCancelled;
-
-        public string Name => "blocking";
-
-        public HookProvider Provider => HookProvider.Cursor;
-
-        public IReadOnlyList<string> WatchRoots => [root];
-
-        public int ScanCount => Volatile.Read(ref _scanCount);
-
-        public TaskCompletionSource<bool> SecondScanStarted =>
-            _secondScanStarted;
-
-        public bool SecondScanWasCancelled =>
-            Volatile.Read(ref _secondScanWasCancelled) != 0;
-
-        public async Task<SessionCatalogScanResult> ScanAsync(
-            CancellationToken cancellationToken)
-        {
-            int scan = Interlocked.Increment(ref _scanCount);
-            if (scan != 2)
-            {
-                return SessionCatalogScanResult.Empty;
-            }
-
-            using CancellationTokenRegistration registration =
-                cancellationToken.Register(
-                    () => Interlocked.Exchange(
-                        ref _secondScanWasCancelled,
-                        1));
-            _secondScanStarted.TrySetResult(true);
-            await _releaseSecondScan.Task.WaitAsync(cancellationToken);
-            return SessionCatalogScanResult.Empty;
-        }
-
-        public void ReleaseSecondScan() =>
-            _releaseSecondScan.TrySetResult(true);
-    }
-
-    private static async Task WaitUntilAsync(
-        Func<bool> predicate,
-        TimeSpan timeout)
-    {
-        using CancellationTokenSource cancellation = new(timeout);
-        while (!predicate())
-        {
-            await Task.Delay(50, cancellation.Token);
-        }
-    }
 }

@@ -22,8 +22,7 @@ SessionViewer reconstructs one Claude catalog entry from:
 - recoverable orphaned/superseded main JSONL;
 - recursively discovered subagent JSONL;
 - subagent `.meta.json` relationship metadata;
-- plan artifacts from `plans\*.md` plus plan activity found in transcripts;
-- optional current-process evidence.
+- plan artifacts from `plans\*.md` plus plan activity found in transcripts.
 
 ```mermaid
 flowchart LR
@@ -42,10 +41,8 @@ flowchart LR
     AgentLog --> Accumulator
     AgentMeta --> Accumulator
     Plans --> PlanFragment["plan artifacts"]
-    Process["claude process + claude agents --json"] --> Correlator["ProcessSessionCorrelator"]
     Accumulator --> Entry["SessionCatalogEntry"]
-    Entry --> Correlator
-    Correlator --> PlanAssembler["SessionPlanCatalogAssembler"]
+    Entry --> PlanAssembler["SessionPlanCatalogAssembler"]
     PlanFragment --> PlanAssembler
     PlanAssembler --> Tree["workspace / session / plan / turn / event tree"]
 ```
@@ -70,7 +67,6 @@ expands Windows environment variables and supports `~`, `~/...`, and `~\...`.
 | Subagent transcript | `projects\<encoded-project>\<session-id>\subagents\...\*.jsonl` | Child-agent content, IDs, turns, tools, usage |
 | Subagent metadata | `projects\<encoded-project>\<session-id>\subagents\...\*.meta.json` | Agent metadata and parent `toolUseId` provenance |
 | Plan artifact | `plans\*.md` | Current plan body plus binding/revision activity extracted from transcripts |
-| Live agents | `claude agents --json` and process command lines | Session ID, transcript path, CWD, PID, positive open-state evidence |
 
 SessionViewer does **not** currently read `.claude\history.jsonl`,
 `stats-cache.json`, file history, tasks, debug logs, or Agent SDK session APIs.
@@ -407,16 +403,10 @@ not sum every propagated cumulative row.
 
 ## Final open/closed state and opening
 
-Claude catalog builders start sessions as `Closed`. Before publishing each
-catalog update, SessionViewer combines:
-
-- command-line hints from `claude` processes;
-- `claude agents --json` (three-second timeout);
-- exact session ID or transcript-path matches;
-- a unique same-workspace/CWD match as a heuristic.
-
-Exact `claude agents --json` IDs are `Observed`; unique workspace correlation
-is `Heuristic`. File recency does not mark a session open.
+Claude catalog builders publish sessions conservatively as `Closed`.
+SessionViewer does not enumerate Claude processes, inspect process command
+lines, or invoke `claude agents --json`. File recency does not mark a session
+open.
 
 **Open Session** uses the VS Code URI
 `vscode://anthropic.claude-code/open?session=<id>` when `entrypoint` metadata
@@ -526,8 +516,6 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Runtimes/SystemPromptTextNormalizer.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionCatalogCoordinator.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionViewerSettingsService.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Process/ClaudeRunningSessionProbe.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Process/ProcessSessionCorrelator.cs`
 - `src/Shared/HarnessSpy.Wpf/SessionViewerApplicationHost.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionCatalogViewModel.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`

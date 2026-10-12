@@ -1,10 +1,12 @@
 using System.Text.Json;
+using HarnessSpy.Core.Text;
 
 namespace HarnessSpy.Wpf.ViewModels;
 
 internal sealed class CommandTextExtractor
 {
     private const int MaximumLength = 120;
+    private readonly BoundedTextPreviewBuilder _previewBuilder = new();
 
     public string? Extract(JsonElement payload)
     {
@@ -48,7 +50,7 @@ internal sealed class CommandTextExtractor
         }
     }
 
-    private static string? ExtractArguments(JsonElement arguments)
+    private string? ExtractArguments(JsonElement arguments)
     {
         if (arguments.ValueKind == JsonValueKind.Object)
         {
@@ -69,16 +71,6 @@ internal sealed class CommandTextExtractor
             : Preview(arguments.GetRawText());
     }
 
-    private static string? Preview(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        string oneLine = value.ReplaceLineEndings(" ").Trim();
-        return oneLine.Length <= MaximumLength
-            ? oneLine
-            : oneLine[..MaximumLength].TrimEnd() + "\u2026";
-    }
+    private string? Preview(string? value) =>
+        _previewBuilder.BuildOrNull(value, MaximumLength);
 }

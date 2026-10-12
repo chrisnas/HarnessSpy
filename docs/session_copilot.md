@@ -17,8 +17,8 @@ hook/transcript enrichment pipeline documented in
 
 One catalog entry is reconstructed from an `events.jsonl` stream plus optional
 `workspace.yaml` and colocated `plan.md`. Current directory layout takes
-precedence over the legacy flat file. Process command lines can enrich the
-final open/closed state.
+precedence over the legacy flat file. Open/closed state comes only from native
+session lifecycle records.
 
 ```mermaid
 flowchart LR
@@ -34,10 +34,8 @@ flowchart LR
     Plan --> Reader
     Legacy --> Reader
     Reader --> Projector["CopilotSessionProjector"]
-    Process["copilot / matching node process"] --> Correlator["ProcessSessionCorrelator"]
     Projector --> Entry["SessionCatalogEntry"]
-    Entry --> Correlator
-    Correlator --> Tree["workspace / session / turn / event tree"]
+    Entry --> Tree["workspace / session / turn / event tree"]
 ```
 
 ## Configuration root and source locations
@@ -398,17 +396,10 @@ new lifecycle segment.
 - without lifecycle records, the source currently emits `Open` with `Derived`
   evidence when the log has records (`Unavailable` only for an empty log).
 
-The shared coordinator then applies process correlation when the probe batch
-contains at least one hint. An exact Copilot session/transcript match becomes
-`Open`; a unique workspace/CWD match can become `Open` with `Heuristic`
-evidence; unmatched sessions are forced to `Closed`, even when their event log
-ends with `session.start` or `session.resume`.
-
-Current implementation caveat: when **all** process probes return zero hints,
-the correlator is not invoked and the event-tail lifecycle remains visible.
-Therefore a log ending in `session.start` can appear open without current
-process evidence. This differs from the otherwise conservative process-based
-policy and should not be treated as proof that a terminal is still alive.
+SessionViewer does not enumerate Copilot processes or inspect process command
+lines. Therefore a log ending in `session.start` or `session.resume` can appear
+open without proof that a terminal is still alive; the state means only that no
+later shutdown record was observed.
 
 **Open Session** checks `client_name`:
 
@@ -518,8 +509,6 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotSessionInfrastructure.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionCatalogCoordinator.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionViewerSettingsService.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Process/CommandLineSessionProbe.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Process/ProcessSessionCorrelator.cs`
 - `src/Shared/HarnessSpy.Wpf/SessionViewerApplicationHost.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionCatalogViewModel.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`

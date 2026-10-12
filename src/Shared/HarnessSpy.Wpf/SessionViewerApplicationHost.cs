@@ -5,7 +5,6 @@ using HarnessSpy.Core.Sessions.Claude;
 using HarnessSpy.Core.Sessions.Copilot;
 using HarnessSpy.Core.Sessions.Cursor;
 using HarnessSpy.Core.Sessions.Opening;
-using HarnessSpy.Core.Sessions.Process;
 using HarnessSpy.Wpf.ViewModels;
 using HarnessSpy.Wpf.Views;
 
@@ -29,16 +28,33 @@ public sealed class SessionViewerApplicationHost : IAsyncDisposable
 
         SessionViewerSettingsService settingsService = new();
         SessionViewerSettings settings = settingsService.Load();
-
-        // Session Viewer favors completeness over speed: the discovery guard
-        // limits are relaxed so full folder scans are never truncated and no
-        // "time/size limit reached" advisories surface. The per-value byte
-        // guard is kept to avoid loading pathologically large database blobs.
         SessionDiscoveryContext discoveryContext = new(
-            limits: new SessionDiscoveryLimits(
-                MaximumDirectories: int.MaxValue,
-                MaximumFiles: int.MaxValue,
-                MaximumDuration: Timeout.InfiniteTimeSpan));
+            limits: DiscoveryLimits(settings.CatalogProfile));
+        SessionViewerPreferencesViewModel preferences = new(
+            settings,
+            value =>
+            {
+                settings.KeepDisabledProviderCache =
+                    value.KeepDisabledProviderCache;
+                settings.CatalogProfile = value.CatalogProfile;
+                settings.RawSourceMode = value.RawSourceMode;
+                settings.RawPreviewBytes = value.RawPreviewBytes;
+                settings.IncludeRawSourceInSearch =
+                    value.IncludeRawSourceInSearch;
+                settings.ExpandWorkspacesOnStartup =
+                    value.ExpandWorkspacesOnStartup;
+                discoveryContext.UpdateLimits(
+                    DiscoveryLimits(value.CatalogProfile));
+                settingsService.Save(settings);
+            });
+        SessionRawSourceResolver rawSourceResolver = new(
+            new SessionRawSnapshotCache(),
+            () => preferences.RawSourceMode ==
+                SessionRawSourceMode.SnapshotCache);
+
+        // Both profiles remain finite. Balanced bounds initial hydration while
+        // retaining catalog headers; Complete raises the limits explicitly
+        // without returning to unbounded directory/time scans.
         IReadOnlyList<ISessionCatalogSource> sources =
         [
             new CursorSessionCatalogSource(discoveryContext),
@@ -46,20 +62,18 @@ public sealed class SessionViewerApplicationHost : IAsyncDisposable
             new CopilotCliSessionCatalogSource(discoveryContext)
         ];
 
-        TimeSpan recoveryInterval = TimeSpan.FromSeconds(
-            Math.Clamp(settings.RecoveryRescanSeconds, 5, 3600));
-        RunningSessionProbeFactory probeFactory = new();
-
         _coordinator = new SessionCatalogCoordinator(
             sources,
-            probeFactory.CreateDefault(),
-            recoveryInterval: recoveryInterval);
+            enabledProviders: settings.EnabledHarnesses,
+            compactor: new SessionCatalogCompactor(
+                () => preferences.CatalogProfile));
         ProviderSessionOpener sessionOpener = new();
         _viewModel = new SessionCatalogViewModel(
             _coordinator,
             sessionOpener,
-            settings.WatchEnabled,
             application.Dispatcher,
+            preferences: preferences,
+            rawSourceResolver: rawSourceResolver,
             initialFavorites: settings.Favorites,
             persistFavorites: favorites =>
             {
@@ -95,4 +109,28 @@ public sealed class SessionViewerApplicationHost : IAsyncDisposable
             await _coordinator.DisposeAsync().ConfigureAwait(false);
         }
     }
+
+    private SessionDiscoveryLimits DiscoveryLimits(
+        SessionCatalogProfile profile) =>
+        profile == SessionCatalogProfile.Complete
+            ? new SessionDiscoveryLimits(
+                MaximumDirectories: 100_000,
+                MaximumFiles: 250_000,
+                MaximumRecordsPerSession: 250_000,
+                MaximumLineBytes: 16 * 1024 * 1024,
+                MaximumFileBytes: 2L * 1024 * 1024 * 1024,
+                MaximumDuration: TimeSpan.FromMinutes(5),
+                MaximumHydratedSessions: int.MaxValue,
+                MaximumConcurrentHydrations: 4,
+                MaximumHydrationBytes: 256L * 1024 * 1024)
+            : new SessionDiscoveryLimits(
+                MaximumDirectories: 10_000,
+                MaximumFiles: 25_000,
+                MaximumRecordsPerSession: 100_000,
+                MaximumLineBytes: 4 * 1024 * 1024,
+                MaximumFileBytes: 512L * 1024 * 1024,
+                MaximumDuration: TimeSpan.FromSeconds(30),
+                MaximumHydratedSessions: 500,
+                MaximumConcurrentHydrations: 4,
+                MaximumHydrationBytes: 128L * 1024 * 1024);
 }

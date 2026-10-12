@@ -18,7 +18,8 @@ public enum SessionTreeNodeKind
     SystemPromptGroup,
     SystemPrompt,
     OrphanPlansRoot,
-    PlanGroup
+    PlanGroup,
+    Placeholder
 }
 
 public sealed record SessionDetailRow(string Name, string Value);
@@ -31,6 +32,7 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
 
     private bool _isExpanded;
     private bool _isSelected;
+    private bool _areChildrenLoaded = true;
 
     public SessionTreeNodeViewModel(
         string stableId,
@@ -165,6 +167,7 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         Plan = other.Plan;
         PlanActivity = other.PlanActivity;
         LinkedPlanNodeId = other.LinkedPlanNodeId;
+        AreChildrenLoaded = other.AreChildrenLoaded;
 
         if (!Details.SequenceEqual(other.Details))
         {
@@ -355,6 +358,30 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
 
     public bool IsPlanGroup => Kind == SessionTreeNodeKind.PlanGroup;
 
+    public bool IsPlaceholder => Kind == SessionTreeNodeKind.Placeholder;
+
+    public bool AreChildrenLoaded
+    {
+        get => _areChildrenLoaded;
+        private set => SetProperty(ref _areChildrenLoaded, value);
+    }
+
+    public void SetChildrenLoaded(bool value) =>
+        AreChildrenLoaded = value;
+
+    public void SetNodeSummary(NodeSummary? summary)
+    {
+        if (SummariesEqual(NodeSummary, summary))
+        {
+            return;
+        }
+
+        NodeSummary = summary;
+        OnPropertyChanged(nameof(NodeSummary));
+        OnPropertyChanged(nameof(HasNodeSummary));
+        OnPropertyChanged(nameof(HasDashboardHover));
+    }
+
     public bool HasHoverText => !string.IsNullOrWhiteSpace(HoverText);
 
     public bool HasRawSource => !string.IsNullOrWhiteSpace(RawSource);
@@ -450,7 +477,10 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         _ => "Unknown harness"
     };
 
-    public bool Matches(string query)
+    public bool Matches(string query) =>
+        Matches(query, includeRawSource: true);
+
+    public bool Matches(string query, bool includeRawSource)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -461,13 +491,14 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
             Contains(Summary, query) ||
             Contains(HoverText, query) ||
             Contains(ReadableContent, query) ||
-            Contains(RawSource, query))
+            includeRawSource && Contains(RawSource, query))
         {
             return true;
         }
 
         if (Plan is SessionPlanArtifact plan &&
             (Contains(plan.Title, query) ||
+                includeRawSource &&
                 Contains(plan.CurrentMarkdown, query) ||
                 Contains(plan.PrimaryPath, query)))
         {

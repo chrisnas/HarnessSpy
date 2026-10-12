@@ -181,7 +181,14 @@ internal sealed class CopilotWorkspaceReader
             SessionSourceKind.CopilotWorkspaceYaml,
             file.FullName,
             "yaml",
-            rawContent);
+            RawSource: new SessionRawSourceReference(
+                SessionRawSourceKind.File,
+                file.FullName,
+                SourceLastWriteTimeUtc: new DateTimeOffset(
+                    DateTime.SpecifyKind(
+                        file.LastWriteTimeUtc,
+                        DateTimeKind.Utc)),
+                SourceLength: snapshotLength));
         SessionFileBinding binding = new(
             file.FullName,
             SessionSourceKind.CopilotWorkspaceYaml,

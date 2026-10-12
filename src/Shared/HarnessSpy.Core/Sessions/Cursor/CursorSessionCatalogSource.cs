@@ -151,6 +151,7 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
             .Concat(planResult.Warnings)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        progress?.Report(visible);
 
         return new SessionCatalogScanResult(
             visible,
@@ -202,10 +203,11 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
             TimeSpan.FromMilliseconds(120);
 
         private readonly Channel<SessionCatalogEntry> _pending =
-            Channel.CreateUnbounded<SessionCatalogEntry>(
-                new UnboundedChannelOptions
+            Channel.CreateBounded<SessionCatalogEntry>(
+                new BoundedChannelOptions(1024)
                 {
-                    SingleReader = true
+                    SingleReader = true,
+                    FullMode = BoundedChannelFullMode.DropOldest
                 });
         private readonly Dictionary<string, SessionCatalogEntry> _sessions =
             new(StringComparer.OrdinalIgnoreCase);

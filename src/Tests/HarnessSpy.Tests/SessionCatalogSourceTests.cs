@@ -9,6 +9,7 @@ using Microsoft.Data.Sqlite;
 
 namespace HarnessSpy.Tests;
 
+[Collection("Session catalog source integration")]
 public sealed class SessionCatalogSourceTests
 {
     [Fact]
@@ -40,6 +41,7 @@ public sealed class SessionCatalogSourceTests
                 CancellationToken.None);
 
             SessionCatalogEntry session = Assert.Single(result.Sessions);
+            AssertUsesLazyRawSources(session);
             SessionTurn turn = Assert.Single(session.Turns);
             Assert.Equal(HookProvider.Cursor, session.Provider);
             Assert.Equal("inspect the project", turn.Prompt);
@@ -87,6 +89,7 @@ public sealed class SessionCatalogSourceTests
                 CancellationToken.None);
 
             SessionCatalogEntry session = Assert.Single(result.Sessions);
+            AssertUsesLazyRawSources(session);
             Assert.Equal("Desktop session", session.Title);
             SessionTurn turn = Assert.Single(session.Turns);
             Assert.Equal("inspect desktop", turn.Prompt);
@@ -240,6 +243,7 @@ public sealed class SessionCatalogSourceTests
                 CancellationToken.None);
 
             SessionCatalogEntry session = Assert.Single(result.Sessions);
+            AssertUsesLazyRawSources(session);
             SessionTurn turn = Assert.Single(session.Turns);
             Assert.Equal(HookProvider.ClaudeCode, session.Provider);
             Assert.Equal("run the tests", turn.Prompt);
@@ -397,6 +401,7 @@ public sealed class SessionCatalogSourceTests
                 CancellationToken.None);
 
             SessionCatalogEntry session = Assert.Single(result.Sessions);
+            AssertUsesLazyRawSources(session);
             SessionTurn turn = Assert.Single(session.Turns);
             Assert.Equal(HookProvider.GitHubCopilot, session.Provider);
             Assert.Equal("inspect two files", turn.Prompt);
@@ -494,6 +499,29 @@ public sealed class SessionCatalogSourceTests
     private static string Fixture(params string[] parts) =>
         Path.Combine(
             [AppContext.BaseDirectory, "Fixtures", "SessionViewer", .. parts]);
+
+    private static void AssertUsesLazyRawSources(
+        SessionCatalogEntry session)
+    {
+        SessionSourceProvenance[] sources =
+        [
+            .. session.Sources,
+            .. session.SessionEvents.Select(
+                static item => item.Provenance),
+            .. session.Turns
+                .SelectMany(static turn => turn.Events)
+                .Select(static item => item.Provenance),
+            .. session.Turns
+                .SelectMany(static turn => turn.Events)
+                .SelectMany(static item => item.SupplementalProvenance)
+        ];
+        Assert.NotEmpty(sources);
+        Assert.All(sources, static source =>
+        {
+            Assert.Null(source.RawContent);
+            Assert.NotNull(source.RawSource);
+        });
+    }
 
     private static string CreateTempDirectory()
     {
@@ -597,3 +625,8 @@ public sealed class SessionCatalogSourceTests
         public void Report(T value) => Values.Add(value);
     }
 }
+
+[CollectionDefinition(
+    "Session catalog source integration",
+    DisableParallelization = true)]
+public sealed class SessionCatalogSourceIntegrationCollection;

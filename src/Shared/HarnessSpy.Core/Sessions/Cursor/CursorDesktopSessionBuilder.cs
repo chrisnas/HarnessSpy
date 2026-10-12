@@ -107,6 +107,8 @@ internal sealed class CursorDesktopSessionBuilder
     public bool IsBackgroundChild =>
         _relationship is not null && !_relationship.IsSideChat;
 
+    public bool IsSelected => _selected;
+
     // A composer is worth showing when it has any turns (from its own messages
     // or attached children) or its header advertises conversation messages.
     // Empty shells with none of these are hidden as noise.

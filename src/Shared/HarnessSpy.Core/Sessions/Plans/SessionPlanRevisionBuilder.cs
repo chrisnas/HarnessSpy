@@ -89,7 +89,7 @@ public sealed class SessionPlanRevisionBuilder
                     ? SessionPlanActivityKind.Created
                     : SessionPlanActivityKind.Updated,
                 NormalizedContentHash = observation.Hash,
-                Content = observation.Content,
+                Content = null,
                 CapturedAtUtc = observation.TimestampUtc,
                 Order = observation.Order,
                 CatalogSessionId = observation.CatalogSessionId,

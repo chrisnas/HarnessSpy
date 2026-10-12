@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Runtimes;
+using HarnessSpy.Core.Text;
 
 namespace HarnessSpy.Core.Sessions.Copilot;
 
@@ -251,6 +252,7 @@ internal sealed class CopilotSessionProjector
     private readonly CopilotUsageExtractor _usageExtractor;
     private readonly CopilotMetadataValueFormatter _metadataFormatter;
     private readonly SystemPromptTextNormalizer _systemPromptNormalizer = new();
+    private readonly BoundedTextPreviewBuilder _previewBuilder = new();
     private readonly Dictionary<string, CopilotTurnBuilder> _turns =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _interactionTurns =
@@ -345,30 +347,41 @@ internal sealed class CopilotSessionProjector
 
     public bool IsComplete { get; private set; } = true;
 
+    private SessionRawSourceReference RawLine(
+        long byteOffset,
+        int byteLength) =>
+        new(
+            SessionRawSourceKind.JsonLine,
+            _eventsBinding.Path,
+            byteOffset,
+            byteLength,
+            SourceLastWriteTimeUtc: _eventsBinding.LastWriteTimeUtc,
+            SourceLength: _eventsBinding.Length);
+
     public void AddUnparsedSource(
-        string rawContent,
         int lineNumber,
-        long byteOffset)
+        long byteOffset,
+        int byteLength)
     {
         _sources.Add(new SessionSourceProvenance(
             SessionSourceKind.CopilotEventsJsonl,
             _eventsBinding.Path,
             "jsonl",
-            rawContent,
-            lineNumber,
-            byteOffset,
-            ContractVersion: _contractVersion));
+            LineNumber: lineNumber,
+            ByteOffset: byteOffset,
+            ContractVersion: _contractVersion,
+            RawSource: RawLine(byteOffset, byteLength)));
     }
 
     public void Accept(
         JsonElement root,
-        string rawContent,
         int lineNumber,
-        long byteOffset)
+        long byteOffset,
+        int byteLength)
     {
         if (root.ValueKind != JsonValueKind.Object)
         {
-            AddUnparsedSource(rawContent, lineNumber, byteOffset);
+            AddUnparsedSource(lineNumber, byteOffset, byteLength);
             AddWarning(
                 $"Line {lineNumber} in Copilot event log '{_eventsBinding.Path}' " +
                 "is not a JSON object.");
@@ -412,17 +425,17 @@ internal sealed class CopilotSessionProjector
             SessionSourceKind.CopilotEventsJsonl,
             _eventsBinding.Path,
             "jsonl",
-            rawContent,
-            lineNumber,
-            byteOffset,
-            nativeRecordId,
-            parentId,
+            LineNumber: lineNumber,
+            ByteOffset: byteOffset,
+            RecordId: nativeRecordId,
+            ParentRecordId: parentId,
             ContractVersion: _contractVersion,
             NativeTurnId: ReadTurnId(data),
             InteractionId: _json.String(
                 data,
                 "interactionId",
-                "interaction_id"));
+                "interaction_id"),
+            RawSource: RawLine(byteOffset, byteLength));
         _sources.Add(provenance);
 
         CopilotEnvelopeContext context = new()
@@ -2193,19 +2206,8 @@ internal sealed class CopilotSessionProjector
         }
     }
 
-    private static string? PreviewTitle(string? prompt)
-    {
-        if (string.IsNullOrWhiteSpace(prompt))
-        {
-            return null;
-        }
-
-        string oneLine = prompt.ReplaceLineEndings(" ").Trim();
-        const int maximumLength = 120;
-        return oneLine.Length <= maximumLength
-            ? oneLine
-            : oneLine[..maximumLength].TrimEnd() + "\u2026";
-    }
+    private string? PreviewTitle(string? prompt) =>
+        _previewBuilder.BuildOrNull(prompt, 120);
 
     private static DateTimeOffset? Minimum(
         DateTimeOffset? first,

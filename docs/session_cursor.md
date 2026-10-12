@@ -59,8 +59,7 @@ flowchart LR
     TranscriptSource --> CursorSource["CursorSessionCatalogSource"]
     DesktopSource --> CursorSource
     PlanSource --> CursorSource
-    CursorSource --> Coordinator["SessionCatalogCoordinator<br/>cross-provider merge + process correlation"]
-    ProcessProbe["Cursor process probe"] --> Coordinator
+    CursorSource --> Coordinator["SessionCatalogCoordinator<br/>cross-provider merge"]
     Coordinator --> PlanAssembler["SessionPlanCatalogAssembler"]
     Coordinator --> Catalog["SessionCatalogEntry[]"]
     PlanAssembler --> Catalog
@@ -318,7 +317,6 @@ Important provider metadata keys are:
 | `cursor.parentComposerId`, `cursor.subagentType`, `cursor.sideChatSeedTurnCount` | Direct relationship evidence |
 | `cursor.child.<id>.*`, `cursor.backgroundChildCount` | Background children folded into this session |
 | `cursor.sideChat.<id>.*`, `cursor.sideChatSkippedInheritedTurns` | Side-chat relationship and deduplication results |
-| `process_id`, `process_name` | Process hint that established open state |
 
 Empty Desktop “new chat” shells with no conversation headers or turns are
 discarded. A transcript-only orphan with actual events is retained.
@@ -479,8 +477,9 @@ created them.
 - Duplicate native IDs that cannot be corroborated by workspace stay separate.
 - SQLite values larger than 16 MiB are intentionally skipped even though the
   database itself may be larger.
-- Process command lines often omit Desktop conversation IDs. Open state is
-  therefore conservative except for selected-Composer corroboration.
+- SessionViewer does not enumerate Cursor processes or inspect their command
+  lines. Cursor sessions are therefore shown conservatively as closed; Desktop
+  selection remains catalog metadata rather than proof of a live session.
 - Focused `CursorParityReconciliationTests` use synthetic dual-source turns.
   There is not yet one end-to-end fixture in which the same captured
   conversation is read from both transcript JSONL and Desktop SQLite.
@@ -521,7 +520,6 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Services/SessionCatalogCoordinator.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionViewerSettingsService.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/SessionCatalogMerger.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Process/ProcessSessionCorrelator.cs`
 - `src/Shared/HarnessSpy.Wpf/SessionViewerApplicationHost.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionCatalogViewModel.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`

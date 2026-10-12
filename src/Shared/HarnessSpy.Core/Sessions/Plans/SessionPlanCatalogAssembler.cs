@@ -150,8 +150,12 @@ public sealed class SessionPlanCatalogAssembler
         SessionPlanArtifact first,
         SessionPlanArtifact second)
     {
-        bool firstHasContent = !string.IsNullOrEmpty(first.CurrentMarkdown);
-        bool secondHasContent = !string.IsNullOrEmpty(second.CurrentMarkdown);
+        bool firstHasContent =
+            !string.IsNullOrEmpty(first.CurrentMarkdown) ||
+            !string.IsNullOrEmpty(first.CurrentContentHash);
+        bool secondHasContent =
+            !string.IsNullOrEmpty(second.CurrentMarkdown) ||
+            !string.IsNullOrEmpty(second.CurrentContentHash);
         if (firstHasContent != secondHasContent)
         {
             return firstHasContent ? first : second;
@@ -364,12 +368,39 @@ public sealed class SessionPlanCatalogAssembler
 
         return artifact with
         {
+            CurrentMarkdown = null,
             Revisions = result.Revisions,
+            RevisionSnapshot = CompactSnapshot(
+                artifact.RevisionSnapshot),
+            Activities = CompactActivities(
+                OrderActivities(activities)),
             ObservedUpdateCount = result.ObservedUpdateCount,
             HasIncompleteRevisionHistory = result.HasIncompleteRevisionHistory,
             CreatedAtUtc = artifact.CreatedAtUtc ?? createdAt
         };
     }
+
+    private static SessionPlanContentSnapshot? CompactSnapshot(
+        SessionPlanContentSnapshot? snapshot) =>
+        snapshot is null
+            ? null
+            : new SessionPlanContentSnapshot(
+                string.Empty,
+                snapshot.ContentHash);
+
+    private static IReadOnlyList<SessionPlanActivity> CompactActivities(
+        IReadOnlyList<SessionPlanActivity> activities) =>
+        activities
+            .Select(static activity =>
+                activity.Content is SessionPlanContentSnapshot content
+                    ? activity with
+                    {
+                        Content = new SessionPlanContentSnapshot(
+                            string.Empty,
+                            content.ContentHash)
+                    }
+                    : activity)
+            .ToArray();
 
     private static IReadOnlyList<SessionPlanActivity> OrderActivities(
         IReadOnlyList<SessionPlanActivity> activities) =>

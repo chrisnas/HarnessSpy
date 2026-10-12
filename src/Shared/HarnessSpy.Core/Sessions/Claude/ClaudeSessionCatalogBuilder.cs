@@ -5,6 +5,7 @@ using System.Text.Json;
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Runtimes;
 using HarnessSpy.Core.Runtimes.Claude;
+using HarnessSpy.Core.Text;
 
 namespace HarnessSpy.Core.Sessions.Claude;
 
@@ -154,6 +155,7 @@ internal sealed class ClaudeSessionAccumulator
     private readonly WorkspaceNormalizer _workspaceNormalizer;
     private readonly ClaudeJsonAccessor _json = new();
     private readonly ClaudeTranscriptSemantics _transcriptSemantics = new();
+    private readonly BoundedTextPreviewBuilder _previewBuilder = new();
     private readonly Dictionary<string, ClaudeTurnAccumulator> _turns =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _eventTurns =
@@ -219,15 +221,15 @@ internal sealed class ClaudeSessionAccumulator
             SessionSourceKind.ClaudeSessionIndex,
             index.Path,
             "json",
-            index.RawContent,
-            ContractVersion: index.Version));
+            ContractVersion: index.Version,
+            RawSource: FileRawSource(index.Path)));
         SessionSourceProvenance provenance = new(
             SessionSourceKind.ClaudeSessionIndex,
             index.Path,
             "json",
-            entry.RawContent,
             RecordId: entry.SessionId,
-            ContractVersion: index.Version);
+            ContractVersion: index.Version,
+            RawSource: FileRawSource(index.Path));
         _sources.Add(provenance);
 
         SetTitle(entry.Summary, 60);
@@ -450,7 +452,6 @@ internal sealed class ClaudeSessionAccumulator
     public void AddAgentMetadata(
         ClaudeProjectLocation project,
         ClaudeTranscriptFile file,
-        string rawContent,
         JsonElement json)
     {
         RecordProject(project);
@@ -464,9 +465,16 @@ internal sealed class ClaudeSessionAccumulator
             SessionSourceKind.ClaudeTranscriptJsonl,
             file.Path,
             "json",
-            rawContent,
             RecordId: agentId,
-            ParentRecordId: _json.String(json, "toolUseId", "tool_use_id"));
+            ParentRecordId: _json.String(
+                json,
+                "toolUseId",
+                "tool_use_id"),
+            RawSource: new SessionRawSourceReference(
+                SessionRawSourceKind.File,
+                file.Path,
+                SourceLastWriteTimeUtc: file.LastWriteTimeUtc,
+                SourceLength: file.Length));
         _sources.Add(provenance);
 
         foreach (JsonProperty property in json.EnumerateObject())
@@ -1291,7 +1299,8 @@ internal sealed class ClaudeSessionAccumulator
             $"cost-state:{cost.Provenance.Path}:{cost.Provenance.LineNumber}";
         IReadOnlyList<UsageMeasurement> usage =
             _transcriptSemantics.ReadCostState(root, costSourceId);
-        _metadata["claude.costState"] = cost.Row.RawContent;
+        _metadata["claude.costState"] =
+            $"{cost.Row.Path}:{cost.Row.ByteOffset}";
 
         DateTimeOffset? start = cost.StartedAtUtc;
         DateTimeOffset? end = cost.TimestampUtc;
@@ -1700,12 +1709,21 @@ internal sealed class ClaudeSessionAccumulator
             SessionSourceKind.ClaudeTranscriptJsonl,
             row.Path,
             "jsonl",
-            row.RawContent,
-            row.LineNumber,
-            row.ByteOffset,
-            recordId,
-            _json.String(root, "parentUuid", "parent_uuid"),
-            ContractVersion: _json.String(root, "version"));
+            LineNumber: row.LineNumber,
+            ByteOffset: row.ByteOffset,
+            RecordId: recordId,
+            ParentRecordId: _json.String(
+                root,
+                "parentUuid",
+                "parent_uuid"),
+            ContractVersion: _json.String(root, "version"),
+            RawSource: new SessionRawSourceReference(
+                SessionRawSourceKind.JsonLine,
+                row.Path,
+                row.ByteOffset,
+                row.ByteLength,
+                SourceLastWriteTimeUtc: row.SourceLastWriteTimeUtc,
+                SourceLength: row.SourceLength));
     }
 
     private void CaptureCommonMetadata(
@@ -1761,7 +1779,30 @@ internal sealed class ClaudeSessionAccumulator
         string source = file.AgentId ?? Path.GetFileName(file.Path);
         string key =
             $"claude.raw.{MetadataKey(source)}.{row.LineNumber}.{MetadataKey(type)}";
-        _metadata[key] = row.RawContent;
+        _metadata[key] = $"{row.Path}:{row.ByteOffset}";
+    }
+
+    private SessionRawSourceReference FileRawSource(string path)
+    {
+        try
+        {
+            FileInfo file = new(path);
+            return new SessionRawSourceReference(
+                SessionRawSourceKind.File,
+                path,
+                SourceLastWriteTimeUtc: new DateTimeOffset(
+                    DateTime.SpecifyKind(
+                        file.LastWriteTimeUtc,
+                        DateTimeKind.Utc)),
+                SourceLength: file.Exists ? file.Length : null);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return new SessionRawSourceReference(
+                SessionRawSourceKind.File,
+                path);
+        }
     }
 
     // The "Skill" tool_use is the authoritative record that a skill actually
@@ -1978,19 +2019,8 @@ internal sealed class ClaudeSessionAccumulator
         return prompt.Trim();
     }
 
-    private static string? NormalizeTitle(string? title)
-    {
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            return null;
-        }
-
-        string oneLine = title.ReplaceLineEndings(" ").Trim();
-        const int maximumLength = 160;
-        return oneLine.Length <= maximumLength
-            ? oneLine
-            : oneLine[..maximumLength].TrimEnd() + "\u2026";
-    }
+    private string? NormalizeTitle(string? title) =>
+        _previewBuilder.BuildOrNull(title, 160);
 
     private static string RecordIdentity(
         ClaudeTranscriptRow row,

@@ -22,11 +22,29 @@ public enum SessionLifecycleState
     Closed
 }
 
+public enum SessionRawSourceKind
+{
+    JsonLine,
+    File,
+    SqliteValue
+}
+
+public sealed record SessionRawSourceReference(
+    SessionRawSourceKind Kind,
+    string Path,
+    long? ByteOffset = null,
+    int? ByteLength = null,
+    string? DatabaseTable = null,
+    string? DatabaseKey = null,
+    DateTimeOffset? SourceLastWriteTimeUtc = null,
+    long? SourceLength = null,
+    string? ContentHash = null);
+
 public sealed record SessionSourceProvenance(
     SessionSourceKind SourceKind,
     string Path,
     string Format,
-    string RawContent,
+    string? RawContent = null,
     int? LineNumber = null,
     long? ByteOffset = null,
     string? RecordId = null,
@@ -34,7 +52,8 @@ public sealed record SessionSourceProvenance(
     string? DatabaseKey = null,
     string? ContractVersion = null,
     string? NativeTurnId = null,
-    string? InteractionId = null);
+    string? InteractionId = null,
+    SessionRawSourceReference? RawSource = null);
 
 public sealed record SessionFileBinding(
     string Path,

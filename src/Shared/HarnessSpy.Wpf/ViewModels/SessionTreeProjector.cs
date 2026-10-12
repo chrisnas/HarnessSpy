@@ -2,12 +2,14 @@ using System.IO;
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Sessions;
 using HarnessSpy.Core.Sessions.Plans;
+using HarnessSpy.Core.Text;
 
 namespace HarnessSpy.Wpf.ViewModels;
 
 public sealed class SessionTreeProjector
 {
     private readonly SessionNodeSummaryBuilder _summaryBuilder;
+    private readonly BoundedTextPreviewBuilder _previewBuilder = new();
 
     public SessionTreeProjector(SessionNodeSummaryBuilder? summaryBuilder = null)
     {
@@ -18,7 +20,8 @@ public sealed class SessionTreeProjector
         IReadOnlyList<SessionCatalogEntry> sessions,
         IReadOnlySet<string> expandedNodeIds,
         bool expandWorkspaceRoots,
-        IReadOnlyList<SessionPlanArtifact>? plans = null)
+        IReadOnlyList<SessionPlanArtifact>? plans = null,
+        bool lazy = false)
     {
         ArgumentNullException.ThrowIfNull(sessions);
         ArgumentNullException.ThrowIfNull(expandedNodeIds);
@@ -67,7 +70,11 @@ public sealed class SessionTreeProjector
             foreach (SessionCatalogEntry session in workspaceSessions)
             {
                 workspaceNode.Children.Add(
-                    BuildSessionNode(session, expandedNodeIds, planContext));
+                    BuildSessionNode(
+                        session,
+                        expandedNodeIds,
+                        planContext,
+                        lazy));
             }
 
             DateTimeOffset? maxActivity = workspaceSessions
@@ -130,6 +137,42 @@ public sealed class SessionTreeProjector
 
         return roots;
     }
+
+    public IReadOnlyList<SessionTreeNodeViewModel> ProjectSessionChildren(
+        SessionCatalogEntry session,
+        IReadOnlySet<string> expandedNodeIds,
+        IReadOnlyList<SessionPlanArtifact>? plans = null) =>
+        BuildSessionChildren(
+            session,
+            expandedNodeIds,
+            BuildPlanContext(plans ?? []),
+            lazy: true);
+
+    public IReadOnlyList<SessionTreeNodeViewModel> ProjectTurnChildren(
+        SessionCatalogEntry session,
+        SessionTurn turn,
+        IReadOnlySet<string> expandedNodeIds,
+        IReadOnlyList<SessionPlanArtifact>? plans = null) =>
+        BuildTurnEvents(
+            session,
+            turn,
+            expandedNodeIds,
+            BuildPlanContext(plans ?? []));
+
+    public NodeSummary BuildSummary(SessionCatalogEntry session) =>
+        _summaryBuilder.Build(session);
+
+    public NodeSummary BuildSummary(SessionTurn turn) =>
+        _summaryBuilder.Build(turn);
+
+    private static SessionTreeNodeViewModel Placeholder(
+        string parentId,
+        HookProvider provider) =>
+        new(
+            $"{parentId}:placeholder",
+            "Expand to load",
+            SessionTreeNodeKind.Placeholder,
+            provider);
 
     private static bool IsUnknownGroup(SessionTreeNodeViewModel node) =>
         node.Workspace?.Kind is
@@ -421,16 +464,24 @@ public sealed class SessionTreeProjector
     private SessionTreeNodeViewModel BuildSessionNode(
         SessionCatalogEntry session,
         IReadOnlySet<string> expandedNodeIds,
-        PlanProjectionContext planContext)
+        PlanProjectionContext planContext,
+        bool lazy)
     {
         string sessionId = $"session:{session.CatalogSessionId}";
-        NodeSummary summary = _summaryBuilder.Build(session);
+        bool isExpanded = expandedNodeIds.Contains(sessionId);
+        NodeSummary? summary =
+            !lazy || isExpanded
+                ? _summaryBuilder.Build(session)
+                : null;
+        string badge = summary?.Badge ??
+            $"{session.Turns.Count} turn" +
+            (session.Turns.Count == 1 ? string.Empty : "s");
         SessionTreeNodeViewModel sessionNode = new(
             sessionId,
             SessionHeader(session),
             SessionTreeNodeKind.Session,
             session.Provider,
-            summary.Badge,
+            badge,
             SessionHoverText(session),
             session.Workspace,
             session,
@@ -439,15 +490,42 @@ public sealed class SessionTreeProjector
             rawSource: FirstRawSource(session.Sources),
             nodeSummary: summary)
         {
-            IsExpanded = expandedNodeIds.Contains(sessionId)
+            IsExpanded = isExpanded
         };
 
+        if (lazy && !isExpanded)
+        {
+            sessionNode.SetChildrenLoaded(false);
+            sessionNode.Children.Add(Placeholder(sessionId, session.Provider));
+            return sessionNode;
+        }
+
+        foreach (SessionTreeNodeViewModel child in BuildSessionChildren(
+                     session,
+                     expandedNodeIds,
+                     planContext,
+                     lazy))
+        {
+            sessionNode.Children.Add(child);
+        }
+
+        sessionNode.SetChildrenLoaded(true);
+        return sessionNode;
+    }
+
+    private IReadOnlyList<SessionTreeNodeViewModel> BuildSessionChildren(
+        SessionCatalogEntry session,
+        IReadOnlySet<string> expandedNodeIds,
+        PlanProjectionContext planContext,
+        bool lazy)
+    {
+        List<SessionTreeNodeViewModel> children = [];
         SessionTreeNodeViewModel? systemPrompts = BuildSystemPromptGroup(
             session,
             expandedNodeIds);
         if (systemPrompts is not null)
         {
-            sessionNode.Children.Add(systemPrompts);
+            children.Add(systemPrompts);
         }
 
         // Canonical bound plans appear directly under the session, before turns.
@@ -459,7 +537,7 @@ public sealed class SessionTreeProjector
                          .OrderBy(static item => item.CreatedAtUtc ?? DateTimeOffset.MaxValue)
                          .ThenBy(static item => item.Title, StringComparer.OrdinalIgnoreCase))
             {
-                sessionNode.Children.Add(BuildPlanNode(
+                children.Add(BuildPlanNode(
                     plan,
                     planContext.CanonicalNodeIdByPlan[plan.CatalogPlanId],
                     expandedNodeIds));
@@ -471,11 +549,16 @@ public sealed class SessionTreeProjector
                      .ThenBy(static item => item.StartedAtUtc)
                      .ThenBy(static item => item.Id, StringComparer.Ordinal))
         {
-            sessionNode.Children.Add(
-                BuildTurnNode(session, turn, expandedNodeIds, planContext));
+            children.Add(
+                BuildTurnNode(
+                    session,
+                    turn,
+                    expandedNodeIds,
+                    planContext,
+                    lazy));
         }
 
-        return sessionNode;
+        return children;
     }
 
     private SessionTreeNodeViewModel? BuildSystemPromptGroup(
@@ -681,16 +764,22 @@ public sealed class SessionTreeProjector
         SessionCatalogEntry session,
         SessionTurn turn,
         IReadOnlySet<string> expandedNodeIds,
-        PlanProjectionContext planContext)
+        PlanProjectionContext planContext,
+        bool lazy)
     {
         string turnId = $"session:{session.CatalogSessionId}:turn:{turn.Id}";
-        NodeSummary summary = _summaryBuilder.Build(turn);
+        bool isExpanded = expandedNodeIds.Contains(turnId);
+        NodeSummary? summary =
+            !lazy || isExpanded
+                ? _summaryBuilder.Build(turn)
+                : null;
         string prompt = string.IsNullOrWhiteSpace(turn.Prompt)
             ? $"Turn {turn.Number}"
             : Preview(turn.Prompt, 180);
-        string turnSummary = string.IsNullOrWhiteSpace(summary.Badge)
-            ? $"Turn {turn.Number}"
-            : $"Turn {turn.Number} \u00b7 {summary.Badge}";
+        string turnSummary = summary is null ||
+            string.IsNullOrWhiteSpace(summary.Badge)
+                ? $"Turn {turn.Number} \u00b7 {turn.Events.Count} events"
+                : $"Turn {turn.Number} \u00b7 {summary.Badge}";
 
         SessionTreeNodeViewModel turnNode = new(
             turnId,
@@ -708,20 +797,30 @@ public sealed class SessionTreeProjector
                 turn.Events.Select(static item => item.Provenance)),
             nodeSummary: summary)
         {
-            IsExpanded = expandedNodeIds.Contains(turnId)
+            IsExpanded = isExpanded
         };
 
-        ProjectTurnEvents(
-            turnNode,
-            session,
-            turn,
-            expandedNodeIds,
-            planContext);
+        if (lazy && !isExpanded)
+        {
+            turnNode.SetChildrenLoaded(false);
+            turnNode.Children.Add(Placeholder(turnId, session.Provider));
+            return turnNode;
+        }
+
+        foreach (SessionTreeNodeViewModel child in BuildTurnEvents(
+                     session,
+                     turn,
+                     expandedNodeIds,
+                     planContext))
+        {
+            turnNode.Children.Add(child);
+        }
+
+        turnNode.SetChildrenLoaded(true);
         return turnNode;
     }
 
-    private void ProjectTurnEvents(
-        SessionTreeNodeViewModel turnNode,
+    private IReadOnlyList<SessionTreeNodeViewModel> BuildTurnEvents(
         SessionCatalogEntry session,
         SessionTurn turn,
         IReadOnlySet<string> expandedNodeIds,
@@ -734,41 +833,53 @@ public sealed class SessionTreeProjector
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
             .ToArray();
 
-        Dictionary<SessionEventRecord, SessionTreeNodeViewModel> nodes = [];
-        Dictionary<SessionEventRecord, int> recordIndexes = [];
-
+        SessionTreeNodeViewModel[] nodes =
+            new SessionTreeNodeViewModel[records.Length];
         for (int index = 0; index < records.Length; index++)
         {
             SessionEventRecord record = records[index];
-            nodes[record] = BuildEventNode(
+            nodes[index] = BuildEventNode(
                 session,
                 turn,
                 record,
                 expandedNodeIds,
                 planContext);
-            recordIndexes[record] = index;
         }
 
-        Dictionary<string, List<SessionEventRecord>> toolRequestsById = records
-            .Where(IsToolRequest)
-            .Where(static item => !string.IsNullOrWhiteSpace(item.ToolCallId))
-            .GroupBy(static item => item.ToolCallId!, StringComparer.Ordinal)
-            .ToDictionary(
-                static group => group.Key,
-                static group => group.ToList(),
-                StringComparer.Ordinal);
+        Dictionary<string, List<int>> toolRequestsById =
+            new(StringComparer.Ordinal);
+        for (int index = 0; index < records.Length; index++)
+        {
+            SessionEventRecord record = records[index];
+            if (!IsToolRequest(record) ||
+                string.IsNullOrWhiteSpace(record.ToolCallId))
+            {
+                continue;
+            }
+
+            if (!toolRequestsById.TryGetValue(
+                    record.ToolCallId,
+                    out List<int>? requests))
+            {
+                requests = [];
+                toolRequestsById[record.ToolCallId] = requests;
+            }
+
+            requests.Add(index);
+        }
 
         List<SessionTreeNodeViewModel> rootEvents = [];
-        foreach (SessionEventRecord record in records)
+        for (int index = 0; index < records.Length; index++)
         {
-            SessionEventRecord? parent = FindParentRecord(
+            SessionEventRecord record = records[index];
+            int parentIndex = FindParentRecordIndex(
                 record,
-                toolRequestsById,
-                recordIndexes);
-            SessionTreeNodeViewModel node = nodes[record];
-            if (parent is not null)
+                index,
+                toolRequestsById);
+            SessionTreeNodeViewModel node = nodes[index];
+            if (parentIndex >= 0)
             {
-                nodes[parent].Children.Add(node);
+                nodes[parentIndex].Children.Add(node);
             }
             else
             {
@@ -776,14 +887,11 @@ public sealed class SessionTreeProjector
             }
         }
 
-        foreach (SessionTreeNodeViewModel node in GroupParallelEvents(
-                     rootEvents,
-                     session,
-                     turn,
-                     expandedNodeIds))
-        {
-            turnNode.Children.Add(node);
-        }
+        return GroupParallelEvents(
+            rootEvents,
+            session,
+            turn,
+            expandedNodeIds);
     }
 
     private SessionTreeNodeViewModel BuildEventNode(
@@ -918,30 +1026,29 @@ public sealed class SessionTreeProjector
         return projected;
     }
 
-    private static SessionEventRecord? FindParentRecord(
+    private static int FindParentRecordIndex(
         SessionEventRecord record,
-        IReadOnlyDictionary<string, List<SessionEventRecord>> toolRequestsById,
-        IReadOnlyDictionary<SessionEventRecord, int> recordIndexes)
+        int recordIndex,
+        IReadOnlyDictionary<string, List<int>> toolRequestsById)
     {
         if (!IsToolRequest(record) &&
             !string.IsNullOrWhiteSpace(record.ToolCallId) &&
             toolRequestsById.TryGetValue(
                 record.ToolCallId,
-                out List<SessionEventRecord>? candidates))
+                out List<int>? candidates))
         {
-            return candidates.LastOrDefault(
-                candidate => IsEarlier(candidate, record, recordIndexes));
+            for (int index = candidates.Count - 1; index >= 0; index--)
+            {
+                int candidateIndex = candidates[index];
+                if (candidateIndex < recordIndex)
+                {
+                    return candidateIndex;
+                }
+            }
         }
 
-        return null;
+        return -1;
     }
-
-    private static bool IsEarlier(
-        SessionEventRecord candidate,
-        SessionEventRecord record,
-        IReadOnlyDictionary<SessionEventRecord, int> recordIndexes) =>
-        !ReferenceEquals(candidate, record) &&
-        recordIndexes[candidate] < recordIndexes[record];
 
     private static PlanProjectionContext BuildPlanContext(
         IReadOnlyList<SessionPlanArtifact> plans)
@@ -1093,7 +1200,7 @@ public sealed class SessionTreeProjector
         return root;
     }
 
-    private static string PlanHeader(SessionPlanArtifact plan) =>
+    private string PlanHeader(SessionPlanArtifact plan) =>
         string.IsNullOrWhiteSpace(plan.Title)
             ? "Plan"
             : Preview(plan.Title, 140);
@@ -1497,7 +1604,7 @@ public sealed class SessionTreeProjector
         AddDetail(rows, $"{prefix} contract", source.ContractVersion);
     }
 
-    private static string EventHeader(SessionEventRecord record)
+    private string EventHeader(SessionEventRecord record)
     {
         string? content = FirstText(record);
         string contentSuffix = string.IsNullOrWhiteSpace(content)
@@ -1596,7 +1703,7 @@ public sealed class SessionTreeProjector
     private static string? FirstText(SessionEventRecord record) =>
         record.Text ?? record.PromptText;
 
-    private static string SessionHeader(SessionCatalogEntry session)
+    private string SessionHeader(SessionCatalogEntry session)
     {
         if (!string.IsNullOrWhiteSpace(session.Title))
         {
@@ -1696,13 +1803,8 @@ public sealed class SessionTreeProjector
         record.ToolKind == CanonicalToolKind.Mcp ||
         !string.IsNullOrWhiteSpace(record.McpServerName);
 
-    private static string Preview(string value, int maximumLength)
-    {
-        string oneLine = value.ReplaceLineEndings(" ").Trim();
-        return oneLine.Length <= maximumLength
-            ? oneLine
-            : oneLine[..maximumLength].TrimEnd() + "\u2026";
-    }
+    private string Preview(string value, int maximumLength) =>
+        _previewBuilder.Build(value, maximumLength);
 
     private static string Humanize(string value)
     {

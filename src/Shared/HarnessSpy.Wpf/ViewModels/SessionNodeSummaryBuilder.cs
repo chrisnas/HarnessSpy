@@ -3,6 +3,7 @@ using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Runtimes.Cursor;
 using HarnessSpy.Core.Services;
 using HarnessSpy.Core.Sessions;
+using HarnessSpy.Core.Text;
 
 namespace HarnessSpy.Wpf.ViewModels;
 
@@ -12,6 +13,7 @@ public sealed class SessionNodeSummaryBuilder
     private readonly UsageNameClassifier _usageNames = new();
     private readonly SessionFileAccessCollector _fileAccessCollector = new();
     private readonly CommandTextExtractor _commandTextExtractor = new();
+    private readonly BoundedTextPreviewBuilder _previewBuilder = new();
 
     public NodeSummary Build(SessionCatalogEntry session)
     {
@@ -265,7 +267,7 @@ public sealed class SessionNodeSummaryBuilder
         }).ToArray();
     }
 
-    private static IReadOnlyList<SubagentSummary> BuildSubagents(
+    private IReadOnlyList<SubagentSummary> BuildSubagents(
         IReadOnlyList<SessionEventRecord> events)
     {
         return events
@@ -530,16 +532,6 @@ public sealed class SessionNodeSummaryBuilder
         return $"{duration.TotalSeconds:0.#}s";
     }
 
-    private static string? Preview(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        string oneLine = value.ReplaceLineEndings(" ").Trim();
-        return oneLine.Length <= 120
-            ? oneLine
-            : oneLine[..120].TrimEnd() + "\u2026";
-    }
+    private string? Preview(string? value) =>
+        _previewBuilder.BuildOrNull(value, 120);
 }

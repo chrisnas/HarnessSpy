@@ -34,11 +34,70 @@ internal sealed class CursorDesktopSqliteReader
 
     private sealed record CursorBubbleWorkItem(
         CursorComposerHydrationInput Input,
-        IReadOnlyList<CursorRawBubble> Bubbles);
+        IReadOnlyList<CursorRawBubble> Bubbles,
+        int BudgetUnits);
 
     private sealed record CursorHydrationResult(
         CursorComposerHydrationInput Input,
         CursorBubbleProjection Projection);
+
+    private sealed class CursorHydrationByteBudget
+    {
+        private const long UnitBytes = 1024 * 1024;
+
+        private readonly int _maximumUnits;
+        private readonly SemaphoreSlim _units;
+
+        public CursorHydrationByteBudget(long maximumBytes)
+        {
+            _maximumUnits = Math.Max(
+                1,
+                (int)Math.Min(
+                    int.MaxValue,
+                    (Math.Max(1, maximumBytes) + UnitBytes - 1) /
+                    UnitBytes));
+            _units = new SemaphoreSlim(
+                _maximumUnits,
+                _maximumUnits);
+        }
+
+        public async Task<int> AcquireAsync(
+            long bytes,
+            CancellationToken cancellationToken)
+        {
+            int requested = Math.Clamp(
+                (int)Math.Min(
+                    int.MaxValue,
+                    (Math.Max(1, bytes) + UnitBytes - 1) / UnitBytes),
+                1,
+                _maximumUnits);
+            int acquired = 0;
+            try
+            {
+                while (acquired < requested)
+                {
+                    await _units.WaitAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    acquired++;
+                }
+
+                return acquired;
+            }
+            catch
+            {
+                Release(acquired);
+                throw;
+            }
+        }
+
+        public void Release(int units)
+        {
+            if (units > 0)
+            {
+                _units.Release(units);
+            }
+        }
+    }
 
     public CursorDesktopSqliteReader(
         SessionDiscoveryContext context,
@@ -302,7 +361,7 @@ internal sealed class CursorDesktopSqliteReader
         if (!_fileSystem.TryGetFileInfo(
             manifestPath,
             out long length,
-            out _,
+            out DateTimeOffset lastWriteTimeUtc,
             out string? inspectError))
         {
             warnings.Add(
@@ -357,8 +416,12 @@ internal sealed class CursorDesktopSqliteReader
                     SessionSourceKind.CursorDesktopSqlite,
                     manifestPath,
                     "cursor-workspace-manifest-json",
-                    raw,
-                    RecordId: workspaceDirectory.Name);
+                    RecordId: workspaceDirectory.Name,
+                    RawSource: new SessionRawSourceReference(
+                        SessionRawSourceKind.File,
+                        manifestPath,
+                        SourceLastWriteTimeUtc: lastWriteTimeUtc,
+                        SourceLength: length));
                 return new CursorWorkspaceManifest(
                     workspaceDirectory.Name,
                     workspaceDirectory.FullName,
@@ -528,7 +591,11 @@ internal sealed class CursorDesktopSqliteReader
                     manifests,
                     builders,
                     relationships,
-                    hydrationInputs,
+                    SelectHydrationInputs(
+                        hydrationInputs,
+                        builders,
+                        guard,
+                        warnings),
                     progress,
                     guard,
                     warnings,
@@ -831,6 +898,7 @@ internal sealed class CursorDesktopSqliteReader
             using (document)
             {
                 CursorSqliteJsonRecord record = new(
+                    "composerHeaders",
                     $"composerHeaders:{composerId}",
                     raw,
                     document.RootElement.Clone());
@@ -1062,10 +1130,22 @@ internal sealed class CursorDesktopSqliteReader
             SessionSourceKind.CursorDesktopSqlite,
             database.Path,
             "cursor-desktop-composer-json",
-            record.RawContent,
             RecordId: composerId,
             ParentRecordId: relationship?.ParentComposerId,
-            DatabaseKey: record.Key);
+            DatabaseKey: record.Key,
+            RawSource: new SessionRawSourceReference(
+                SessionRawSourceKind.SqliteValue,
+                database.Path,
+                DatabaseTable: record.Table,
+                DatabaseKey:
+                    record.Table == "composerHeaders" &&
+                    record.Key.StartsWith(
+                        "composerHeaders:",
+                        StringComparison.Ordinal)
+                        ? record.Key["composerHeaders:".Length..]
+                        : record.Key,
+                SourceLastWriteTimeUtc: databaseLastWrite,
+                SourceLength: databaseLength));
         List<SessionSourceProvenance> sources =
         [
             composerProvenance,
@@ -1142,6 +1222,43 @@ internal sealed class CursorDesktopSqliteReader
         };
     }
 
+    private IReadOnlyDictionary<string, CursorComposerHydrationInput>
+        SelectHydrationInputs(
+            IReadOnlyDictionary<string, CursorComposerHydrationInput> inputs,
+            IReadOnlyDictionary<string, CursorDesktopSessionBuilder> builders,
+            CursorDiscoveryGuard guard,
+            CursorWarningCollector warnings)
+    {
+        int maximum = Math.Max(
+            0,
+            _context.Limits.MaximumHydratedSessions);
+        if (inputs.Count <= maximum)
+        {
+            return inputs;
+        }
+
+        guard.MarkIncomplete();
+        warnings.Add(
+            $"Cursor detail hydration was limited to the {maximum} most " +
+            $"recent or selected sessions out of {inputs.Count}. " +
+            "Use the Complete catalog profile to load all details.");
+        return inputs.Values
+            .OrderByDescending(input =>
+                builders.TryGetValue(
+                    input.ComposerId,
+                    out CursorDesktopSessionBuilder? builder) &&
+                builder.IsSelected)
+            .ThenByDescending(input => _json.Timestamp(
+                input.Composer,
+                "lastUpdatedAt",
+                "last_updated_at",
+                "updatedAt") ?? DateTimeOffset.MinValue)
+            .Take(maximum)
+            .ToDictionary(
+                static input => input.ComposerId,
+                StringComparer.Ordinal);
+    }
+
     private async Task HydrateComposersAsync(
         SqliteConnection connection,
         CursorDesktopDatabase database,
@@ -1156,8 +1273,20 @@ internal sealed class CursorDesktopSqliteReader
         CursorWarningCollector warnings,
         CancellationToken cancellationToken)
     {
-        int workerCount = Math.Max(1, Environment.ProcessorCount);
-        int channelCapacity = Math.Max(2, workerCount * 2);
+        if (inputs.Count == 0)
+        {
+            return;
+        }
+
+        int workerCount = Math.Clamp(
+            Environment.ProcessorCount,
+            1,
+            Math.Max(
+                1,
+                _context.Limits.MaximumConcurrentHydrations));
+        int channelCapacity = Math.Max(2, workerCount);
+        CursorHydrationByteBudget byteBudget = new(
+            _context.Limits.MaximumHydrationBytes);
         Channel<CursorBubbleWorkItem> work = Channel.CreateBounded<
             CursorBubbleWorkItem>(
             new BoundedChannelOptions(channelCapacity)
@@ -1178,6 +1307,7 @@ internal sealed class CursorDesktopSqliteReader
                 database.Path,
                 work.Reader,
                 results.Writer,
+                byteBudget,
                 guard,
                 warnings,
                 cancellationToken))
@@ -1186,6 +1316,7 @@ internal sealed class CursorDesktopSqliteReader
             connection,
             inputs,
             work.Writer,
+            byteBudget,
             guard,
             warnings,
             cancellationToken);
@@ -1232,6 +1363,7 @@ internal sealed class CursorDesktopSqliteReader
         SqliteConnection connection,
         IReadOnlyDictionary<string, CursorComposerHydrationInput> inputs,
         ChannelWriter<CursorBubbleWorkItem> writer,
+        CursorHydrationByteBudget byteBudget,
         CursorDiscoveryGuard guard,
         CursorWarningCollector warnings,
         CancellationToken cancellationToken)
@@ -1351,11 +1483,8 @@ internal sealed class CursorDesktopSqliteReader
             {
                 if (queuedComposerIds.Add(input.ComposerId))
                 {
-                    await writer.WriteAsync(
-                        new CursorBubbleWorkItem(
-                            input,
-                            []),
-                        cancellationToken).ConfigureAwait(false);
+                    await QueueWorkItemAsync(input, [])
+                        .ConfigureAwait(false);
                 }
             }
 
@@ -1368,11 +1497,35 @@ internal sealed class CursorDesktopSqliteReader
                     return;
                 }
 
-                await writer.WriteAsync(
-                    new CursorBubbleWorkItem(
-                        currentInput,
-                        currentBubbles),
+                await QueueWorkItemAsync(
+                    currentInput,
+                    currentBubbles).ConfigureAwait(false);
+            }
+
+            async ValueTask QueueWorkItemAsync(
+                CursorComposerHydrationInput input,
+                IReadOnlyList<CursorRawBubble> bubbles)
+            {
+                long estimatedBytes = bubbles.Sum(
+                    static bubble =>
+                        (long)bubble.RawContent.Length * sizeof(char));
+                int units = await byteBudget.AcquireAsync(
+                    estimatedBytes,
                     cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await writer.WriteAsync(
+                        new CursorBubbleWorkItem(
+                            input,
+                            bubbles,
+                            units),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    byteBudget.Release(units);
+                    throw;
+                }
             }
         }
         catch (Exception exception)
@@ -1390,6 +1543,7 @@ internal sealed class CursorDesktopSqliteReader
         string databasePath,
         ChannelReader<CursorBubbleWorkItem> reader,
         ChannelWriter<CursorHydrationResult> writer,
+        CursorHydrationByteBudget byteBudget,
         CursorDiscoveryGuard guard,
         CursorWarningCollector warnings,
         CancellationToken cancellationToken)
@@ -1421,6 +1575,7 @@ internal sealed class CursorDesktopSqliteReader
                     {
                         bubbles[bubble.BubbleId] =
                             new CursorSqliteJsonRecord(
+                                "cursorDiskKV",
                                 bubble.Key,
                                 bubble.RawContent,
                                 document.RootElement.Clone());
@@ -1431,6 +1586,7 @@ internal sealed class CursorDesktopSqliteReader
                     _bubbleProjector.Project(
                         databasePath,
                         workItem.Input.ComposerId,
+                        workItem.Input.Record,
                         workItem.Input.Composer,
                         bubbles,
                         _context.Limits.MaximumRecordsPerSession,
@@ -1453,6 +1609,10 @@ internal sealed class CursorDesktopSqliteReader
                 warnings.Add(
                     $"Could not project Cursor composer " +
                     $"'{workItem.Input.ComposerId}': {exception.Message}");
+            }
+            finally
+            {
+                byteBudget.Release(workItem.BudgetUnits);
             }
         }
     }
@@ -1628,6 +1788,7 @@ internal sealed class CursorDesktopSqliteReader
                 }
 
                 records.Add(new CursorSqliteJsonRecord(
+                    table,
                     key,
                     raw,
                     document.RootElement.Clone()));

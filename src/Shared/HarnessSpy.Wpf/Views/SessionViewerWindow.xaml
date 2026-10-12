@@ -125,10 +125,40 @@
             </Setter>
         </Style>
 
+        <DataTemplate x:Key="FileAccessRowTemplate"
+                      DataType="{x:Type viewModels:FileAccessRow}">
+            <TextBlock ToolTip="{Binding FullPath}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="{Binding FileName}" />
+                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType={x:Type ContentControl}}}"
+                                         Value="FullPathsWithoutKpis">
+                                <Setter Property="Text" Value="{Binding FullPath}" />
+                                <Setter Property="TextTrimming" Value="None" />
+                                <Setter Property="TextWrapping" Value="Wrap" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </DataTemplate>
+
         <DataTemplate x:Key="NodeSummaryTooltipTemplate">
             <StackPanel MinWidth="320">
-                <ItemsControl ItemTemplate="{StaticResource KpiChipTemplate}"
-                              ItemsSource="{Binding Kpis}">
+                <ItemsControl ItemsSource="{Binding Kpis}">
+                    <ItemsControl.Style>
+                        <Style TargetType="ItemsControl">
+                            <Setter Property="ItemTemplate" Value="{StaticResource KpiChipTemplate}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType={x:Type ContentControl}}}"
+                                             Value="FullPathsWithoutKpis">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ItemsControl.Style>
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <WrapPanel />
@@ -245,43 +275,22 @@
                 <StackPanel Margin="0,8,0,0"
                             Visibility="{Binding HasReadFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File reads" />
-                    <ItemsControl ItemsSource="{Binding ReadFiles}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding FileName}"
-                                           ToolTip="{Binding FullPath}"
-                                           TextTrimming="CharacterEllipsis" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                    <ItemsControl ItemTemplate="{StaticResource FileAccessRowTemplate}"
+                                  ItemsSource="{Binding ReadFiles}" />
                 </StackPanel>
 
                 <StackPanel Margin="0,8,0,0"
                             Visibility="{Binding HasWrittenFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File writes" />
-                    <ItemsControl ItemsSource="{Binding WrittenFiles}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding FileName}"
-                                           ToolTip="{Binding FullPath}"
-                                           TextTrimming="CharacterEllipsis" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                    <ItemsControl ItemTemplate="{StaticResource FileAccessRowTemplate}"
+                                  ItemsSource="{Binding WrittenFiles}" />
                 </StackPanel>
 
                 <StackPanel Margin="0,8,0,0"
                             Visibility="{Binding HasDeletedFiles, Converter={StaticResource BooleanToVisibilityConverter}}">
                     <TextBlock Style="{StaticResource SummarySectionHeader}" Text="File deletes" />
-                    <ItemsControl ItemsSource="{Binding DeletedFiles}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding FileName}"
-                                           ToolTip="{Binding FullPath}"
-                                           TextTrimming="CharacterEllipsis" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                    <ItemsControl ItemTemplate="{StaticResource FileAccessRowTemplate}"
+                                  ItemsSource="{Binding DeletedFiles}" />
                 </StackPanel>
 
                 <StackPanel Margin="0,8,0,0"
@@ -336,41 +345,6 @@
                                    TextWrapping="Wrap" />
                     </ToolTip>
                 </Grid.ToolTip>
-
-                <!-- Interactive, scrollable summary popup for session and turn
-                     nodes, mirroring the xxxSpy dashboard hover: the pointer can
-                     move onto it and use the inner scroll bar because it is a
-                     Popup, not a self-dismissing ToolTip. -->
-                <Popup Placement="Mouse"
-                       PlacementTarget="{Binding ElementName=DashboardRowPanel}"
-                       AllowsTransparency="True"
-                       PopupAnimation="Fade"
-                       StaysOpen="True">
-                    <Border MaxWidth="560"
-                            Padding="10"
-                            Background="White"
-                            BorderBrush="#D0D7DE"
-                            BorderThickness="1"
-                            CornerRadius="4"
-                            SnapsToDevicePixels="True"
-                            TextElement.Foreground="#24292F"
-                            MouseEnter="DashboardContent_MouseEnter"
-                            MouseLeave="DashboardContent_MouseLeave">
-                        <Border.Effect>
-                            <DropShadowEffect BlurRadius="8"
-                                              Opacity="0.3"
-                                              ShadowDepth="2"
-                                              Color="#000000" />
-                        </Border.Effect>
-                        <ScrollViewer MinWidth="360"
-                                      MaxHeight="560"
-                                      HorizontalScrollBarVisibility="Disabled"
-                                      VerticalScrollBarVisibility="Auto">
-                            <ContentControl Content="{Binding NodeSummary}"
-                                            ContentTemplate="{StaticResource NodeSummaryTooltipTemplate}" />
-                        </ScrollViewer>
-                    </Border>
-                </Popup>
 
                 <StackPanel x:Name="DashboardRowPanel"
                             Orientation="Horizontal"
@@ -592,6 +566,37 @@
             <ColumnDefinition Width="*" MinWidth="420" />
         </Grid.ColumnDefinitions>
 
+        <Popup x:Name="DashboardPopup"
+               Placement="Mouse"
+               AllowsTransparency="True"
+               PopupAnimation="Fade"
+               StaysOpen="True">
+            <Border MaxWidth="560"
+                    Padding="10"
+                    Background="White"
+                    BorderBrush="#D0D7DE"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    SnapsToDevicePixels="True"
+                    TextElement.Foreground="#24292F"
+                    MouseEnter="DashboardContent_MouseEnter"
+                    MouseLeave="DashboardContent_MouseLeave">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="8"
+                                      Opacity="0.3"
+                                      ShadowDepth="2"
+                                      Color="#000000" />
+                </Border.Effect>
+                <ScrollViewer MinWidth="360"
+                              MaxHeight="560"
+                              HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollBarVisibility="Auto">
+                    <ContentControl Content="{Binding NodeSummary}"
+                                    ContentTemplate="{StaticResource NodeSummaryTooltipTemplate}" />
+                </ScrollViewer>
+            </Border>
+        </Popup>
+
         <Border Grid.Column="0"
                 BorderBrush="#D0D7DE"
                 BorderThickness="1"
@@ -602,6 +607,7 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0"
@@ -618,7 +624,7 @@
                                       Background="White"
                                       BorderBrush="#D0D7DE"
                                       BorderThickness="1"
-                                      ToolTip="Choose which harnesses appear in the tree">
+                                      ToolTip="Choose which harnesses are scanned and shown">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -652,15 +658,76 @@
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <CheckBox Margin="4,3"
-                                                      Content="{Binding DisplayName}"
-                                                      IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                                                      IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding DisplayName}" />
+                                                    <TextBlock FontSize="10"
+                                                               Foreground="#57606A"
+                                                               Text="{Binding ScanStatus}" />
+                                                </StackPanel>
+                                            </CheckBox>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
                             </Border>
                         </Popup>
                     </Grid>
-                    <Button Grid.Column="3"
+                    <ToggleButton x:Name="ViewerOptionsToggle"
+                                  Grid.Column="3"
+                                  MinWidth="72"
+                                  Padding="10,4"
+                                  Content="Options" />
+                    <Popup IsOpen="{Binding IsChecked, ElementName=ViewerOptionsToggle, Mode=TwoWay}"
+                           PlacementTarget="{Binding ElementName=ViewerOptionsToggle}"
+                           Placement="Bottom"
+                           StaysOpen="False"
+                           AllowsTransparency="True"
+                           DataContext="{Binding DataContext, ElementName=ViewerOptionsToggle}">
+                        <Border Margin="0,2,0,0"
+                                MinWidth="280"
+                                Padding="12"
+                                Background="White"
+                                BorderBrush="#D0D7DE"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                SnapsToDevicePixels="True">
+                            <StackPanel>
+                                <TextBlock Margin="0,0,0,8"
+                                           FontWeight="SemiBold"
+                                           Text="Performance and memory" />
+                                <TextBlock Text="Catalog profile" />
+                                <ComboBox Margin="0,3,0,8"
+                                          ItemsSource="{Binding Preferences.CatalogProfiles}"
+                                          SelectedItem="{Binding Preferences.CatalogProfile, Mode=TwoWay}" />
+                                <TextBlock Text="Raw source retention" />
+                                <ComboBox Margin="0,3,0,8"
+                                          ItemsSource="{Binding Preferences.RawSourceModes}"
+                                          SelectedItem="{Binding Preferences.RawSourceMode, Mode=TwoWay}" />
+                                <TextBlock Text="Raw preview bytes" />
+                                <TextBox Margin="0,3,0,8"
+                                         Text="{Binding Preferences.RawPreviewBytes, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                                <CheckBox Margin="0,2"
+                                          Content="Keep disabled provider cache"
+                                          IsChecked="{Binding Preferences.KeepDisabledProviderCache, Mode=TwoWay}" />
+                                <CheckBox Margin="0,2"
+                                          Content="Include raw source in normal search"
+                                          IsChecked="{Binding Preferences.IncludeRawSourceInSearch, Mode=TwoWay}" />
+                                <CheckBox Margin="0,2,0,8"
+                                          Content="Expand workspaces on startup"
+                                          IsChecked="{Binding Preferences.ExpandWorkspacesOnStartup, Mode=TwoWay}" />
+                                <Button HorizontalAlignment="Left"
+                                        Padding="10,4"
+                                        Click="ForceRefresh_Click"
+                                        Content="Force full refresh" />
+                                <Button Margin="0,6,0,0"
+                                        HorizontalAlignment="Left"
+                                        Padding="10,4"
+                                        Click="LoadAllSessions_Click"
+                                        Content="Load all session details" />
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                    <Button Grid.Column="4"
                             MinWidth="82"
                             Margin="8,0,0,0"
                             Padding="10,4"
@@ -708,10 +775,16 @@
                                 Content="Next" />
                     </Grid>
 
-                    <CheckBox Margin="0,0,0,8"
-                              VerticalAlignment="Center"
-                              Content="Hook names only"
-                              IsChecked="{Binding SearchHookNamesOnly}" />
+                    <StackPanel Margin="0,0,0,8"
+                                Orientation="Horizontal">
+                        <CheckBox VerticalAlignment="Center"
+                                  Content="Hook names only"
+                                  IsChecked="{Binding SearchHookNamesOnly}" />
+                        <Button Margin="12,0,0,0"
+                                Padding="8,2"
+                                Click="FindRaw_Click"
+                                Content="Deep raw search" />
+                    </StackPanel>
 
                     <ProgressBar Height="4"
                                  Margin="0,0,0,6"
@@ -757,6 +830,9 @@
                         <TreeView x:Name="FavoritesTreeView"
                                   Padding="4"
                                   BorderThickness="0"
+                                  ScrollViewer.CanContentScroll="True"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling"
                                   ContextMenuOpening="FavoritesTreeView_ContextMenuOpening"
                                   ItemsSource="{Binding FavoriteRoots}"
                                   SelectedItemChanged="TreeView_SelectedItemChanged">
@@ -784,6 +860,9 @@
                               Grid.Row="2"
                               Padding="4"
                               BorderThickness="0"
+                              ScrollViewer.CanContentScroll="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
                               ContextMenuOpening="TreeView_ContextMenuOpening"
                               ItemsSource="{Binding Roots}"
                               SelectedItemChanged="TreeView_SelectedItemChanged">
@@ -915,6 +994,23 @@
                 </Border>
 
                 <TabControl>
+                    <TabItem Header="Summary">
+                        <Grid Margin="8">
+                            <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                                          VerticalScrollBarVisibility="Auto"
+                                          Visibility="{Binding SelectedNode.HasNodeSummary, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <ContentControl Tag="FullPathsWithoutKpis"
+                                                Content="{Binding SelectedNode.NodeSummary}"
+                                                ContentTemplate="{StaticResource NodeSummaryTooltipTemplate}" />
+                            </ScrollViewer>
+                            <TextBlock Margin="4"
+                                       Foreground="#8C959F"
+                                       IsHitTestVisible="False"
+                                       Text="No summary is associated with this node."
+                                       Visibility="{Binding SelectedNode.HasNodeSummary, Converter={StaticResource InverseBooleanToVisibilityConverter}}" />
+                        </Grid>
+                    </TabItem>
+
                     <TabItem Header="Normalized details">
                         <DataGrid x:Name="DetailsDataGrid"
                                   Margin="8"
@@ -938,7 +1034,20 @@
                     </TabItem>
 
                     <TabItem Header="Raw source">
-                        <Grid Margin="8">
+                        <DockPanel Margin="8">
+                            <StackPanel DockPanel.Dock="Top"
+                                        Margin="0,0,0,6"
+                                        Orientation="Horizontal">
+                                <TextBlock VerticalAlignment="Center"
+                                           Foreground="#57606A"
+                                           Text="{Binding Inspector.RawSourceStatus}" />
+                                <Button Margin="10,0,0,0"
+                                        Padding="8,2"
+                                        Click="LoadFullRawSource_Click"
+                                        Content="Load full source"
+                                        IsEnabled="{Binding Inspector.CanLoadFullRawSource}" />
+                            </StackPanel>
+                            <Grid>
                             <TextBox AcceptsReturn="True"
                                      AcceptsTab="True"
                                      FontFamily="Consolas"
@@ -946,15 +1055,16 @@
                                      Foreground="#444C56"
                                      HorizontalScrollBarVisibility="Auto"
                                      IsReadOnly="True"
-                                     Text="{Binding SelectedNode.RawSource, Mode=OneWay}"
+                                     Text="{Binding Inspector.RawSource, Mode=OneWay}"
                                      TextWrapping="NoWrap"
                                      VerticalScrollBarVisibility="Auto" />
                             <TextBlock Margin="12"
                                        Foreground="#8C959F"
                                        IsHitTestVisible="False"
                                        Text="No raw source is associated with this node."
-                                       Visibility="{Binding SelectedNode.HasRawSource, Converter={StaticResource InverseBooleanToVisibilityConverter}}" />
-                        </Grid>
+                                       Visibility="{Binding Inspector.HasRawSource, Converter={StaticResource InverseBooleanToVisibilityConverter}}" />
+                            </Grid>
+                        </DockPanel>
                     </TabItem>
 
                     <TabItem Header="Plan revisions">

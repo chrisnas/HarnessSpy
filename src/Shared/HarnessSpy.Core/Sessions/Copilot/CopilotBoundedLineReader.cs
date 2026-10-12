@@ -7,12 +7,14 @@ internal sealed class CopilotBoundedLine
     public CopilotBoundedLine(
         string? content,
         long byteOffset,
+        int byteLength,
         bool isTerminated,
         bool isTooLong,
         bool hasInvalidEncoding)
     {
         Content = content;
         ByteOffset = byteOffset;
+        ByteLength = byteLength;
         IsTerminated = isTerminated;
         IsTooLong = isTooLong;
         HasInvalidEncoding = hasInvalidEncoding;
@@ -21,6 +23,8 @@ internal sealed class CopilotBoundedLine
     public string? Content { get; }
 
     public long ByteOffset { get; }
+
+    public int ByteLength { get; }
 
     public bool IsTerminated { get; }
 
@@ -174,11 +178,13 @@ internal sealed class CopilotBoundedLineReader : IAsyncDisposable
             return new CopilotBoundedLine(
                 null,
                 byteOffset,
+                0,
                 isTerminated,
                 isTooLong: true,
                 hasInvalidEncoding: false);
         }
 
+        int byteLength = _lineBuffer.WrittenCount;
         ReadOnlySpan<byte> bytes = _lineBuffer.WrittenSpan;
         if (bytes.Length > 0 && bytes[^1] == (byte)'\r')
         {
@@ -201,6 +207,7 @@ internal sealed class CopilotBoundedLineReader : IAsyncDisposable
         return new CopilotBoundedLine(
             content,
             byteOffset,
+            byteLength,
             isTerminated,
             isTooLong: false,
             hadInvalidEncoding);

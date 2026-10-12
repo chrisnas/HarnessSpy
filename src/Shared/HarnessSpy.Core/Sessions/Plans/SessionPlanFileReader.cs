@@ -129,8 +129,12 @@ public sealed class SessionPlanFileReader
             sourceKind,
             file.FullName,
             "markdown",
-            content,
-            ContractVersion: dialectId);
+            ContractVersion: dialectId,
+            RawSource: new SessionRawSourceReference(
+                SessionRawSourceKind.File,
+                file.FullName,
+                SourceLastWriteTimeUtc: ToUtc(file.LastWriteTimeUtc),
+                SourceLength: snapshotLength));
 
         return new SessionPlanFileReadResult(
             Exists: true,

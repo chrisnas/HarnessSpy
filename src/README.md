@@ -24,7 +24,7 @@ The implementation is independent from the reference POC under
   search, inspector, replay, deletion, and application host.
 - `Apps/*Spy.App`: three thin WPF composition roots.
 - `Apps/SessionViewer`: file-backed Cursor, Claude Code, and Copilot CLI
-  history grouped by workspace, with manual refresh and filesystem watching.
+  history grouped by workspace, with explicit, cache-aware refresh.
   It does not require hooks or start provider SDK runtimes while refreshing.
 - `Hooks/*Spy.Hook`: three short-lived fail-open hook executables.
 - `Tests/HarnessSpy.Tests`: parity, provider, replay, pipe, process, and future
@@ -72,8 +72,25 @@ source-observed content updates (the count is what the current provider files an
 transcripts expose, not a guaranteed lifetime history), with a `partial` marker
 when an edit is proven but its resulting body is opaque.
 
-It watches those stores for changes and also provides a manual Refresh action.
-Session activation is always user-triggered and separate from catalog refresh.
+SessionViewer scans the saved enabled harnesses once at startup. It does not
+watch provider files, run a recovery timer, or refresh in the background after
+that scan. **Refresh**/F5 revalidates the enabled providers and reuses unchanged
+source graphs; selecting a newly enabled harness scans only that provider.
+**Force full refresh** bypasses source caches.
+
+Session lifecycle state is reconstructed only from provider-owned files.
+SessionViewer does not enumerate processes or read process command lines.
+
+The default **Balanced** profile keeps scans finite, hydrates the 500 most
+recent or selected Cursor sessions, bounds concurrent SQLite hydration, and
+keeps large raw records behind an on-demand inspector. **Complete** raises the
+finite discovery limits and hydrates every Cursor session. Collapsed sessions
+and turns are projected lazily; expanding one loads only that subtree. The
+Options flyout also controls raw-source previews, optional compressed snapshot
+caching, raw-source search, startup expansion, and disabled-provider cache
+retention.
+
+Session activation remains user-triggered and separate from catalog refresh.
 
 The viewers use separate current-user-only pipes:
 
@@ -84,6 +101,10 @@ The viewers use separate current-user-only pipes:
 Captured envelopes are stored under
 `%LOCALAPPDATA%\HarnessSpy\<Provider>\Payloads`. Viewer convenience settings
 are stored under `%APPDATA%\HarnessSpy\<Provider>\settings.json`.
+SessionViewer stores its settings under
+`%APPDATA%\HarnessSpy\SessionViewer\settings.json`; an optional bounded raw
+snapshot cache lives under
+`%LOCALAPPDATA%\HarnessSpy\SessionViewer\RawCache`.
 
 ## Manual hook activation
 

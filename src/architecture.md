@@ -137,17 +137,40 @@ flowchart LR
     ClaudeFiles[Claude project JSONL] --> CatalogSources
     CopilotFiles[Copilot events and workspace] --> CatalogSources
     CatalogSources --> Catalog[SessionCatalogCoordinator]
-    ProcessProbes[Read-only process probes] --> Catalog
-    FileWatchers[FileSystemWatcher and refresh] --> Catalog
-    Catalog --> Projector[Session tree projector]
-    Projector --> SessionUi[SessionViewer WPF tree and inspector]
+    Startup[One startup scan] --> Catalog
+    Manual[Refresh F5 or harness selection] --> Catalog
+    Catalog --> SourceState[Per-source file snapshots and immutable results]
+    SourceState --> Projector[Lazy session tree projector]
+    Projector --> SessionUi[Virtualized SessionViewer tree]
+    SessionUi --> RawResolver[On-demand raw source resolver]
+    RawResolver --> CursorFiles
+    RawResolver --> ClaudeFiles
+    RawResolver --> CopilotFiles
 ```
 
 The catalog stores provider-native session, turn, event, tool, and relationship
-identities with raw source provenance. `Observed`, `Corroborated`, `Derived`,
+identities with reloadable raw-source provenance (JSONL byte range, SQLite
+table/key, or file snapshot coordinates), rather than retaining every raw
+payload string in the managed heap. The inspector resolves a bounded preview
+only for the selected node; an optional quota-bound Brotli snapshot cache
+preserves content-addressed copies under HarnessSpy's local application data.
+`Observed`, `Corroborated`, `Derived`,
 `Heuristic`, `Opaque`, `Ambiguous`, and `Unavailable` remain distinct evidence
 states. Unknown records stay available in the inspector even when no semantic
 projection exists.
+
+Refresh is explicit. Saved enabled harnesses scan once at startup; thereafter
+only Refresh/F5, Force full refresh, or selecting a newly enabled harness can
+start a scan. No `FileSystemWatcher`, recovery timer, or background refresh
+queue exists. A cache-aware refresh compares safe recursive file stamps and
+reuses a complete immutable provider graph when its inputs are unchanged.
+Disabling a provider evicts its graph by default.
+
+The WPF projector creates workspace and session shells first. Collapsed
+sessions and turns carry one placeholder child; expanding a shell projects only
+that subtree and collapsing it releases those event view models. Full summaries
+are computed on expansion, hover, or selection. Both trees use recycling
+virtualization and one shared dashboard popup.
 
 Skill evidence is carried per node with its lifecycle stage (`Available`,
 `Attached`, `Loaded`, `Invoked`, `ExecutionCorroborated`) and source path, so an
@@ -164,8 +187,8 @@ to a session/turn only on explicit path, explicit session directory, or a unique
 structured-content match; conflicting or absent evidence leaves the plan an
 orphan rather than guessing. Bound plans render under their session; unbound
 plans render under a top-level Orphan Plans root grouped by provider then
-workspace. Plan markdown changes are watched (`*.md`) and folded into the catalog
-fingerprint so a plan edit republishes the tree.
+workspace. Plan markdown changes (`*.md`) are folded into the catalog fingerprint
+when the next explicit refresh revalidates provider inputs.
 
 Provider sources:
 
@@ -185,16 +208,20 @@ Node/Python sidecar; and starting Copilot's .NET SDK runtime would violate the
 strict passive-refresh boundary. Optional SDK enrichers remain a separate
 future source kind.
 
-Cursor and Claude open state requires positive process/session evidence; file
-recency and deletion are never sufficient. Copilot's source projector also
-derives a provisional state from the order of `session.start`, `session.resume`,
-and `session.shutdown`. When process probes return any hints, the shared
-correlator replaces that provisional state with exact/unique-workspace process
-evidence or `Closed`. If every probe returns no hints, the current
-implementation leaves the Copilot event-tail state intact; consumers must not
-treat that fallback as proof that a terminal still exists. Watcher changes are
-debounced and backed by a periodic rescan because Windows filesystem
-notifications can be lost.
+SessionViewer never enumerates processes or reads process command lines.
+Lifecycle state comes only from provider-owned records. Cursor and Claude
+sessions remain conservatively closed because their file sources do not expose
+a reliable live-session contract. Copilot derives the last recorded state from
+the order of `session.start`, `session.resume`, and `session.shutdown`; an
+`Open` Copilot state means that no later shutdown was recorded, not that a
+terminal or process is proven to still exist.
+
+Both discovery profiles are finite. Balanced limits directories/files,
+individual values, scan duration, SQLite workers, total in-flight hydration
+bytes, and detailed Cursor hydration (the 500 most recent or selected sessions);
+headers for older sessions remain visible. Complete raises those finite limits
+and hydrates all Cursor sessions. Oversized display fields are compacted only in
+Balanced mode while raw source remains available through provenance.
 
 ## Transcript source (implemented)
 

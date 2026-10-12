@@ -168,18 +168,18 @@ internal sealed class CopilotCliSessionReader
 
                 projector.Accept(
                     document.RootElement,
-                    rawContent,
                     lineNumber,
-                    line.ByteOffset);
+                    line.ByteOffset,
+                    line.ByteLength);
             }
             catch (JsonException exception)
             {
                 malformedLineCount++;
                 isComplete = false;
                 projector.AddUnparsedSource(
-                    rawContent,
                     lineNumber,
-                    line.ByteOffset);
+                    line.ByteOffset,
+                    line.ByteLength);
 
                 string tailDescription = line.IsTerminated
                     ? "malformed JSON"

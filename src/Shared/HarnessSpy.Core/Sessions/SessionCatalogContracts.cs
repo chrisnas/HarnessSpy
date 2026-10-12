@@ -2,15 +2,63 @@ using HarnessSpy.Core.Models;
 
 namespace HarnessSpy.Core.Sessions;
 
-public sealed record SessionDiscoveryLimits(
-    int MaximumDirectories = 10_000,
-    int MaximumFiles = 25_000,
-    int MaximumRecordsPerSession = 250_000,
-    int MaximumLineBytes = 16 * 1024 * 1024,
-    long MaximumFileBytes = 2L * 1024 * 1024 * 1024,
-    TimeSpan? MaximumDuration = null)
+public sealed class SessionDiscoveryLimits
 {
+    public SessionDiscoveryLimits(
+        int MaximumDirectories = 10_000,
+        int MaximumFiles = 25_000,
+        int MaximumRecordsPerSession = 250_000,
+        int MaximumLineBytes = 16 * 1024 * 1024,
+        long MaximumFileBytes = 2L * 1024 * 1024 * 1024,
+        TimeSpan? MaximumDuration = null,
+        int MaximumHydratedSessions = int.MaxValue,
+        int MaximumConcurrentHydrations = 4,
+        long MaximumHydrationBytes = 128L * 1024 * 1024)
+    {
+        this.MaximumDirectories = MaximumDirectories;
+        this.MaximumFiles = MaximumFiles;
+        this.MaximumRecordsPerSession = MaximumRecordsPerSession;
+        this.MaximumLineBytes = MaximumLineBytes;
+        this.MaximumFileBytes = MaximumFileBytes;
+        this.MaximumDuration = MaximumDuration;
+        this.MaximumHydratedSessions = MaximumHydratedSessions;
+        this.MaximumConcurrentHydrations = MaximumConcurrentHydrations;
+        this.MaximumHydrationBytes = MaximumHydrationBytes;
+    }
+
+    public int MaximumDirectories { get; private set; }
+
+    public int MaximumFiles { get; private set; }
+
+    public int MaximumRecordsPerSession { get; private set; }
+
+    public int MaximumLineBytes { get; private set; }
+
+    public long MaximumFileBytes { get; private set; }
+
+    public TimeSpan? MaximumDuration { get; private set; }
+
+    public int MaximumHydratedSessions { get; private set; }
+
+    public int MaximumConcurrentHydrations { get; private set; }
+
+    public long MaximumHydrationBytes { get; private set; }
+
     public TimeSpan EffectiveMaximumDuration => MaximumDuration ?? TimeSpan.FromSeconds(30);
+
+    public void UpdateFrom(SessionDiscoveryLimits other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        MaximumDirectories = other.MaximumDirectories;
+        MaximumFiles = other.MaximumFiles;
+        MaximumRecordsPerSession = other.MaximumRecordsPerSession;
+        MaximumLineBytes = other.MaximumLineBytes;
+        MaximumFileBytes = other.MaximumFileBytes;
+        MaximumDuration = other.MaximumDuration;
+        MaximumHydratedSessions = other.MaximumHydratedSessions;
+        MaximumConcurrentHydrations = other.MaximumConcurrentHydrations;
+        MaximumHydrationBytes = other.MaximumHydrationBytes;
+    }
 }
 
 public sealed class SessionDiscoveryContext
@@ -36,7 +84,28 @@ public sealed class SessionDiscoveryContext
     public Func<string, string?> GetEnvironmentVariable { get; }
 
     public SessionDiscoveryLimits Limits { get; }
+
+    public void UpdateLimits(SessionDiscoveryLimits limits) =>
+        Limits.UpdateFrom(limits);
 }
+
+public enum SessionRefreshTrigger
+{
+    Startup,
+    RefreshButton,
+    HarnessSelection
+}
+
+public enum SessionRefreshMode
+{
+    CacheAware,
+    ForceFull
+}
+
+public sealed record SessionRefreshRequest(
+    SessionRefreshTrigger Trigger,
+    IReadOnlySet<HookProvider>? Providers = null,
+    SessionRefreshMode Mode = SessionRefreshMode.CacheAware);
 
 public interface ISessionCatalogSource
 {

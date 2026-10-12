@@ -84,9 +84,10 @@ public enum EnrichmentCaptureState
 public sealed record SystemPromptContent(
     string Text,
     string ContentHash,
-    int PartCount)
+    int PartCount,
+    int? OriginalCharacterCount = null)
 {
-    public int CharacterCount => Text.Length;
+    public int CharacterCount => OriginalCharacterCount ?? Text.Length;
 }
 
 // Navigable relationships between nodes that do not replace the existing

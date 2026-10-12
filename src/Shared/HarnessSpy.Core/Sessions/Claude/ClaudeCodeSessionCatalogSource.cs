@@ -503,7 +503,6 @@ public sealed class ClaudeCodeSessionCatalogSource : ISessionCatalogSource
                             catalog.GetOrCreate(parentSessionId).AddAgentMetadata(
                                 project,
                                 metadataFile,
-                                raw,
                                 json);
                         }
 
