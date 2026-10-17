@@ -17,6 +17,40 @@ public sealed class CopilotPlanActivityExtractor
         ArgumentNullException.ThrowIfNull(session);
 
         List<SessionPlanActivity> activities = [];
+        foreach (SessionEventRecord record in session.SessionEvents)
+        {
+            AddNativePlanActivity(
+                session,
+                planCatalogId,
+                planPath,
+                turn: null,
+                record,
+                activities);
+        }
+
+        foreach (SessionTurn turn in session.Turns)
+        {
+            foreach (SessionEventRecord record in turn.Events)
+            {
+                AddNativePlanActivity(
+                    session,
+                    planCatalogId,
+                    planPath,
+                    turn,
+                    record,
+                    activities);
+            }
+        }
+
+        // Current Copilot versions emit session.plan_changed only after the
+        // provider accepted a plan mutation. Prefer that native signal over
+        // the corresponding create/edit tool request so one mutation is not
+        // counted twice. Older logs fall back to tool evidence below.
+        if (activities.Count > 0)
+        {
+            return activities;
+        }
+
         foreach (SessionTurn turn in session.Turns)
         {
             foreach (SessionEventRecord record in turn.Events)
@@ -42,7 +76,8 @@ public sealed class CopilotPlanActivityExtractor
 
                 activities.Add(new SessionPlanActivity
                 {
-                    Id = $"copilot-plan-activity:{record.Id}",
+                    Id =
+                        $"copilot-plan-activity:{planCatalogId}:{record.Id}",
                     Kind = SessionPlanActivityKind.Updated,
                     Provider = HookProvider.GitHubCopilot,
                     CatalogSessionId = session.CatalogSessionId,
@@ -67,5 +102,49 @@ public sealed class CopilotPlanActivityExtractor
         }
 
         return activities;
+    }
+
+    private static void AddNativePlanActivity(
+        SessionCatalogEntry session,
+        string planCatalogId,
+        string? planPath,
+        SessionTurn? turn,
+        SessionEventRecord record,
+        ICollection<SessionPlanActivity> activities)
+    {
+        if (!string.Equals(
+                record.NativeName,
+                "session.plan_changed",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        SessionPlanActivityKind kind = string.Equals(
+            record.Status,
+            "create",
+            StringComparison.OrdinalIgnoreCase)
+                ? SessionPlanActivityKind.Created
+                : SessionPlanActivityKind.Updated;
+        activities.Add(new SessionPlanActivity
+        {
+            Id =
+                $"copilot-plan-activity:{planCatalogId}:{record.Id}",
+            Kind = kind,
+            Provider = HookProvider.GitHubCopilot,
+            CatalogSessionId = session.CatalogSessionId,
+            NativeSessionId = session.NativeSessionId,
+            TurnId = record.TurnId ?? turn?.Id,
+            TurnNumber = turn?.Number,
+            SourceEventId = record.Id,
+            Order = record.Order,
+            TimestampUtc = record.TimestampUtc,
+            Locator = new SessionPlanLocator(Path: planPath),
+            IsSuccessful = !record.IsFailure && !record.IsAborted,
+            HasOpaqueResult = true,
+            EstablishesOwnership = true,
+            Evidence = InferenceEvidence.Observed,
+            Provenance = record.Provenance
+        });
     }
 }

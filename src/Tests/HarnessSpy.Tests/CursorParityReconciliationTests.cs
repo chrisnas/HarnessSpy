@@ -28,6 +28,8 @@ public sealed class CursorParityReconciliationTests
     [InlineData("glob_file_search", CanonicalToolKind.FileSearch)]
     [InlineData("read_file_v2", CanonicalToolKind.FileRead)]
     [InlineData("edit_file_v2", CanonicalToolKind.FileEdit)]
+    [InlineData("ReadFile", CanonicalToolKind.FileRead)]
+    [InlineData("ApplyPatch", CanonicalToolKind.FileEdit)]
     [InlineData("Shell", CanonicalToolKind.Shell)]
     [InlineData("Grep", CanonicalToolKind.TextSearch)]
     public void DesktopAliasesResolveToTranscriptKind(

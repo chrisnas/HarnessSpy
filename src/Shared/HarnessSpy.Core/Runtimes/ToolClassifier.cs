@@ -22,11 +22,16 @@ internal static class ToolClassifier
         return nativeToolName.ToLowerInvariant() switch
         {
             "shell" or "bash" or "powershell" => CanonicalToolKind.Shell,
-            "read" or "view" => CanonicalToolKind.FileRead,
-            "write" or "create" => CanonicalToolKind.FileWrite,
-            "edit" or "strreplace" or "str_replace_editor" or "apply_patch" or "editfiles" =>
+            "read" or "view" or "readfile" or "read_file" =>
+                CanonicalToolKind.FileRead,
+            "write" or "create" or "writefile" or "write_file" =>
+                CanonicalToolKind.FileWrite,
+            "edit" or "strreplace" or "str_replace_editor" or
+                "apply_patch" or "applypatch" or "editfiles" or
+                "editfile" or "edit_file" =>
                 CanonicalToolKind.FileEdit,
-            "delete" => CanonicalToolKind.FileDelete,
+            "delete" or "deletefile" or "delete_file" =>
+                CanonicalToolKind.FileDelete,
             "grep" or "rg" => CanonicalToolKind.TextSearch,
             "glob" => CanonicalToolKind.FileSearch,
             "editnotebook" or "notebookedit" => CanonicalToolKind.Notebook,

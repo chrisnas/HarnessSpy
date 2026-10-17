@@ -265,6 +265,8 @@ internal sealed class CopilotSessionProjector
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, CopilotToolCorrelation> _tools =
         new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _nativeEventTurns =
+        new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _eventTypeCounts =
         new(StringComparer.Ordinal);
     private readonly HashSet<string> _eventIds = new(StringComparer.Ordinal);
@@ -578,6 +580,8 @@ internal sealed class CopilotSessionProjector
             _eventCwd;
         WorkspaceContext normalizedWorkspace =
             _workspaceNormalizer.FromPath(workspaceRoot);
+        SessionWorkspaceInference? workspaceInference =
+            BuildWorkspaceConflictInference();
 
         DateTimeOffset? lastActivity =
             Maximum(_lastActivityAtUtc, _workspace.UpdatedAtUtc);
@@ -598,6 +602,7 @@ internal sealed class CopilotSessionProjector
 
         string title =
             _workspace.Name ??
+            _workspace.Summary ??
             PreviewTitle(_firstPrompt) ??
             _source.NativeSessionId;
 
@@ -617,6 +622,7 @@ internal sealed class CopilotSessionProjector
             Provider = HookProvider.GitHubCopilot,
             Surface = HookSurface.CopilotCli,
             Workspace = normalizedWorkspace,
+            WorkspaceInference = workspaceInference,
             Title = title,
             StartedAtUtc = startedAt,
             LastActivityAtUtc = lastActivity,
@@ -633,6 +639,86 @@ internal sealed class CopilotSessionProjector
             Metadata = new ReadOnlyDictionary<string, string?>(_metadata),
             Sources = sources
         };
+    }
+
+    private SessionWorkspaceInference? BuildWorkspaceConflictInference()
+    {
+        string? metadataRoot = _workspace.GitRoot ?? _workspace.Cwd;
+        string? eventRoot = _eventGitRoot ?? _eventCwd;
+        WorkspaceContext metadataWorkspace =
+            _workspaceNormalizer.FromPath(metadataRoot);
+        WorkspaceContext eventWorkspace =
+            _workspaceNormalizer.FromPath(eventRoot);
+        if (metadataWorkspace.Kind != WorkspaceContextKind.Normal ||
+            eventWorkspace.Kind != WorkspaceContextKind.Normal ||
+            string.Equals(
+                metadataWorkspace.Key,
+                eventWorkspace.Key,
+                StringComparison.OrdinalIgnoreCase) ||
+            PathsOverlap(
+                metadataWorkspace.DisplayRoots[0],
+                eventWorkspace.DisplayRoots[0]))
+        {
+            return null;
+        }
+
+        return new SessionWorkspaceInference(
+            WorkspaceContext.Unknown,
+            InferenceEvidence.Ambiguous,
+            95,
+            [
+                new SessionWorkspaceEvidence(
+                    SessionWorkspaceEvidenceKind.ObservedWorkspaceRoot,
+                    metadataRoot!,
+                    95),
+                new SessionWorkspaceEvidence(
+                    SessionWorkspaceEvidenceKind.ObservedWorkspaceRoot,
+                    eventRoot!,
+                    90)
+            ],
+            [
+                new SessionWorkspaceCandidate(metadataWorkspace, 95),
+                new SessionWorkspaceCandidate(eventWorkspace, 90)
+            ]);
+    }
+
+    private static bool PathsOverlap(string first, string second)
+    {
+        try
+        {
+            string normalizedFirst = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(first));
+            string normalizedSecond = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(second));
+            return IsWithin(normalizedFirst, normalizedSecond) ||
+                IsWithin(normalizedSecond, normalizedFirst);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or
+            NotSupportedException or
+            PathTooLongException)
+        {
+            return false;
+        }
+
+        static bool IsWithin(string path, string root)
+        {
+            if (string.Equals(
+                    path,
+                    root,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string prefix = root.EndsWith(Path.DirectorySeparatorChar) ||
+                root.EndsWith(Path.AltDirectorySeparatorChar)
+                    ? root
+                    : root + Path.DirectorySeparatorChar;
+            return path.StartsWith(
+                prefix,
+                StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private bool HandleSessionRecord(CopilotEnvelopeContext context)
@@ -762,8 +848,42 @@ internal sealed class CopilotSessionProjector
                     _json.String(data, "allowAllPermissionMode");
                 return true;
 
+            case "session.plan_changed":
+                HandlePlanChanged(context);
+                return true;
+
             default:
                 return false;
+        }
+    }
+
+    private void HandlePlanChanged(CopilotEnvelopeContext context)
+    {
+        string? turnId = context.ParentId is string parentId &&
+            _nativeEventTurns.TryGetValue(parentId, out string? parentTurn)
+                ? parentTurn
+                : ResolveTurn(
+                    context.Data,
+                    context.AgentId,
+                    allowCreate: false,
+                    preferredSyntheticPrefix: "plan");
+        CopilotEventSpec spec = new()
+        {
+            NativeName = context.Type,
+            Role = ObservationRole.Generic,
+            EventKind = CanonicalEventKind.ProviderSpecific,
+            TurnId = turnId,
+            Status = _json.String(context.Data, "operation"),
+            ExcludeFromSummary = true,
+            Evidence = InferenceEvidence.Observed
+        };
+        if (turnId is not null)
+        {
+            AddToTurn(turnId, context, spec);
+        }
+        else
+        {
+            _sessionEvents.Add(Materialize(context, spec));
         }
     }
 
@@ -1675,7 +1795,12 @@ internal sealed class CopilotSessionProjector
             spec.Evidence == InferenceEvidence.Observed
                 ? InferenceEvidence.Observed
                 : InferenceEvidence.Derived);
-        turn.Add(Materialize(context, spec));
+        SessionEventRecord record = Materialize(context, spec);
+        turn.Add(record);
+        if (record.Provenance.RecordId is string nativeEventId)
+        {
+            _nativeEventTurns[nativeEventId] = turnId;
+        }
     }
 
     private void AttachPendingMainEvents(CopilotTurnBuilder turn)

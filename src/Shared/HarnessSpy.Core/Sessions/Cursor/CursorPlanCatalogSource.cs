@@ -15,6 +15,7 @@ public sealed class CursorPlanCatalogSource
     private readonly SessionPlanFileReader _fileReader;
     private readonly SessionPlanContentNormalizer _normalizer;
     private readonly CursorPlanDocumentParser _documentParser;
+    private readonly CursorPlanEvidenceExtractor _evidenceExtractor;
     private readonly string _plansRoot;
 
     public CursorPlanCatalogSource(SessionDiscoveryContext context)
@@ -23,6 +24,7 @@ public sealed class CursorPlanCatalogSource
         _fileReader = new SessionPlanFileReader(context.Limits);
         _normalizer = new SessionPlanContentNormalizer();
         _documentParser = new CursorPlanDocumentParser();
+        _evidenceExtractor = new CursorPlanEvidenceExtractor();
         _plansRoot = Path.GetFullPath(Path.Combine(
             _context.UserProfile,
             ".cursor",
@@ -120,6 +122,10 @@ public sealed class CursorPlanCatalogSource
                 CreatedAtUtc = null,
                 LastModifiedAtUtc = read.LastWriteTimeUtc,
                 StructuredKey = document.StructuredKey,
+                NativeSessionIdHint =
+                    _evidenceExtractor.ExtractNativeSessionIdHint(read.Content),
+                WorkspacePathHints =
+                    _evidenceExtractor.ExtractWorkspacePathHints(read.Content),
                 Sources = [read.Provenance],
                 Metadata = metadata
             });

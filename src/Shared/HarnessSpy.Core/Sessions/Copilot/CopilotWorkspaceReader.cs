@@ -20,6 +20,8 @@ internal sealed class CopilotWorkspaceSnapshot
 
     public string? Name { get; init; }
 
+    public string? Summary { get; init; }
+
     public DateTimeOffset? CreatedAtUtc { get; init; }
 
     public DateTimeOffset? UpdatedAtUtc { get; init; }
@@ -27,6 +29,20 @@ internal sealed class CopilotWorkspaceSnapshot
     public string? ClientName { get; init; }
 
     public string? HostType { get; init; }
+
+    public bool? UserNamed { get; init; }
+
+    public long? SummaryCount { get; init; }
+
+    public long? ForkCount { get; init; }
+
+    public bool? RemoteSteerable { get; init; }
+
+    public string? MissionControlTaskId { get; init; }
+
+    public string? MissionControlSessionId { get; init; }
+
+    public string? MissionControlLastEventId { get; init; }
 
     public SessionSourceProvenance? Provenance { get; init; }
 
@@ -226,35 +242,53 @@ internal sealed class CopilotWorkspaceReader
         string? repository = Scalar(values, "repository", "repository_name", "repositoryName");
         string? branch = Scalar(values, "branch", "git_branch", "gitBranch");
         string? name = Scalar(values, "name", "title");
+        string? summary = Scalar(values, "summary");
         string? clientName = Scalar(values, "client_name", "clientName");
         string? hostType = Scalar(values, "host_type", "hostType");
+        bool? userNamed = Boolean(values, "user_named", "userNamed");
+        long? summaryCount = Integer(values, "summary_count", "summaryCount");
+        long? forkCount = Integer(values, "fork_count", "forkCount");
+        bool? remoteSteerable = Boolean(
+            values,
+            "remote_steerable",
+            "remoteSteerable");
+        string? missionControlTaskId = Scalar(
+            values,
+            "mc_task_id",
+            "mcTaskId");
+        string? missionControlSessionId = Scalar(
+            values,
+            "mc_session_id",
+            "mcSessionId");
+        string? missionControlLastEventId = Scalar(
+            values,
+            "mc_last_event_id",
+            "mcLastEventId");
         object? createdAt = Value(values, "created_at", "createdAt", "creation_time");
         object? updatedAt = Value(values, "updated_at", "updatedAt", "update_time");
 
-        Dictionary<string, string?> metadata =
-            new(StringComparer.Ordinal)
-            {
-                ["id"] = id,
-                ["cwd"] = cwd,
-                ["git_root"] = gitRoot,
-                ["repository"] = repository,
-                ["branch"] = branch,
-                ["name"] = name,
-                ["client_name"] = clientName,
-                ["host_type"] = hostType,
-                ["created_at"] = ScalarValue(createdAt),
-                ["updated_at"] = ScalarValue(updatedAt),
-                ["workspace.id"] = id,
-                ["workspace.cwd"] = cwd,
-                ["workspace.git_root"] = gitRoot,
-                ["workspace.repository"] = repository,
-                ["workspace.branch"] = branch,
-                ["workspace.name"] = name,
-                ["workspace.client_name"] = clientName,
-                ["workspace.host_type"] = hostType,
-                ["workspace.created_at"] = ScalarValue(createdAt),
-                ["workspace.updated_at"] = ScalarValue(updatedAt)
-            };
+        Dictionary<string, string?> metadata = PreserveScalarMetadata(values);
+        SetMetadata(metadata, "id", id);
+        SetMetadata(metadata, "cwd", cwd);
+        SetMetadata(metadata, "git_root", gitRoot);
+        SetMetadata(metadata, "repository", repository);
+        SetMetadata(metadata, "branch", branch);
+        SetMetadata(metadata, "name", name);
+        SetMetadata(metadata, "summary", summary);
+        SetMetadata(metadata, "client_name", clientName);
+        SetMetadata(metadata, "host_type", hostType);
+        SetMetadata(metadata, "user_named", ScalarValue(userNamed));
+        SetMetadata(metadata, "summary_count", ScalarValue(summaryCount));
+        SetMetadata(metadata, "fork_count", ScalarValue(forkCount));
+        SetMetadata(
+            metadata,
+            "remote_steerable",
+            ScalarValue(remoteSteerable));
+        SetMetadata(metadata, "mc_task_id", missionControlTaskId);
+        SetMetadata(metadata, "mc_session_id", missionControlSessionId);
+        SetMetadata(metadata, "mc_last_event_id", missionControlLastEventId);
+        SetMetadata(metadata, "created_at", ScalarValue(createdAt));
+        SetMetadata(metadata, "updated_at", ScalarValue(updatedAt));
 
         return new CopilotWorkspaceReadResult(
             new CopilotWorkspaceSnapshot
@@ -265,16 +299,53 @@ internal sealed class CopilotWorkspaceReader
                 Repository = repository,
                 Branch = branch,
                 Name = name,
+                Summary = summary,
                 CreatedAtUtc = _timestampParser.Parse(createdAt),
                 UpdatedAtUtc = _timestampParser.Parse(updatedAt),
                 ClientName = clientName,
                 HostType = hostType,
+                UserNamed = userNamed,
+                SummaryCount = summaryCount,
+                ForkCount = forkCount,
+                RemoteSteerable = remoteSteerable,
+                MissionControlTaskId = missionControlTaskId,
+                MissionControlSessionId = missionControlSessionId,
+                MissionControlLastEventId = missionControlLastEventId,
                 Provenance = provenance,
                 File = binding,
                 Metadata = metadata
             },
             isComplete,
             warnings);
+    }
+
+    private static Dictionary<string, string?> PreserveScalarMetadata(
+        IReadOnlyDictionary<object, object?> values)
+    {
+        Dictionary<string, string?> metadata = new(StringComparer.Ordinal);
+        foreach ((object key, object? value) in values)
+        {
+            string? name = Convert.ToString(key, CultureInfo.InvariantCulture);
+            string? scalar = ScalarValue(value);
+            if (string.IsNullOrWhiteSpace(name) || scalar is null)
+            {
+                continue;
+            }
+
+            metadata[name] = scalar;
+            metadata[$"workspace.{name}"] = scalar;
+        }
+
+        return metadata;
+    }
+
+    private static void SetMetadata(
+        IDictionary<string, string?> metadata,
+        string name,
+        string? value)
+    {
+        metadata[name] = value;
+        metadata[$"workspace.{name}"] = value;
     }
 
     private static bool HasOversizedLine(
@@ -343,6 +414,24 @@ internal sealed class CopilotWorkspaceReader
 
         return ScalarValue(value);
     }
+
+    private static bool? Boolean(
+        IReadOnlyDictionary<object, object?> values,
+        params string[] keys) =>
+        bool.TryParse(Scalar(values, keys), out bool value)
+            ? value
+            : null;
+
+    private static long? Integer(
+        IReadOnlyDictionary<object, object?> values,
+        params string[] keys) =>
+        long.TryParse(
+            Scalar(values, keys),
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out long value)
+                ? value
+                : null;
 
     private static string? ScalarValue(object? value)
     {

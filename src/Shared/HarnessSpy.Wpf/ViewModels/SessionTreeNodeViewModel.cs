@@ -50,7 +50,8 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         string? rawSource = null,
         NodeSummary? nodeSummary = null,
         SessionPlanArtifact? plan = null,
-        SessionPlanActivity? planActivity = null)
+        SessionPlanActivity? planActivity = null,
+        int associatedPlanCount = 0)
     {
         StableId = stableId;
         Header = header;
@@ -68,6 +69,7 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         NodeSummary = nodeSummary;
         Plan = plan;
         PlanActivity = planActivity;
+        AssociatedPlanCount = associatedPlanCount;
     }
 
     public string StableId { get; }
@@ -97,6 +99,8 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
     public SessionPlanArtifact? Plan { get; private set; }
 
     public SessionPlanActivity? PlanActivity { get; private set; }
+
+    public int AssociatedPlanCount { get; private set; }
 
     // For a plan-activity node, the StableId of the canonical plan node it links
     // to, so selecting the activity can navigate to the plan.
@@ -129,6 +133,12 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         bool wasFailure = IsFailure;
         bool wasSkill = IsSkill;
         bool wasSystemPrompt = IsSystemPrompt;
+        bool wasInferredWorkspacePlan = IsInferredWorkspacePlan;
+        bool wasInferredWorkspaceSession = IsInferredWorkspaceSession;
+        bool wasAmbiguousWorkspaceSession = IsAmbiguousWorkspaceSession;
+        bool hadWorkspacePlacementHint = HasWorkspacePlacementHint;
+        string oldWorkspacePlacementGlyph = WorkspacePlacementGlyph;
+        int previousAssociatedPlanCount = AssociatedPlanCount;
         string oldHeaderPrefix = HeaderPrefix;
         bool hadHoverText = HasHoverText;
         bool hadSimpleTooltip = HasSimpleTooltip;
@@ -166,6 +176,7 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         EventRecord = other.EventRecord;
         Plan = other.Plan;
         PlanActivity = other.PlanActivity;
+        AssociatedPlanCount = other.AssociatedPlanCount;
         LinkedPlanNodeId = other.LinkedPlanNodeId;
         AreChildrenLoaded = other.AreChildrenLoaded;
 
@@ -246,6 +257,34 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
             nameof(IsSystemPrompt),
             wasSystemPrompt,
             IsSystemPrompt);
+        NotifyIfChanged(
+            nameof(IsInferredWorkspacePlan),
+            wasInferredWorkspacePlan,
+            IsInferredWorkspacePlan);
+        NotifyIfChanged(
+            nameof(IsInferredWorkspaceSession),
+            wasInferredWorkspaceSession,
+            IsInferredWorkspaceSession);
+        NotifyIfChanged(
+            nameof(IsAmbiguousWorkspaceSession),
+            wasAmbiguousWorkspaceSession,
+            IsAmbiguousWorkspaceSession);
+        NotifyIfChanged(
+            nameof(HasWorkspacePlacementHint),
+            hadWorkspacePlacementHint,
+            HasWorkspacePlacementHint);
+        if (!string.Equals(
+            oldWorkspacePlacementGlyph,
+            WorkspacePlacementGlyph,
+            StringComparison.Ordinal))
+        {
+            OnPropertyChanged(nameof(WorkspacePlacementGlyph));
+        }
+        if (previousAssociatedPlanCount != AssociatedPlanCount)
+        {
+            OnPropertyChanged(nameof(AssociatedPlanCount));
+            OnPropertyChanged(nameof(HasAssociatedPlans));
+        }
         NotifyIfChanged(
             nameof(HasReadableContent),
             hadReadableContent,
@@ -346,6 +385,32 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
 
     public bool IsPlanActivity => Kind == SessionTreeNodeKind.PlanActivity;
 
+    public bool IsInferredWorkspacePlan =>
+        IsPlan &&
+        Plan?.BoundCatalogSessionId is null &&
+        Plan?.WorkspaceInference is not null;
+
+    public bool IsInferredWorkspaceSession =>
+        IsSession &&
+        Session?.WorkspaceInference?.Workspace.Kind ==
+            WorkspaceContextKind.Normal;
+
+    public bool IsAmbiguousWorkspaceSession =>
+        IsSession &&
+        Session?.WorkspaceInference?.Evidence ==
+            InferenceEvidence.Ambiguous;
+
+    public bool HasWorkspacePlacementHint =>
+        IsInferredWorkspacePlan ||
+        IsInferredWorkspaceSession ||
+        IsAmbiguousWorkspaceSession;
+
+    public string WorkspacePlacementGlyph =>
+        IsAmbiguousWorkspaceSession ? "~" : "?";
+
+    public bool HasAssociatedPlans =>
+        IsSession && AssociatedPlanCount > 0;
+
     public bool IsSystemPromptGroup =>
         Kind == SessionTreeNodeKind.SystemPromptGroup;
 
@@ -359,6 +424,14 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
     public bool IsPlanGroup => Kind == SessionTreeNodeKind.PlanGroup;
 
     public bool IsPlaceholder => Kind == SessionTreeNodeKind.Placeholder;
+
+    public bool HasTreeIcon =>
+        IsSession ||
+        IsFolder ||
+        IsWorkspace ||
+        IsOrphanPlansRoot ||
+        IsPlanGroup ||
+        IsPlan;
 
     public bool AreChildrenLoaded
     {

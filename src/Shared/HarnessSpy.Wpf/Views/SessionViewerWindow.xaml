@@ -351,50 +351,79 @@
                             Background="Transparent"
                             MouseEnter="DashboardRow_MouseEnter"
                             MouseLeave="DashboardRow_MouseLeave">
-                    <Image Width="16"
-                           Height="16"
-                           Margin="0,0,6,0"
-                           VerticalAlignment="Center">
-                        <Image.Style>
-                            <Style TargetType="Image">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsSession}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsFolder}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsWorkspace}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.Cursor}">
-                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Cursor.png" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.ClaudeCode}">
-                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Claude.png" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.GitHubCopilot}">
-                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Copilot.png" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsOrphanPlansRoot}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsPlanGroup}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                        <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsPlan}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                        <Setter Property="Source" Value="{StaticResource PlanIconImage}" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Image.Style>
-                    </Image>
+                    <Grid Width="18"
+                          Height="18"
+                          Margin="0,0,6,0"
+                          VerticalAlignment="Center"
+                          Visibility="{Binding HasTreeIcon, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <Image Width="16"
+                               Height="16"
+                               HorizontalAlignment="Left"
+                               VerticalAlignment="Top">
+                            <Image.Style>
+                                <Style TargetType="Image">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsFolder}" Value="True">
+                                            <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsWorkspace}" Value="True">
+                                            <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.Cursor}">
+                                            <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Cursor.png" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.ClaudeCode}">
+                                            <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Claude.png" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Provider}" Value="{x:Static models:HookProvider.GitHubCopilot}">
+                                            <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Copilot.png" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsOrphanPlansRoot}" Value="True">
+                                            <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsPlanGroup}" Value="True">
+                                            <Setter Property="Source" Value="pack://application:,,,/SessionViewer;component/Assets/Folder32.png" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsPlan}" Value="True">
+                                            <Setter Property="Source" Value="{StaticResource PlanIconImage}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Image.Style>
+                        </Image>
+
+                        <Border Width="11"
+                                Height="11"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Bottom"
+                                Background="White"
+                                BorderBrush="White"
+                                BorderThickness="1"
+                                CornerRadius="2"
+                                Visibility="{Binding HasAssociatedPlans, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <Image Source="{StaticResource PlanIconImage}"
+                                   Stretch="Uniform" />
+                        </Border>
+
+                        <Border Width="10"
+                                Height="10"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Background="#BF8700"
+                                BorderBrush="White"
+                                BorderThickness="1"
+                                CornerRadius="5"
+                                ToolTip="Workspace placement is inferred. Select the node to inspect its evidence."
+                                Visibility="{Binding HasWorkspacePlacementHint, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Margin="0,-2,0,0"
+                                       FontSize="8"
+                                       FontWeight="Bold"
+                                       Foreground="White"
+                                       Text="{Binding WorkspacePlacementGlyph}" />
+                        </Border>
+                    </Grid>
 
                     <TextBlock Margin="0,0,4,0"
                                FontWeight="Bold"

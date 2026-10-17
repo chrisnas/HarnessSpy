@@ -79,6 +79,34 @@ public sealed class SessionCatalogModelTests
     }
 
     [Fact]
+    public async Task CopilotAutopilotOpenerUsesMissionControlSessionId()
+    {
+        RecordingLauncher launcher = new();
+        ProviderSessionOpener opener = new(launcher);
+        SessionCatalogEntry session = Session(
+            "copilot:local-session",
+            "local-session",
+            HookProvider.GitHubCopilot,
+            WorkspaceContext.FromRoot(@"C:\repo"),
+            "test",
+            []) with
+        {
+            Metadata = new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["client_name"] = "github/autopilot",
+                ["mc_session_id"] = "mission-control-session"
+            }
+        };
+
+        SessionOpenResult result = await opener.OpenAsync(session);
+
+        Assert.True(result.Started);
+        Assert.Equal(
+            "ghapp://sessions/mission-control-session",
+            launcher.FileName);
+    }
+
+    [Fact]
     public async Task CoordinatorMergesSourceResultsAndRaisesUpdate()
     {
         SessionCatalogEntry first = Session(
@@ -259,6 +287,8 @@ public sealed class SessionCatalogModelTests
 
     private sealed class RecordingLauncher : IExternalLauncher
     {
+        public string FileName { get; private set; } = string.Empty;
+
         public string Arguments { get; private set; } = string.Empty;
 
         public Task LaunchAsync(
@@ -268,6 +298,7 @@ public sealed class SessionCatalogModelTests
             bool useShellExecute,
             CancellationToken cancellationToken)
         {
+            FileName = fileName;
             Arguments = arguments;
             return Task.CompletedTask;
         }

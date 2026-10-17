@@ -387,6 +387,27 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
                     hash.Add(root, StringComparer.OrdinalIgnoreCase);
                 }
 
+                hash.Add(
+                    session.WorkspaceInference?.Workspace.Key,
+                    StringComparer.OrdinalIgnoreCase);
+                hash.Add(session.WorkspaceInference?.Evidence);
+                hash.Add(session.WorkspaceInference?.Score);
+                foreach (SessionWorkspaceEvidence evidence in
+                         session.WorkspaceInference?.EvidenceItems ?? [])
+                {
+                    hash.Add(evidence.Kind);
+                    hash.Add(evidence.Value, StringComparer.OrdinalIgnoreCase);
+                    hash.Add(evidence.Score);
+                }
+                foreach (SessionWorkspaceCandidate alternative in
+                         session.WorkspaceInference?.Alternatives ?? [])
+                {
+                    hash.Add(
+                        alternative.Workspace.Key,
+                        StringComparer.OrdinalIgnoreCase);
+                    hash.Add(alternative.Score);
+                }
+
                 hash.Add(session.Title, StringComparer.Ordinal);
                 hash.Add(session.StartedAtUtc);
                 hash.Add(session.LastActivityAtUtc);
@@ -471,6 +492,17 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
             hash.Add(plan.HasIncompleteRevisionHistory);
             hash.Add(plan.Title, StringComparer.Ordinal);
             hash.Add(plan.Workspace.Key, StringComparer.Ordinal);
+            hash.Add(
+                plan.WorkspaceInference?.Workspace.Key,
+                StringComparer.Ordinal);
+            hash.Add(plan.WorkspaceInference?.Evidence);
+            foreach (SessionPlanWorkspaceEvidence item in
+                     plan.WorkspaceInference?.EvidenceItems ?? [])
+            {
+                hash.Add(item.Kind);
+                hash.Add(item.Value, StringComparer.OrdinalIgnoreCase);
+            }
+
             foreach (SessionPlanRevision revision in plan.Revisions)
             {
                 hash.Add(revision.Sequence);

@@ -141,6 +141,15 @@ public sealed class SessionCatalogSourceTests
 
             Assert.Equal(4, result.Sessions.Count);
             Assert.NotEmpty(progress.Values);
+            Assert.Equal(
+                [
+                    "desktop-session-4",
+                    "desktop-session-3",
+                    "desktop-session-2",
+                    "desktop-session-1"
+                ],
+                result.Sessions.Select(
+                    static session => session.NativeSessionId));
 
             // Skeletons (no turns) are published first, then the same sessions
             // are rehydrated with their turns. Snapshots are time-coalesced, so
@@ -212,6 +221,117 @@ public sealed class SessionCatalogSourceTests
         finally
         {
             SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CursorWorkspaceCatalogReadsManifestWithoutDatabase()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string workspaceRoot = Path.Combine(
+                root,
+                "repos",
+                "repo_with_punctuation");
+            Directory.CreateDirectory(workspaceRoot);
+            string storage = Path.Combine(
+                root,
+                "Cursor",
+                "User",
+                "workspaceStorage",
+                "workspace-id");
+            Directory.CreateDirectory(storage);
+            await File.WriteAllTextAsync(
+                Path.Combine(storage, "workspace.json"),
+                JsonSerializer.Serialize(new
+                {
+                    folder = new Uri(workspaceRoot).AbsoluteUri
+                }));
+
+            SessionDiscoveryContext context = new(
+                root,
+                root,
+                _ => null,
+                new SessionDiscoveryLimits(
+                    MaximumDuration: TimeSpan.FromSeconds(5)));
+            CursorKnownWorkspaceScanResult result =
+                await new CursorWorkspaceManifestCatalog(
+                    context,
+                    new WorkspaceNormalizer())
+                    .ScanAsync(CancellationToken.None);
+
+            WorkspaceContext workspace = Assert.Single(result.Workspaces);
+            Assert.True(result.IsComplete);
+            Assert.Equal(
+                WorkspaceContext.FromRoot(workspaceRoot).Key,
+                workspace.Key);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CursorSourceUsesManifestSlugForInferredPlacement()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            const string projectKey =
+                "c-inference-test-repo-with-punctuation";
+            string transcriptDirectory = Path.Combine(
+                root,
+                ".cursor",
+                "projects",
+                projectKey,
+                "agent-transcripts",
+                "cursor-session");
+            Directory.CreateDirectory(transcriptDirectory);
+            File.Copy(
+                Fixture("Cursor", "session.jsonl"),
+                Path.Combine(
+                    transcriptDirectory,
+                    "cursor-session.jsonl"));
+
+            string storage = Path.Combine(
+                root,
+                "Cursor",
+                "User",
+                "workspaceStorage",
+                "workspace-id");
+            Directory.CreateDirectory(storage);
+            await File.WriteAllTextAsync(
+                Path.Combine(storage, "workspace.json"),
+                """
+                {
+                  "folder": "file:///c%3A/inference-test/repo_with_punctuation"
+                }
+                """);
+
+            SessionDiscoveryContext context = new(
+                root,
+                root,
+                _ => null,
+                new SessionDiscoveryLimits(
+                    MaximumDuration: TimeSpan.FromSeconds(5)));
+            SessionCatalogEntry session = Assert.Single(
+                (await new CursorSessionCatalogSource(context)
+                    .ScanAsync(CancellationToken.None)).Sessions);
+
+            SessionWorkspaceInference inference = Assert.IsType<
+                SessionWorkspaceInference>(session.WorkspaceInference);
+            Assert.Equal(
+                WorkspaceContext.FromRoot(
+                    @"C:\inference-test\repo_with_punctuation").Key,
+                inference.Workspace.Key);
+            Assert.Equal(InferenceEvidence.Derived, inference.Evidence);
+            Assert.Equal(WorkspaceContextKind.Unknown, session.Workspace.Kind);
+        }
+        finally
+        {
             Directory.Delete(root, recursive: true);
         }
     }

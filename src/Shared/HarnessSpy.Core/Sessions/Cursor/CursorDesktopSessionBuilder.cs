@@ -297,9 +297,8 @@ internal sealed class CursorDesktopSessionBuilder
             Workspace = _workspace,
             Title = title,
             StartedAtUtc = Minimum(_createdAtUtc, turnStart),
-            LastActivityAtUtc = Maximum(
-                _lastUpdatedAtUtc,
-                Maximum(turnEnd, fileWrite)),
+            LastActivityAtUtc =
+                Maximum(_lastUpdatedAtUtc, turnEnd) ?? fileWrite,
             Model = _model,
             Mode = _mode,
             LifecycleState = SessionLifecycleState.Closed,

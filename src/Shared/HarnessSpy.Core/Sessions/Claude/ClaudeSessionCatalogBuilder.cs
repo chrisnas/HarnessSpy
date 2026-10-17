@@ -171,6 +171,7 @@ internal sealed class ClaudeSessionAccumulator
     private readonly HashSet<string> _usageSnapshots =
         new(StringComparer.Ordinal);
     private readonly List<ClaudeIndexWorkspaceCandidate> _indexWorkspaces = [];
+    private readonly List<string> _historyWorkspaces = [];
     private readonly List<string> _mainFilePaths = [];
     private readonly List<Plans.SessionPlanActivity> _planActivities = [];
 
@@ -209,6 +210,89 @@ internal sealed class ClaudeSessionAccumulator
 
     private string CatalogSessionId =>
         $"{HookProvider.ClaudeCode}:{HookSurface.ClaudeCode}:{_sessionId}";
+
+    public void AddHistory(ClaudeSessionHistoryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        _sources.Add(entry.Provenance);
+        if (!string.IsNullOrWhiteSpace(entry.ProjectPath))
+        {
+            _historyWorkspaces.Add(entry.ProjectPath);
+        }
+
+        if (IsMeaningfulHistoryTitle(entry.Display))
+        {
+            SetTitle(entry.Display, 40);
+            SetFirstPrompt(entry.Display, 0);
+        }
+
+        _startedAtUtc = Minimum(_startedAtUtc, entry.TimestampUtc);
+        _lastActivityAtUtc = Maximum(_lastActivityAtUtc, entry.TimestampUtc);
+        int historyCount = int.TryParse(
+            _metadata.GetValueOrDefault("claude.history.recordCount"),
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out int parsed)
+                ? parsed
+                : 0;
+        _metadata["claude.history.recordCount"] =
+            (historyCount + 1).ToString(CultureInfo.InvariantCulture);
+        _metadata.TryAdd(
+            "claude.history.project",
+            entry.ProjectPath);
+    }
+
+    public void AddSessionCache(
+        ClaudeProjectLocation project,
+        ClaudeSessionCache cache,
+        ClaudeSessionCacheEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(cache);
+        ArgumentNullException.ThrowIfNull(entry);
+
+        RecordProject(project);
+        _sources.Add(new SessionSourceProvenance(
+            SessionSourceKind.ClaudeSessionCache,
+            cache.Path,
+            "json",
+            RecordId: entry.SessionId,
+            ContractVersion: cache.Version,
+            RawSource: FileRawSource(cache.Path)));
+        if (!entry.IsSubagent)
+        {
+            SetTitle(entry.Summary, 55);
+            SetTitle(entry.FirstUserContent, 45);
+            SetFirstPrompt(entry.FirstUserContent, 0);
+        }
+
+        _startedAtUtc = Minimum(_startedAtUtc, entry.FirstMessageAtUtc);
+        _lastActivityAtUtc = Maximum(
+            _lastActivityAtUtc,
+            entry.LastMessageAtUtc);
+        string prefix = entry.IsSubagent
+            ? $"claude.cache.subagent.{MetadataKey(entry.FilePath ?? entry.SessionId)}"
+            : "claude.cache";
+        _metadata[$"{prefix}.path"] = cache.Path;
+        _metadata[$"{prefix}.filePath"] = entry.FilePath;
+        _metadata[$"{prefix}.projectName"] = entry.ProjectName;
+        _metadata[$"{prefix}.messageCount"] =
+            entry.MessageCount?.ToString(CultureInfo.InvariantCulture);
+        _metadata[$"{prefix}.sidechainCount"] =
+            entry.SidechainCount?.ToString(CultureInfo.InvariantCulture);
+        _metadata[$"{prefix}.entrypoint"] = entry.EntryPoint;
+        if (!entry.IsSubagent &&
+            !string.IsNullOrWhiteSpace(entry.EntryPoint))
+        {
+            _metadata["claude.entrypoint"] = entry.EntryPoint;
+        }
+
+        foreach ((string key, string? value) in entry.Metadata)
+        {
+            _metadata[$"{prefix}.{key}"] = value;
+        }
+    }
 
     public void AddIndex(
         ClaudeProjectLocation project,
@@ -1219,6 +1303,8 @@ internal sealed class ClaudeSessionAccumulator
             return;
         }
 
+        bool confirmsArtifactExistence =
+            _json.Boolean(attachment, "planExists", "plan_exists") == true;
         string idSuffix = attachmentType == "plan_mode_exit" ? "exit" : "enter";
         _planActivities.Add(new Plans.SessionPlanActivity
         {
@@ -1237,6 +1323,8 @@ internal sealed class ClaudeSessionAccumulator
             IsSuccessful = true,
             HasOpaqueResult = false,
             EstablishesOwnership = true,
+            ConfirmsArtifactExistence = confirmsArtifactExistence,
+            SupportsWorkspaceInference = true,
             Evidence = InferenceEvidence.Observed,
             Provenance = provenance
         });
@@ -1614,14 +1702,23 @@ internal sealed class ClaudeSessionAccumulator
             }
         }
 
-        if (_encodedWorkspacePath is not null)
-        {
-            return _workspaceNormalizer.FromPath(_encodedWorkspacePath);
-        }
-
         if (!string.IsNullOrWhiteSpace(_mainCwd))
         {
             return _workspaceNormalizer.FromPath(_mainCwd);
+        }
+
+        string[] historyWorkspaces = _historyWorkspaces
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (historyWorkspaces.Length == 1)
+        {
+            return _workspaceNormalizer.FromPath(historyWorkspaces[0]);
+        }
+
+        if (_encodedWorkspacePath is not null)
+        {
+            return _workspaceNormalizer.FromPath(_encodedWorkspacePath);
         }
 
         if (!string.IsNullOrWhiteSpace(_subagentCwd))
@@ -2017,6 +2114,19 @@ internal sealed class ClaudeSessionAccumulator
         }
 
         return prompt.Trim();
+    }
+
+    private static bool IsMeaningfulHistoryTitle(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        string candidate = value.Trim();
+        return candidate.Length > 1 &&
+            !candidate.StartsWith("/", StringComparison.Ordinal) &&
+            candidate is not "exit" and not "continue" and not "dir";
     }
 
     private string? NormalizeTitle(string? title) =>

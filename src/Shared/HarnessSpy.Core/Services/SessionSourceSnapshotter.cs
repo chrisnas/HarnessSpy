@@ -180,6 +180,9 @@ public sealed class SessionSourceSnapshotter
             fileName.Equals(
                 "sessions-index.json",
                 StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals(
+                ".session_cache.json",
+                StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(
                 ".md",
                 StringComparison.OrdinalIgnoreCase);

@@ -10,6 +10,7 @@ internal sealed class CopilotCliSessionReader
     private readonly WorkspaceNormalizer _workspaceNormalizer;
     private readonly CopilotFileSystemGuard _fileSystemGuard;
     private readonly CopilotWorkspaceReader _workspaceReader;
+    private readonly CopilotWorkspaceSessionBuilder _workspaceSessionBuilder;
     private readonly SessionPlanFileReader _planFileReader;
     private readonly SessionPlanContentNormalizer _planNormalizer = new();
     private readonly CopilotPlanActivityExtractor _planActivityExtractor = new();
@@ -23,6 +24,8 @@ internal sealed class CopilotCliSessionReader
         _workspaceNormalizer = workspaceNormalizer;
         _fileSystemGuard = fileSystemGuard;
         _workspaceReader = new CopilotWorkspaceReader(context, fileSystemGuard);
+        _workspaceSessionBuilder =
+            new CopilotWorkspaceSessionBuilder(workspaceNormalizer);
         _planFileReader = new SessionPlanFileReader(context.Limits);
     }
 
@@ -30,7 +33,38 @@ internal sealed class CopilotCliSessionReader
         CopilotSessionFileSource source,
         CancellationToken cancellationToken)
     {
-        FileInfo eventsFile = new(source.EventsPath);
+        CopilotWorkspaceReadResult workspaceResult =
+            await _workspaceReader.ReadAsync(
+                source.WorkspacePath,
+                cancellationToken).ConfigureAwait(false);
+
+        CopilotWarningCollector warnings = new();
+        warnings.AddRange(workspaceResult.Warnings);
+        bool isComplete = workspaceResult.IsComplete;
+
+        if (!source.HasEvents)
+        {
+            SessionCatalogEntry? metadataSession =
+                _workspaceSessionBuilder.Build(
+                    source,
+                    workspaceResult.Snapshot);
+            SessionPlanCatalogFragment metadataPlanFragment =
+                metadataSession is null
+                    ? SessionPlanCatalogFragment.Empty
+                    : await BuildPlanFragmentAsync(
+                            source,
+                            metadataSession,
+                            warnings,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+            return new CopilotSessionReadResult(
+                metadataSession,
+                isComplete,
+                warnings.Snapshot(),
+                metadataPlanFragment);
+        }
+
+        FileInfo eventsFile = new(source.EventsPath!);
         if (!_fileSystemGuard.IsSafeFile(eventsFile, out string? reason))
         {
             return new CopilotSessionReadResult(
@@ -52,15 +86,6 @@ internal sealed class CopilotCliSessionReader
                     $"{maximumFileBytes}-byte limit."
                 ]);
         }
-
-        CopilotWorkspaceReadResult workspaceResult =
-            await _workspaceReader.ReadAsync(
-                source.WorkspacePath,
-                cancellationToken).ConfigureAwait(false);
-
-        CopilotWarningCollector warnings = new();
-        warnings.AddRange(workspaceResult.Warnings);
-        bool isComplete = workspaceResult.IsComplete;
 
         SessionFileBinding eventsBinding = new(
             eventsFile.FullName,

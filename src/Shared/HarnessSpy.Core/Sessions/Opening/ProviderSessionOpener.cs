@@ -126,7 +126,15 @@ public sealed partial class ProviderSessionOpener : ISessionOpener
         if (session.Metadata.TryGetValue("client_name", out string? clientName) &&
             string.Equals(clientName, "github/autopilot", StringComparison.OrdinalIgnoreCase))
         {
-            string uri = "ghapp://sessions/" + Uri.EscapeDataString(session.NativeSessionId);
+            string openSessionId =
+                session.Metadata.TryGetValue(
+                    "mc_session_id",
+                    out string? missionControlSessionId) &&
+                !string.IsNullOrWhiteSpace(missionControlSessionId)
+                    ? missionControlSessionId
+                    : session.NativeSessionId;
+            string uri = "ghapp://sessions/" +
+                Uri.EscapeDataString(openSessionId);
             return _launcher.LaunchAsync(
                 uri,
                 string.Empty,

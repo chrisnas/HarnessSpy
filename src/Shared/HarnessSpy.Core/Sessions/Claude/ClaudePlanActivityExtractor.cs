@@ -27,9 +27,33 @@ public sealed class ClaudePlanActivityExtractor
 
             foreach (SessionTurn turn in session.Turns)
             {
+                Dictionary<string, SessionEventRecord> outcomes = turn.Events
+                    .Where(static record =>
+                        record.ToolCallId is not null &&
+                        record.Role is
+                            ObservationRole.ToolSuccess or
+                            ObservationRole.ToolFailure)
+                    .GroupBy(
+                        static record => record.ToolCallId!,
+                        StringComparer.Ordinal)
+                    .ToDictionary(
+                        static group => group.Key,
+                        static group => group
+                            .OrderByDescending(
+                                static record => record.Order)
+                            .First(),
+                        StringComparer.Ordinal);
                 foreach (SessionEventRecord record in turn.Events)
                 {
-                    ExtractFromEvent(session, turn, record, activities);
+                    outcomes.TryGetValue(
+                        record.ToolCallId ?? string.Empty,
+                        out SessionEventRecord? outcome);
+                    ExtractFromEvent(
+                        session,
+                        turn,
+                        record,
+                        outcome,
+                        activities);
                 }
             }
         }
@@ -41,6 +65,7 @@ public sealed class ClaudePlanActivityExtractor
         SessionCatalogEntry session,
         SessionTurn turn,
         SessionEventRecord record,
+        SessionEventRecord? outcome,
         List<SessionPlanActivity> activities)
     {
         if (record.Role != ObservationRole.ToolRequest)
@@ -49,7 +74,10 @@ public sealed class ClaudePlanActivityExtractor
         }
 
         string? toolName = record.ToolName ?? record.NativeName;
-        bool isSuccessful = !record.IsFailure && !record.IsAborted;
+        bool isSuccessful =
+            outcome?.Role == ObservationRole.ToolSuccess &&
+            !outcome.IsFailure &&
+            !outcome.IsAborted;
 
         if (string.Equals(toolName, "ExitPlanMode", StringComparison.OrdinalIgnoreCase))
         {

@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Sessions.Plans;
 
@@ -9,10 +8,11 @@ namespace HarnessSpy.Core.Sessions.Cursor;
 // turn events: structured CreatePlan snapshots, explicit plan-file edits, and
 // plan paths embedded in ApplyPatch bodies. Direct reads are classified as
 // references, never ownership.
-public sealed partial class CursorPlanActivityExtractor
+public sealed class CursorPlanActivityExtractor
 {
     private readonly SessionPlanContentNormalizer _normalizer = new();
     private readonly CursorPlanDocumentParser _documentParser = new();
+    private readonly CursorPlanEvidenceExtractor _evidenceExtractor = new();
 
     public IReadOnlyList<SessionPlanActivity> Extract(
         IReadOnlyList<SessionCatalogEntry> sessions)
@@ -45,6 +45,13 @@ public sealed partial class CursorPlanActivityExtractor
         SessionEventRecord record,
         List<SessionPlanActivity> activities)
     {
+        if (record.Role == ObservationRole.PromptSubmitted ||
+            record.EventKind == CanonicalEventKind.PromptSubmitted)
+        {
+            ExtractPromptReferences(session, turn, record, activities);
+            return;
+        }
+
         if (record.Role != ObservationRole.ToolRequest)
         {
             return;
@@ -65,22 +72,27 @@ public sealed partial class CursorPlanActivityExtractor
             return;
         }
 
-        IReadOnlyList<string> planPaths = PlanPaths(record);
+        IReadOnlyList<string> planPaths = _evidenceExtractor.ExtractPlanPaths(
+            record.Text,
+            record.TargetPaths);
         if (planPaths.Count == 0)
         {
             return;
         }
 
-        bool isReference = record.ToolKind == CanonicalToolKind.FileRead;
-        SessionPlanActivityKind kind = isReference
-            ? SessionPlanActivityKind.Referenced
-            : SessionPlanActivityKind.Updated;
+        bool isMutation = record.ToolKind is
+            CanonicalToolKind.FileWrite or
+            CanonicalToolKind.FileEdit;
+        SessionPlanActivityKind kind = isMutation
+            ? SessionPlanActivityKind.Updated
+            : SessionPlanActivityKind.Referenced;
 
-        foreach (string path in planPaths)
+        for (int index = 0; index < planPaths.Count; index++)
         {
+            string path = planPaths[index];
             activities.Add(new SessionPlanActivity
             {
-                Id = $"cursor-plan-activity:{record.Id}:{kind}",
+                Id = $"cursor-plan-activity:{record.Id}:{kind}:{index}",
                 Kind = kind,
                 Provider = HookProvider.Cursor,
                 CatalogSessionId = session.CatalogSessionId,
@@ -96,7 +108,39 @@ public sealed partial class CursorPlanActivityExtractor
                 IsSuccessful = !record.IsFailure && !record.IsAborted,
                 // A plan-file edit whose full result body is not exposed (patch
                 // diff or partial replace) still proves an update happened.
-                HasOpaqueResult = kind == SessionPlanActivityKind.Updated,
+                HasOpaqueResult = isMutation,
+                Evidence = InferenceEvidence.Observed,
+                Provenance = record.Provenance
+            });
+        }
+    }
+
+    private void ExtractPromptReferences(
+        SessionCatalogEntry session,
+        SessionTurn turn,
+        SessionEventRecord record,
+        ICollection<SessionPlanActivity> activities)
+    {
+        IReadOnlyList<string> paths = _evidenceExtractor.ExtractPlanPaths(
+            record.Text ?? record.PromptText);
+        for (int index = 0; index < paths.Count; index++)
+        {
+            activities.Add(new SessionPlanActivity
+            {
+                Id =
+                    $"cursor-plan-activity:{record.Id}:" +
+                    $"{SessionPlanActivityKind.Referenced}:{index}",
+                Kind = SessionPlanActivityKind.Referenced,
+                Provider = HookProvider.Cursor,
+                CatalogSessionId = session.CatalogSessionId,
+                NativeSessionId = session.NativeSessionId,
+                TurnId = turn.Id,
+                TurnNumber = turn.Number,
+                SourceEventId = record.Id,
+                Order = record.Order,
+                TimestampUtc = record.TimestampUtc,
+                Locator = new SessionPlanLocator(Path: paths[index]),
+                SupportsWorkspaceInference = true,
                 Evidence = InferenceEvidence.Observed,
                 Provenance = record.Provenance
             });
@@ -168,33 +212,6 @@ public sealed partial class CursorPlanActivityExtractor
         string.Equals(toolName, "CreatePlan", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(toolName, "UpdatePlan", StringComparison.OrdinalIgnoreCase);
 
-    private IReadOnlyList<string> PlanPaths(SessionEventRecord record)
-    {
-        HashSet<string> paths = new(StringComparer.OrdinalIgnoreCase);
-        foreach (string path in record.TargetPaths)
-        {
-            if (IsPlanPath(path))
-            {
-                paths.Add(path);
-            }
-        }
-
-        if (!string.IsNullOrEmpty(record.Text) &&
-            record.Text.Contains(".plan.md", StringComparison.OrdinalIgnoreCase))
-        {
-            foreach (Match match in PlanPathPattern().Matches(record.Text))
-            {
-                paths.Add(match.Value);
-            }
-        }
-
-        return [.. paths];
-    }
-
-    private static bool IsPlanPath(string? path) =>
-        !string.IsNullOrWhiteSpace(path) &&
-        path.EndsWith(".plan.md", StringComparison.OrdinalIgnoreCase);
-
     private static List<CursorPlanTodo> ReadTodos(JsonElement root)
     {
         List<CursorPlanTodo> todos = [];
@@ -231,11 +248,4 @@ public sealed partial class CursorPlanActivityExtractor
 
         return null;
     }
-
-    // Matches Windows or POSIX-style absolute paths ending in .plan.md inside an
-    // ApplyPatch body or other embedded text.
-    [GeneratedRegex(
-        @"(?:[A-Za-z]:\\|/)[^""'\r\n]*?\.plan\.md",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex PlanPathPattern();
 }
