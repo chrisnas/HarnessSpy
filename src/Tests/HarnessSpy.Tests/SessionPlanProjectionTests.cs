@@ -25,12 +25,60 @@ public sealed class SessionPlanProjectionTests
         SessionTreeNodeViewModel workspace = Assert.Single(folder.Children);
         SessionTreeNodeViewModel sessionNode = Assert.Single(workspace.Children);
 
+        Assert.True(sessionNode.HasAssociatedPlans);
+        Assert.Equal(1, sessionNode.AssociatedPlanCount);
+        Assert.Contains(
+            sessionNode.Details,
+            static row =>
+                row.Name == "Associated plans" &&
+                row.Value == "1");
         SessionTreeNodeViewModel first = sessionNode.Children[0];
         Assert.True(first.IsPlan);
         Assert.Equal("2 observed updates", first.Summary);
         Assert.Equal(
             $"session:{session.CatalogSessionId}:plan:{plan.CatalogPlanId}",
             first.StableId);
+    }
+
+    [Fact]
+    public void BoundPlansAreOrderedByMostRecentModification()
+    {
+        SessionCatalogEntry session = SessionWithCreatePlan(out string eventId);
+        SessionPlanArtifact older = BoundPlan(
+            session.CatalogSessionId,
+            eventId,
+            observedUpdates: 0) with
+        {
+            CatalogPlanId = "cursor:plan:older",
+            Title = "Older plan",
+            LastModifiedAtUtc = DateTimeOffset.UnixEpoch.AddDays(1)
+        };
+        SessionPlanArtifact newer = BoundPlan(
+            session.CatalogSessionId,
+            eventId,
+            observedUpdates: 0) with
+        {
+            CatalogPlanId = "cursor:plan:newer",
+            Title = "Newer plan",
+            LastModifiedAtUtc = DateTimeOffset.UnixEpoch.AddDays(2)
+        };
+
+        SessionTreeNodeViewModel sessionNode = new SessionTreeProjector()
+            .Project(
+                [session],
+                new HashSet<string>(),
+                true,
+                [older, newer])
+            .Single()
+            .Children.Single()
+            .Children.Single();
+
+        SessionTreeNodeViewModel[] plans = sessionNode.Children
+            .Where(static node => node.IsPlan)
+            .ToArray();
+        Assert.Equal(
+            ["Newer plan", "Older plan"],
+            plans.Select(static plan => plan.Header));
     }
 
     [Fact]
@@ -93,6 +141,56 @@ public sealed class SessionPlanProjectionTests
         SessionTreeNodeViewModel planNode = Assert.Single(workspaceGroup.Children);
         Assert.True(planNode.IsPlan);
         Assert.Equal("orphan-plan:cursor:plan:orphan", planNode.StableId);
+    }
+
+    [Fact]
+    public void InferredOrphanPlanAppearsUnderLikelyWorkspaceWithVisualMarker()
+    {
+        SessionCatalogEntry session = SessionWithCreatePlan(out _);
+        SessionPlanArtifact orphan = new()
+        {
+            CatalogPlanId = "cursor:plan:inferred",
+            Provider = HookProvider.Cursor,
+            Surface = HookSurface.CursorIde,
+            Title = "Likely repository plan",
+            Workspace = WorkspaceContext.Unknown,
+            CurrentMarkdown = "orphan body",
+            WorkspaceInference = new SessionPlanWorkspaceInference(
+                session.Workspace,
+                InferenceEvidence.Heuristic,
+                [
+                    new SessionPlanWorkspaceEvidence(
+                        SessionPlanWorkspaceEvidenceKind.PlanContentPath,
+                        @"C:\repo\src\file.cs")
+                ])
+        };
+
+        IReadOnlyList<SessionTreeNodeViewModel> roots =
+            new SessionTreeProjector().Project(
+                [session],
+                new HashSet<string>(),
+                true,
+                [orphan]);
+
+        Assert.DoesNotContain(
+            roots,
+            static node => node.IsOrphanPlansRoot);
+        SessionTreeNodeViewModel workspace = Assert.Single(
+            Assert.Single(roots).Children);
+        SessionTreeNodeViewModel inferredGroup = Assert.Single(
+            workspace.Children,
+            static node =>
+                node.IsPlanGroup &&
+                node.Header == "Unbound plans (inferred)");
+        SessionTreeNodeViewModel planNode = Assert.Single(
+            inferredGroup.Children);
+        Assert.True(planNode.IsInferredWorkspacePlan);
+        Assert.Contains("inferred workspace", planNode.Summary);
+        Assert.Contains(
+            planNode.Details,
+            static row =>
+                row.Name == "Likely workspace" &&
+                row.Value == @"C:\repo");
     }
 
     [Fact]

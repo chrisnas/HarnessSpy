@@ -43,12 +43,24 @@ public sealed class SessionCatalogMerger
             }
         }
 
-        SessionCatalogEntry richer = Richness(second) > Richness(first) ? second : first;
+        SessionCatalogEntry richer = Richness(second) > Richness(first)
+            ? second
+            : first;
+        WorkspaceContext workspace =
+            first.Workspace.Kind == WorkspaceContextKind.Unknown
+                ? second.Workspace
+                : first.Workspace;
+        SessionWorkspaceInference? workspaceInference =
+            workspace.Kind == WorkspaceContextKind.Normal &&
+            workspace.DisplayRoots.Count == 1
+                ? null
+                : PreferredWorkspaceInference(
+                    first.WorkspaceInference,
+                    second.WorkspaceInference);
         return richer with
         {
-            Workspace = first.Workspace.Kind == WorkspaceContextKind.Unknown
-                ? second.Workspace
-                : first.Workspace,
+            Workspace = workspace,
+            WorkspaceInference = workspaceInference,
             Title = PreferredTitle(first, second),
             StartedAtUtc = Minimum(first.StartedAtUtc, second.StartedAtUtc),
             LastActivityAtUtc = Maximum(first.LastActivityAtUtc, second.LastActivityAtUtc),
@@ -179,5 +191,29 @@ public sealed class SessionCatalogMerger
         };
 
         return Rank(second) > Rank(first) ? second : first;
+    }
+
+    private static SessionWorkspaceInference? PreferredWorkspaceInference(
+        SessionWorkspaceInference? first,
+        SessionWorkspaceInference? second)
+    {
+        if (first is null)
+        {
+            return second;
+        }
+
+        if (second is null)
+        {
+            return first;
+        }
+
+        bool firstPlaces = first.Workspace.Kind == WorkspaceContextKind.Normal;
+        bool secondPlaces = second.Workspace.Kind == WorkspaceContextKind.Normal;
+        if (firstPlaces != secondPlaces)
+        {
+            return secondPlaces ? second : first;
+        }
+
+        return second.Score > first.Score ? second : first;
     }
 }

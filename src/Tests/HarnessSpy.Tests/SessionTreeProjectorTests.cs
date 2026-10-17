@@ -531,6 +531,96 @@ public sealed class SessionTreeProjectorTests
         Assert.False(plainNode.IsSkill);
     }
 
+    [Fact]
+    public void ProjectorPlacesInferredSessionUnderLikelyWorkspace()
+    {
+        WorkspaceContext likely =
+            WorkspaceContext.FromRoot(@"C:\github\repo");
+        SessionCatalogEntry session = WorkspaceSession(
+            "cursor:inferred",
+            string.Empty) with
+        {
+            Workspace = WorkspaceContext.Unknown,
+            WorkspaceInference = new SessionWorkspaceInference(
+                likely,
+                InferenceEvidence.Derived,
+                90,
+                [
+                    new SessionWorkspaceEvidence(
+                        SessionWorkspaceEvidenceKind.ProviderProjectKey,
+                        "c-github-repo",
+                        90)
+                ],
+                [])
+        };
+
+        IReadOnlyList<SessionTreeNodeViewModel> roots =
+            new SessionTreeProjector().Project(
+                [session],
+                new HashSet<string>(),
+                true);
+
+        SessionTreeNodeViewModel workspace = Assert.Single(
+            SessionTreeNodeViewModel.EnumerateDepthFirst(roots),
+            static node => node.IsWorkspace);
+        SessionTreeNodeViewModel sessionNode = Assert.Single(
+            workspace.Children,
+            static node => node.IsSession);
+        Assert.Equal("repo", workspace.Header);
+        Assert.Contains("1 inferred", workspace.Summary);
+        Assert.True(sessionNode.IsInferredWorkspaceSession);
+        Assert.True(sessionNode.HasWorkspacePlacementHint);
+        Assert.Equal("?", sessionNode.WorkspacePlacementGlyph);
+        Assert.Equal(likely.Key, sessionNode.Workspace!.Key);
+        Assert.Contains(
+            sessionNode.Details,
+            row =>
+                row.Name == "Workspace" &&
+                row.Value == "Unknown workspace");
+        Assert.Contains(
+            sessionNode.Details,
+            row =>
+                row.Name == "Likely workspace" &&
+                row.Value == likely.DisplayName);
+    }
+
+    [Fact]
+    public void ProjectorKeepsAmbiguousSessionUnderUnknownWorkspace()
+    {
+        WorkspaceContext first =
+            WorkspaceContext.FromRoot(@"C:\first");
+        WorkspaceContext second =
+            WorkspaceContext.FromRoot(@"C:\second");
+        SessionCatalogEntry session = WorkspaceSession(
+            "cursor:ambiguous",
+            string.Empty) with
+        {
+            Workspace = WorkspaceContext.Unknown,
+            WorkspaceInference = new SessionWorkspaceInference(
+                WorkspaceContext.Unknown,
+                InferenceEvidence.Ambiguous,
+                75,
+                [],
+                [
+                    new SessionWorkspaceCandidate(first, 75),
+                    new SessionWorkspaceCandidate(second, 75)
+                ])
+        };
+
+        SessionTreeNodeViewModel workspace = Assert.Single(
+            new SessionTreeProjector().Project(
+                [session],
+                new HashSet<string>(),
+                true));
+        SessionTreeNodeViewModel sessionNode = Assert.Single(
+            workspace.Children);
+
+        Assert.Equal("Unknown workspace", workspace.Header);
+        Assert.True(sessionNode.IsAmbiguousWorkspaceSession);
+        Assert.True(sessionNode.HasWorkspacePlacementHint);
+        Assert.Equal("~", sessionNode.WorkspacePlacementGlyph);
+    }
+
     private static SessionCatalogEntry WorkspaceSession(
         string catalogId,
         string root)

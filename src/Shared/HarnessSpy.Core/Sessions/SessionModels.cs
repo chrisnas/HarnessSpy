@@ -8,6 +8,8 @@ public enum SessionSourceKind
     CursorDesktopSqlite,
     ClaudeTranscriptJsonl,
     ClaudeSessionIndex,
+    ClaudeSessionCache,
+    ClaudeHistoryJsonl,
     CopilotEventsJsonl,
     CopilotWorkspaceYaml,
     CursorPlanMarkdown,
@@ -22,11 +24,29 @@ public enum SessionLifecycleState
     Closed
 }
 
+public enum SessionRawSourceKind
+{
+    JsonLine,
+    File,
+    SqliteValue
+}
+
+public sealed record SessionRawSourceReference(
+    SessionRawSourceKind Kind,
+    string Path,
+    long? ByteOffset = null,
+    int? ByteLength = null,
+    string? DatabaseTable = null,
+    string? DatabaseKey = null,
+    DateTimeOffset? SourceLastWriteTimeUtc = null,
+    long? SourceLength = null,
+    string? ContentHash = null);
+
 public sealed record SessionSourceProvenance(
     SessionSourceKind SourceKind,
     string Path,
     string Format,
-    string RawContent,
+    string? RawContent = null,
     int? LineNumber = null,
     long? ByteOffset = null,
     string? RecordId = null,
@@ -34,7 +54,8 @@ public sealed record SessionSourceProvenance(
     string? DatabaseKey = null,
     string? ContractVersion = null,
     string? NativeTurnId = null,
-    string? InteractionId = null);
+    string? InteractionId = null,
+    SessionRawSourceReference? RawSource = null);
 
 public sealed record SessionFileBinding(
     string Path,
@@ -140,6 +161,35 @@ public sealed record SessionTurn(
     InferenceEvidence Evidence,
     IReadOnlyList<SessionEventRecord> Events);
 
+public enum SessionWorkspaceEvidenceKind
+{
+    NativeSessionIdentifier,
+    ProviderProjectKey,
+    SessionPath,
+    PromptPath,
+    ObservedWorkspaceRoot
+}
+
+public sealed record SessionWorkspaceEvidence(
+    SessionWorkspaceEvidenceKind Kind,
+    string Value,
+    int Score);
+
+public sealed record SessionWorkspaceCandidate(
+    WorkspaceContext Workspace,
+    int Score);
+
+// Presentation-level placement for a session whose provider workspace is
+// missing or unreliable. Workspace remains Unknown when strong candidates
+// conflict; Alternatives then explain the ambiguity. This never changes the
+// provider-observed Workspace or catalog identity.
+public sealed record SessionWorkspaceInference(
+    WorkspaceContext Workspace,
+    InferenceEvidence Evidence,
+    int Score,
+    IReadOnlyList<SessionWorkspaceEvidence> EvidenceItems,
+    IReadOnlyList<SessionWorkspaceCandidate> Alternatives);
+
 public sealed record SessionCatalogEntry
 {
     public required string CatalogSessionId { get; init; }
@@ -151,6 +201,8 @@ public sealed record SessionCatalogEntry
     public required HookSurface Surface { get; init; }
 
     public required WorkspaceContext Workspace { get; init; }
+
+    public SessionWorkspaceInference? WorkspaceInference { get; init; }
 
     public required string Title { get; init; }
 

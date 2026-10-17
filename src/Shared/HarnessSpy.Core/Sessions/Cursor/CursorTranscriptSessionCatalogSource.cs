@@ -440,6 +440,8 @@ public sealed class CursorTranscriptSessionCatalogSource : ISessionCatalogSource
         WorkspaceContext workspace = _workspaceResolver.ResolveTranscriptWorkspace(
             projectKey,
             workspaceRows);
+        bool hasExplicitWorkspaceRoots = workspaceRows.Any(
+            HasExplicitWorkspaceRoots);
         string? firstPrompt = turns
             .Select(turn => turn.Prompt)
             .FirstOrDefault(prompt => !string.IsNullOrWhiteSpace(prompt));
@@ -463,6 +465,12 @@ public sealed class CursorTranscriptSessionCatalogSource : ISessionCatalogSource
         {
             ["cursor.source"] = "agent-transcript",
             ["cursor.projectKey"] = projectKey,
+            ["cursor.workspaceResolution"] =
+                hasExplicitWorkspaceRoots
+                    ? "explicit-workspace-roots"
+                    : workspace.DisplayRoots.Count > 1
+                        ? "aggregated-transcript-paths"
+                        : null,
             ["cursor.layout"] = main?.Source.Layout.ToString() ?? "child-only-recovery",
             ["cursor.childTranscriptCount"] = children.Count.ToString(),
             ["cursor.timestampProvenance"] =
@@ -496,6 +504,14 @@ public sealed class CursorTranscriptSessionCatalogSource : ISessionCatalogSource
             Sources = sources
         };
     }
+
+    private bool HasExplicitWorkspaceRoots(JsonElement row) =>
+        _json.TryGetProperty(
+            row,
+            "workspace_roots",
+            out JsonElement roots) &&
+        roots.ValueKind == JsonValueKind.Array &&
+        roots.GetArrayLength() > 0;
 
     private void AddTranscript(
         CursorParsedTranscript transcript,

@@ -131,9 +131,14 @@ public sealed class CopilotCliSessionCatalogSource : ISessionCatalogSource
                     NotSupportedException or
                     System.Security.SecurityException)
                 {
+                    string sourcePath =
+                        source.EventsPath ??
+                        source.WorkspacePath ??
+                        source.PlanPath ??
+                        _sessionStateRoot;
                     warnings.Add(
                         $"Could not read Copilot session '{source.NativeSessionId}' " +
-                        $"from '{source.EventsPath}': {exception.Message}");
+                        $"from '{sourcePath}': {exception.Message}");
                     isComplete = false;
                 }
             }
@@ -284,7 +289,8 @@ public sealed class CopilotCliSessionCatalogSource : ISessionCatalogSource
                 right.Name));
 
         List<CopilotSessionFileSource> sources = [];
-        HashSet<string> currentSessionIds = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, int> currentSourceIndices =
+            new(StringComparer.OrdinalIgnoreCase);
         int sourceFileCount = 0;
         int maximumFiles = Math.Max(0, _context.Limits.MaximumFiles);
 
@@ -302,84 +308,32 @@ public sealed class CopilotCliSessionCatalogSource : ISessionCatalogSource
             }
 
             FileInfo eventsFile = new(Path.Combine(directory.FullName, EventsFileName));
-            if (!eventsFile.Exists)
-            {
-                continue;
-            }
-
-            if (sourceFileCount >= maximumFiles)
-            {
-                warnings.Add(
-                    $"Copilot session discovery stopped after {maximumFiles} source files.");
-                isComplete = false;
-                break;
-            }
-
-            if (!_fileSystemGuard.IsSafeFile(eventsFile, out string? eventsReason))
-            {
-                warnings.Add(
-                    $"Skipped Copilot event log '{eventsFile.FullName}': {eventsReason}");
-                isComplete = false;
-                continue;
-            }
-
-            sourceFileCount++;
+            string? eventsPath = IncludeFile(
+                eventsFile,
+                "event log");
             string? workspacePath = null;
             FileInfo workspaceFile =
                 new(Path.Combine(directory.FullName, WorkspaceFileName));
-            if (workspaceFile.Exists)
-            {
-                if (sourceFileCount >= maximumFiles)
-                {
-                    warnings.Add(
-                        $"Skipped Copilot workspace metadata '{workspaceFile.FullName}' " +
-                        $"because the {maximumFiles}-file limit was reached.");
-                    isComplete = false;
-                }
-                else if (_fileSystemGuard.IsSafeFile(
-                    workspaceFile,
-                    out string? workspaceReason))
-                {
-                    sourceFileCount++;
-                    workspacePath = workspaceFile.FullName;
-                }
-                else
-                {
-                    warnings.Add(
-                        $"Skipped Copilot workspace metadata " +
-                        $"'{workspaceFile.FullName}': {workspaceReason}");
-                    isComplete = false;
-                }
-            }
+            workspacePath = IncludeFile(
+                workspaceFile,
+                "workspace metadata");
 
             string? planPath = null;
             FileInfo planFile = new(Path.Combine(directory.FullName, PlanFileName));
-            if (planFile.Exists)
+            planPath = IncludeFile(
+                planFile,
+                "plan");
+            if (eventsPath is null &&
+                workspacePath is null &&
+                planPath is null)
             {
-                if (sourceFileCount >= maximumFiles)
-                {
-                    warnings.Add(
-                        $"Skipped Copilot plan '{planFile.FullName}' because the " +
-                        $"{maximumFiles}-file limit was reached.");
-                    isComplete = false;
-                }
-                else if (_fileSystemGuard.IsSafeFile(planFile, out string? planReason))
-                {
-                    sourceFileCount++;
-                    planPath = planFile.FullName;
-                }
-                else
-                {
-                    warnings.Add(
-                        $"Skipped Copilot plan '{planFile.FullName}': {planReason}");
-                    isComplete = false;
-                }
+                continue;
             }
 
-            currentSessionIds.Add(directory.Name);
+            currentSourceIndices[directory.Name] = sources.Count;
             sources.Add(new CopilotSessionFileSource(
                 directory.Name,
-                eventsFile.FullName,
+                eventsPath,
                 workspacePath,
                 CopilotSessionLayout.Current,
                 planPath));
@@ -390,8 +344,15 @@ public sealed class CopilotCliSessionCatalogSource : ISessionCatalogSource
             cancellationToken.ThrowIfCancellationRequested();
 
             string nativeSessionId = Path.GetFileNameWithoutExtension(legacyFile.Name);
-            if (string.IsNullOrWhiteSpace(nativeSessionId) ||
-                currentSessionIds.Contains(nativeSessionId))
+            if (string.IsNullOrWhiteSpace(nativeSessionId))
+            {
+                continue;
+            }
+
+            if (currentSourceIndices.TryGetValue(
+                    nativeSessionId,
+                    out int currentIndex) &&
+                sources[currentIndex].HasEvents)
             {
                 continue;
             }
@@ -413,13 +374,56 @@ public sealed class CopilotCliSessionCatalogSource : ISessionCatalogSource
             }
 
             sourceFileCount++;
-            sources.Add(new CopilotSessionFileSource(
-                nativeSessionId,
-                legacyFile.FullName,
-                null,
-                CopilotSessionLayout.Legacy));
+            if (currentSourceIndices.TryGetValue(
+                    nativeSessionId,
+                    out currentIndex))
+            {
+                CopilotSessionFileSource current = sources[currentIndex];
+                sources[currentIndex] = new CopilotSessionFileSource(
+                    nativeSessionId,
+                    legacyFile.FullName,
+                    current.WorkspacePath,
+                    CopilotSessionLayout.Current,
+                    current.PlanPath);
+            }
+            else
+            {
+                sources.Add(new CopilotSessionFileSource(
+                    nativeSessionId,
+                    legacyFile.FullName,
+                    null,
+                    CopilotSessionLayout.Legacy));
+            }
         }
 
         return new CopilotSourceDiscoveryResult(sources, isComplete, warnings);
+
+        string? IncludeFile(FileInfo file, string description)
+        {
+            if (!file.Exists)
+            {
+                return null;
+            }
+
+            if (sourceFileCount >= maximumFiles)
+            {
+                warnings.Add(
+                    $"Skipped Copilot {description} '{file.FullName}' because the " +
+                    $"{maximumFiles}-file limit was reached.");
+                isComplete = false;
+                return null;
+            }
+
+            if (!_fileSystemGuard.IsSafeFile(file, out string? reason))
+            {
+                warnings.Add(
+                    $"Skipped Copilot {description} '{file.FullName}': {reason}");
+                isComplete = false;
+                return null;
+            }
+
+            sourceFileCount++;
+            return file.FullName;
+        }
     }
 }

@@ -15,7 +15,7 @@ internal sealed class CopilotSessionFileSource
 {
     public CopilotSessionFileSource(
         string nativeSessionId,
-        string eventsPath,
+        string? eventsPath,
         string? workspacePath,
         CopilotSessionLayout layout,
         string? planPath = null)
@@ -29,13 +29,15 @@ internal sealed class CopilotSessionFileSource
 
     public string NativeSessionId { get; }
 
-    public string EventsPath { get; }
+    public string? EventsPath { get; }
 
     public string? WorkspacePath { get; }
 
     public CopilotSessionLayout Layout { get; }
 
     public string? PlanPath { get; }
+
+    public bool HasEvents => !string.IsNullOrWhiteSpace(EventsPath);
 }
 
 internal sealed class CopilotSourceDiscoveryResult

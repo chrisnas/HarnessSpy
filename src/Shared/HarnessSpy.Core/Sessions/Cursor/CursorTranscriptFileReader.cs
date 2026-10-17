@@ -25,6 +25,9 @@ internal sealed record CursorTranscriptRow(
     string RawContent,
     int LineNumber,
     long ByteOffset,
+    int ByteLength,
+    DateTimeOffset SourceLastWriteTimeUtc,
+    long SourceLength,
     JsonElement Json);
 
 internal sealed record CursorTranscriptReadResult(
@@ -65,7 +68,7 @@ internal sealed class CursorTranscriptFileReader
         if (!_fileSystem.TryGetFileInfo(
             path,
             out long fileLength,
-            out _,
+            out DateTimeOffset lastWriteTimeUtc,
             out string? inspectError))
         {
             warnings.Add($"Could not inspect Cursor transcript '{path}': {inspectError}.");
@@ -170,6 +173,8 @@ internal sealed class CursorTranscriptFileReader
                         lineTooLong,
                         lineNumber,
                         lineOffset,
+                        lastWriteTimeUtc,
+                        fileLength,
                         maximumRecords,
                         rows,
                         warnings,
@@ -218,6 +223,8 @@ internal sealed class CursorTranscriptFileReader
                     lineTooLong,
                     lineNumber,
                     lineOffset,
+                    lastWriteTimeUtc,
+                    fileLength,
                     maximumRecords,
                     rows,
                     warnings,
@@ -267,6 +274,8 @@ internal sealed class CursorTranscriptFileReader
         bool lineTooLong,
         int lineNumber,
         long lineOffset,
+        DateTimeOffset sourceLastWriteTimeUtc,
+        long sourceLength,
         int maximumRecords,
         List<CursorTranscriptRow> rows,
         CursorWarningCollector warnings,
@@ -329,6 +338,9 @@ internal sealed class CursorTranscriptFileReader
                     raw,
                     lineNumber,
                     lineOffset,
+                    bytes.Length,
+                    sourceLastWriteTimeUtc,
+                    sourceLength,
                     document.RootElement.Clone()));
             }
         }

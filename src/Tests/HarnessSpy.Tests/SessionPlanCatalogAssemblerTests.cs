@@ -145,6 +145,31 @@ public sealed class SessionPlanCatalogAssemblerTests
     }
 
     [Fact]
+    public void FailedUpdateDoesNotBind()
+    {
+        SessionCatalogEntry session = Session("cursor:s1");
+        SessionPlanArtifact artifact = Artifact(
+            "cursor:plan:foo",
+            HookProvider.Cursor,
+            path: @"C:\plans\foo.plan.md",
+            content: "body");
+        SessionPlanActivity failedUpdate = PathActivity(
+            session.CatalogSessionId,
+            artifact.PrimaryPath!,
+            "turn-1") with
+        {
+            IsSuccessful = false
+        };
+
+        SessionPlanArtifact result = Assert.Single(_assembler.Assemble(
+            [session],
+            Fragment(artifact, failedUpdate)));
+
+        Assert.Null(result.BoundCatalogSessionId);
+        Assert.Equal(SessionPlanBindingReason.Unavailable, result.BindingReason);
+    }
+
+    [Fact]
     public void SessionScopedContentAddsRevisionForSolePlan()
     {
         SessionCatalogEntry session = Session("claude-code:claude-code:s1");
@@ -180,6 +205,162 @@ public sealed class SessionPlanCatalogAssemblerTests
         Assert.Equal(session.CatalogSessionId, result.BoundCatalogSessionId);
         // A (exit-plan) then B (current file) => one observed update.
         Assert.Equal(1, result.ObservedUpdateCount);
+    }
+
+    [Fact]
+    public void ReferencingSessionInfersWorkspaceWithoutBindingPlan()
+    {
+        WorkspaceContext workspace = WorkspaceContext.FromRoot(@"C:\repo");
+        SessionCatalogEntry session = Session(
+            "cursor:s1",
+            workspace,
+            nativeSessionId: "s1");
+        SessionPlanArtifact artifact = Artifact(
+            "cursor:plan:foo",
+            HookProvider.Cursor,
+            path: @"C:\Users\me\.cursor\plans\foo.plan.md",
+            content: "body");
+        SessionPlanActivity reference = new()
+        {
+            Id = "act-reference",
+            Kind = SessionPlanActivityKind.Referenced,
+            Provider = HookProvider.Cursor,
+            CatalogSessionId = session.CatalogSessionId,
+            NativeSessionId = session.NativeSessionId,
+            TurnId = "turn-1",
+            Locator = new SessionPlanLocator(Path: artifact.PrimaryPath),
+            SupportsWorkspaceInference = true,
+            Evidence = InferenceEvidence.Observed,
+            Provenance = Provenance()
+        };
+
+        SessionPlanArtifact result = Assert.Single(_assembler.Assemble(
+            [session],
+            Fragment(artifact, reference)));
+
+        Assert.Null(result.BoundCatalogSessionId);
+        Assert.Equal(
+            workspace.Key,
+            Assert.IsType<SessionPlanWorkspaceInference>(
+                result.WorkspaceInference).Workspace.Key);
+        Assert.Contains(
+            result.WorkspaceInference.EvidenceItems,
+            static item =>
+                item.Kind ==
+                SessionPlanWorkspaceEvidenceKind.ReferencingSession);
+    }
+
+    [Fact]
+    public void IncidentalReferenceDoesNotInferWorkspace()
+    {
+        WorkspaceContext workspace = WorkspaceContext.FromRoot(@"C:\repo");
+        SessionCatalogEntry session = Session("cursor:s1", workspace);
+        SessionPlanArtifact artifact = Artifact(
+            "cursor:plan:foo",
+            HookProvider.Cursor,
+            path: @"C:\Users\me\.cursor\plans\foo.plan.md",
+            content: "body");
+        SessionPlanActivity reference = new()
+        {
+            Id = "act-reference",
+            Kind = SessionPlanActivityKind.Referenced,
+            Provider = HookProvider.Cursor,
+            CatalogSessionId = session.CatalogSessionId,
+            TurnId = "turn-1",
+            Locator = new SessionPlanLocator(Path: artifact.PrimaryPath),
+            Evidence = InferenceEvidence.Observed,
+            Provenance = Provenance()
+        };
+
+        SessionPlanArtifact result = Assert.Single(_assembler.Assemble(
+            [session],
+            Fragment(artifact, reference)));
+
+        Assert.Null(result.BoundCatalogSessionId);
+        Assert.Null(result.WorkspaceInference);
+    }
+
+    [Fact]
+    public void PlanContentPathInfersMostSpecificKnownWorkspace()
+    {
+        WorkspaceContext repository = WorkspaceContext.FromRoot(@"C:\repo");
+        WorkspaceContext nested = WorkspaceContext.FromRoot(@"C:\repo\src");
+        SessionPlanArtifact artifact = Artifact(
+            "cursor:plan:foo",
+            HookProvider.Cursor,
+            path: null,
+            content: "body") with
+        {
+            WorkspacePathHints = [@"C:\repo\src\feature\file.cs"]
+        };
+
+        SessionPlanArtifact result = Assert.Single(_assembler.Assemble(
+            [
+                Session("cursor:root", repository),
+                Session("cursor:nested", nested)
+            ],
+            new SessionPlanCatalogFragment { Artifacts = [artifact] }));
+
+        Assert.Null(result.BoundCatalogSessionId);
+        Assert.Equal(
+            nested.Key,
+            Assert.IsType<SessionPlanWorkspaceInference>(
+                result.WorkspaceInference).Workspace.Key);
+    }
+
+    [Fact]
+    public void ConflictingWorkspaceHintsRemainUnknown()
+    {
+        SessionPlanArtifact artifact = Artifact(
+            "cursor:plan:foo",
+            HookProvider.Cursor,
+            path: null,
+            content: "body") with
+        {
+            WorkspacePathHints =
+            [
+                @"C:\first\src\file.cs",
+                @"C:\second\src\file.cs"
+            ]
+        };
+
+        SessionPlanArtifact result = Assert.Single(_assembler.Assemble(
+            [
+                Session(
+                    "cursor:first",
+                    WorkspaceContext.FromRoot(@"C:\first")),
+                Session(
+                    "cursor:second",
+                    WorkspaceContext.FromRoot(@"C:\second"))
+            ],
+            new SessionPlanCatalogFragment { Artifacts = [artifact] }));
+
+        Assert.Null(result.WorkspaceInference);
+        Assert.Equal(WorkspaceContextKind.Unknown, result.Workspace.Kind);
+    }
+
+    [Fact]
+    public void NativeSessionIdHintInfersWorkspaceWithoutBindingPlan()
+    {
+        WorkspaceContext workspace = WorkspaceContext.FromRoot(@"C:\repo");
+        SessionPlanArtifact artifact = Artifact(
+            "cursor:plan:foo",
+            HookProvider.Cursor,
+            path: null,
+            content: "body") with
+        {
+            NativeSessionIdHint = "native-s1"
+        };
+
+        SessionPlanArtifact result = Assert.Single(_assembler.Assemble(
+            [Session("cursor:s1", workspace, "native-s1")],
+            new SessionPlanCatalogFragment { Artifacts = [artifact] }));
+
+        SessionPlanWorkspaceInference inference =
+            Assert.IsType<SessionPlanWorkspaceInference>(
+                result.WorkspaceInference);
+        Assert.Equal(workspace.Key, inference.Workspace.Key);
+        Assert.Equal(InferenceEvidence.Corroborated, inference.Evidence);
     }
 
     private static SessionPlanCatalogFragment Fragment(
@@ -247,14 +428,17 @@ public sealed class SessionPlanCatalogAssemblerTests
             Provenance = Provenance()
         };
 
-    private static SessionCatalogEntry Session(string catalogId) =>
+    private static SessionCatalogEntry Session(
+        string catalogId,
+        WorkspaceContext? workspace = null,
+        string? nativeSessionId = null) =>
         new()
         {
             CatalogSessionId = catalogId,
-            NativeSessionId = catalogId,
+            NativeSessionId = nativeSessionId ?? catalogId,
             Provider = HookProvider.Cursor,
             Surface = HookSurface.CursorIde,
-            Workspace = WorkspaceContext.Unknown,
+            Workspace = workspace ?? WorkspaceContext.Unknown,
             Title = catalogId,
             Turns = []
         };

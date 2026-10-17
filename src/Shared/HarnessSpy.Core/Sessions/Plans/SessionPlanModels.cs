@@ -45,6 +45,26 @@ public sealed record SessionPlanContentSnapshot(
     string NormalizedContent,
     string ContentHash);
 
+public enum SessionPlanWorkspaceEvidenceKind
+{
+    NativeSessionIdentifier,
+    ReferencingSession,
+    PlanContentPath
+}
+
+// Workspace inference is deliberately separate from canonical session binding.
+// It lets the UI place an otherwise orphaned plan near the most likely
+// workspace without claiming that the workspace or creating session was
+// observed authoritatively.
+public sealed record SessionPlanWorkspaceEvidence(
+    SessionPlanWorkspaceEvidenceKind Kind,
+    string Value);
+
+public sealed record SessionPlanWorkspaceInference(
+    WorkspaceContext Workspace,
+    InferenceEvidence Evidence,
+    IReadOnlyList<SessionPlanWorkspaceEvidence> EvidenceItems);
+
 // One provider-observed plan activity (create/update/reference) that has not yet
 // been correlated to a catalog plan id. The provider fills the session/turn it
 // belongs to; the assembler resolves it against discovered artifacts.
@@ -91,6 +111,15 @@ public sealed record SessionPlanActivity
     // that carries the plan file path). Created/Updated always establish
     // ownership regardless of this flag.
     public bool EstablishesOwnership { get; init; }
+
+    // True when provider state explicitly says the target artifact existed,
+    // even if the file has since been removed before passive discovery.
+    public bool ConfirmsArtifactExistence { get; init; }
+
+    // True only when a provider-observed association (for example, a plan
+    // attached to a prompt) is meaningful workspace-placement evidence.
+    // Incidental reads and searches remain references without moving the plan.
+    public bool SupportsWorkspaceInference { get; init; }
 
     public InferenceEvidence Evidence { get; init; } = InferenceEvidence.Derived;
 
@@ -163,6 +192,15 @@ public sealed record SessionPlanArtifact
 
     // Provider correlation hint for Cursor structured-content matching.
     public string? StructuredKey { get; init; }
+
+    // Provider-owned evidence that can suggest a workspace without proving
+    // canonical plan ownership. Cursor populates these from a leading native
+    // session-id marker and rooted paths in the plan document.
+    public string? NativeSessionIdHint { get; init; }
+
+    public IReadOnlyList<string> WorkspacePathHints { get; init; } = [];
+
+    public SessionPlanWorkspaceInference? WorkspaceInference { get; init; }
 
     // A provider may pre-suggest the owning session (Copilot session directory).
     // The assembler validates it against the final session set before binding.

@@ -67,10 +67,6 @@ public sealed class SessionViewerSettingsService
 
 public sealed class SessionViewerSettings
 {
-    public bool WatchEnabled { get; set; } = true;
-
-    public int RecoveryRescanSeconds { get; set; } = 60;
-
     public List<string> Favorites { get; set; } = [];
 
     // Harnesses whose sessions are shown in the tree. All known harnesses are
@@ -81,4 +77,30 @@ public sealed class SessionViewerSettings
         HookProvider.ClaudeCode,
         HookProvider.GitHubCopilot
     ];
+
+    public bool KeepDisabledProviderCache { get; set; }
+
+    public SessionCatalogProfile CatalogProfile { get; set; } =
+        SessionCatalogProfile.Balanced;
+
+    public SessionRawSourceMode RawSourceMode { get; set; } =
+        SessionRawSourceMode.OnDemand;
+
+    public int RawPreviewBytes { get; set; } = 1024 * 1024;
+
+    public bool IncludeRawSourceInSearch { get; set; }
+
+    public bool ExpandWorkspacesOnStartup { get; set; }
+}
+
+public enum SessionCatalogProfile
+{
+    Balanced,
+    Complete
+}
+
+public enum SessionRawSourceMode
+{
+    OnDemand,
+    SnapshotCache
 }

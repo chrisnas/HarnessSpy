@@ -9,6 +9,7 @@ public sealed class ProviderFilterOption : ObservableObject
 {
     private readonly Action<ProviderFilterOption> _onSelectionChanged;
     private bool _isSelected;
+    private string _scanStatus = "Not scanned";
 
     public ProviderFilterOption(
         HookProvider provider,
@@ -29,6 +30,12 @@ public sealed class ProviderFilterOption : ObservableObject
 
     public string DisplayName { get; }
 
+    public string ScanStatus
+    {
+        get => _scanStatus;
+        private set => SetProperty(ref _scanStatus, value);
+    }
+
     public bool IsSelected
     {
         get => _isSelected;
@@ -39,5 +46,11 @@ public sealed class ProviderFilterOption : ObservableObject
                 _onSelectionChanged(this);
             }
         }
+    }
+
+    public void UpdateScanStatus(string status)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(status);
+        ScanStatus = status;
     }
 }

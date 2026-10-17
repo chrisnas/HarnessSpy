@@ -18,7 +18,8 @@ public enum SessionTreeNodeKind
     SystemPromptGroup,
     SystemPrompt,
     OrphanPlansRoot,
-    PlanGroup
+    PlanGroup,
+    Placeholder
 }
 
 public sealed record SessionDetailRow(string Name, string Value);
@@ -31,6 +32,7 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
 
     private bool _isExpanded;
     private bool _isSelected;
+    private bool _areChildrenLoaded = true;
 
     public SessionTreeNodeViewModel(
         string stableId,
@@ -48,7 +50,8 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         string? rawSource = null,
         NodeSummary? nodeSummary = null,
         SessionPlanArtifact? plan = null,
-        SessionPlanActivity? planActivity = null)
+        SessionPlanActivity? planActivity = null,
+        int associatedPlanCount = 0)
     {
         StableId = stableId;
         Header = header;
@@ -66,6 +69,7 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         NodeSummary = nodeSummary;
         Plan = plan;
         PlanActivity = planActivity;
+        AssociatedPlanCount = associatedPlanCount;
     }
 
     public string StableId { get; }
@@ -95,6 +99,8 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
     public SessionPlanArtifact? Plan { get; private set; }
 
     public SessionPlanActivity? PlanActivity { get; private set; }
+
+    public int AssociatedPlanCount { get; private set; }
 
     // For a plan-activity node, the StableId of the canonical plan node it links
     // to, so selecting the activity can navigate to the plan.
@@ -127,6 +133,12 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         bool wasFailure = IsFailure;
         bool wasSkill = IsSkill;
         bool wasSystemPrompt = IsSystemPrompt;
+        bool wasInferredWorkspacePlan = IsInferredWorkspacePlan;
+        bool wasInferredWorkspaceSession = IsInferredWorkspaceSession;
+        bool wasAmbiguousWorkspaceSession = IsAmbiguousWorkspaceSession;
+        bool hadWorkspacePlacementHint = HasWorkspacePlacementHint;
+        string oldWorkspacePlacementGlyph = WorkspacePlacementGlyph;
+        int previousAssociatedPlanCount = AssociatedPlanCount;
         string oldHeaderPrefix = HeaderPrefix;
         bool hadHoverText = HasHoverText;
         bool hadSimpleTooltip = HasSimpleTooltip;
@@ -164,7 +176,9 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         EventRecord = other.EventRecord;
         Plan = other.Plan;
         PlanActivity = other.PlanActivity;
+        AssociatedPlanCount = other.AssociatedPlanCount;
         LinkedPlanNodeId = other.LinkedPlanNodeId;
+        AreChildrenLoaded = other.AreChildrenLoaded;
 
         if (!Details.SequenceEqual(other.Details))
         {
@@ -243,6 +257,34 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
             nameof(IsSystemPrompt),
             wasSystemPrompt,
             IsSystemPrompt);
+        NotifyIfChanged(
+            nameof(IsInferredWorkspacePlan),
+            wasInferredWorkspacePlan,
+            IsInferredWorkspacePlan);
+        NotifyIfChanged(
+            nameof(IsInferredWorkspaceSession),
+            wasInferredWorkspaceSession,
+            IsInferredWorkspaceSession);
+        NotifyIfChanged(
+            nameof(IsAmbiguousWorkspaceSession),
+            wasAmbiguousWorkspaceSession,
+            IsAmbiguousWorkspaceSession);
+        NotifyIfChanged(
+            nameof(HasWorkspacePlacementHint),
+            hadWorkspacePlacementHint,
+            HasWorkspacePlacementHint);
+        if (!string.Equals(
+            oldWorkspacePlacementGlyph,
+            WorkspacePlacementGlyph,
+            StringComparison.Ordinal))
+        {
+            OnPropertyChanged(nameof(WorkspacePlacementGlyph));
+        }
+        if (previousAssociatedPlanCount != AssociatedPlanCount)
+        {
+            OnPropertyChanged(nameof(AssociatedPlanCount));
+            OnPropertyChanged(nameof(HasAssociatedPlans));
+        }
         NotifyIfChanged(
             nameof(HasReadableContent),
             hadReadableContent,
@@ -343,6 +385,32 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
 
     public bool IsPlanActivity => Kind == SessionTreeNodeKind.PlanActivity;
 
+    public bool IsInferredWorkspacePlan =>
+        IsPlan &&
+        Plan?.BoundCatalogSessionId is null &&
+        Plan?.WorkspaceInference is not null;
+
+    public bool IsInferredWorkspaceSession =>
+        IsSession &&
+        Session?.WorkspaceInference?.Workspace.Kind ==
+            WorkspaceContextKind.Normal;
+
+    public bool IsAmbiguousWorkspaceSession =>
+        IsSession &&
+        Session?.WorkspaceInference?.Evidence ==
+            InferenceEvidence.Ambiguous;
+
+    public bool HasWorkspacePlacementHint =>
+        IsInferredWorkspacePlan ||
+        IsInferredWorkspaceSession ||
+        IsAmbiguousWorkspaceSession;
+
+    public string WorkspacePlacementGlyph =>
+        IsAmbiguousWorkspaceSession ? "~" : "?";
+
+    public bool HasAssociatedPlans =>
+        IsSession && AssociatedPlanCount > 0;
+
     public bool IsSystemPromptGroup =>
         Kind == SessionTreeNodeKind.SystemPromptGroup;
 
@@ -354,6 +422,38 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
     public bool IsOrphanPlansRoot => Kind == SessionTreeNodeKind.OrphanPlansRoot;
 
     public bool IsPlanGroup => Kind == SessionTreeNodeKind.PlanGroup;
+
+    public bool IsPlaceholder => Kind == SessionTreeNodeKind.Placeholder;
+
+    public bool HasTreeIcon =>
+        IsSession ||
+        IsFolder ||
+        IsWorkspace ||
+        IsOrphanPlansRoot ||
+        IsPlanGroup ||
+        IsPlan;
+
+    public bool AreChildrenLoaded
+    {
+        get => _areChildrenLoaded;
+        private set => SetProperty(ref _areChildrenLoaded, value);
+    }
+
+    public void SetChildrenLoaded(bool value) =>
+        AreChildrenLoaded = value;
+
+    public void SetNodeSummary(NodeSummary? summary)
+    {
+        if (SummariesEqual(NodeSummary, summary))
+        {
+            return;
+        }
+
+        NodeSummary = summary;
+        OnPropertyChanged(nameof(NodeSummary));
+        OnPropertyChanged(nameof(HasNodeSummary));
+        OnPropertyChanged(nameof(HasDashboardHover));
+    }
 
     public bool HasHoverText => !string.IsNullOrWhiteSpace(HoverText);
 
@@ -450,7 +550,10 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
         _ => "Unknown harness"
     };
 
-    public bool Matches(string query)
+    public bool Matches(string query) =>
+        Matches(query, includeRawSource: true);
+
+    public bool Matches(string query, bool includeRawSource)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -461,13 +564,14 @@ public sealed class SessionTreeNodeViewModel : ObservableObject
             Contains(Summary, query) ||
             Contains(HoverText, query) ||
             Contains(ReadableContent, query) ||
-            Contains(RawSource, query))
+            includeRawSource && Contains(RawSource, query))
         {
             return true;
         }
 
         if (Plan is SessionPlanArtifact plan &&
             (Contains(plan.Title, query) ||
+                includeRawSource &&
                 Contains(plan.CurrentMarkdown, query) ||
                 Contains(plan.PrimaryPath, query)))
         {

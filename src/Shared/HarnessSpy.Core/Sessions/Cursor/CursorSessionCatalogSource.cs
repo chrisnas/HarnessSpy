@@ -15,6 +15,8 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
     private readonly CursorDesktopSessionCatalogSource _desktop;
     private readonly CursorPlanCatalogSource _planSource;
     private readonly CursorPlanActivityExtractor _planActivityExtractor = new();
+    private readonly CursorWorkspaceManifestCatalog _workspaceCatalog;
+    private readonly CursorSessionWorkspaceInferrer _workspaceInferrer = new();
     private readonly SessionCatalogMerger _merger = new();
     private readonly CursorSessionEventReconciler _eventReconciler = new();
     private readonly CursorJsonReader _json = new();
@@ -44,6 +46,9 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
             context,
             workspaceNormalizer);
         _planSource = new CursorPlanCatalogSource(context);
+        _workspaceCatalog = new CursorWorkspaceManifestCatalog(
+            context,
+            workspaceNormalizer);
         _watchRoots = _transcripts.WatchRoots
             .Concat(_desktop.WatchRoots)
             .Append(_planSource.PlansRoot)
@@ -82,15 +87,35 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
                 cancellationToken);
         Task<SessionPlanScanResult> planScan =
             _planSource.ScanAsync(cancellationToken);
+        Task<CursorKnownWorkspaceScanResult> workspaceScan =
+            _workspaceCatalog.ScanAsync(cancellationToken);
         try
         {
-            await Task.WhenAll(transcriptScan, desktopScan)
+            await Task.WhenAll(
+                    transcriptScan,
+                    desktopScan,
+                    workspaceScan)
                 .ConfigureAwait(false);
             if (cursorProgress is not null)
             {
-                await ReportTranscriptSessionsAsync(
-                    transcriptScan,
-                    cursorProgress).ConfigureAwait(false);
+                SessionCatalogScanResult progressiveTranscripts =
+                    await transcriptScan.ConfigureAwait(false);
+                SessionCatalogScanResult progressiveDesktop =
+                    await desktopScan.ConfigureAwait(false);
+                CursorKnownWorkspaceScanResult progressiveWorkspaces =
+                    await workspaceScan.ConfigureAwait(false);
+                IReadOnlyList<SessionCatalogEntry> evidenceSessions =
+                    progressiveDesktop.Sessions
+                        .Concat(progressiveTranscripts.Sessions)
+                        .ToArray();
+                IReadOnlyList<SessionCatalogEntry> inferredTranscripts =
+                    _workspaceInferrer.Infer(
+                        progressiveTranscripts.Sessions,
+                        progressiveWorkspaces.Workspaces,
+                        evidenceSessions);
+                ReportTranscriptSessions(
+                    inferredTranscripts,
+                    cursorProgress);
             }
         }
         finally
@@ -105,6 +130,8 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
             await transcriptScan.ConfigureAwait(false);
         SessionCatalogScanResult desktopResult =
             await desktopScan.ConfigureAwait(false);
+        CursorKnownWorkspaceScanResult workspaceResult =
+            await workspaceScan.ConfigureAwait(false);
         IReadOnlyList<SessionCatalogEntry> normalizedTranscripts =
             NormalizeTranscriptCatalogIds(
                 transcriptResult.Sessions,
@@ -127,6 +154,7 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
 
         string[] warnings = transcriptResult.Warnings
             .Concat(desktopResult.Warnings)
+            .Concat(workspaceResult.Warnings)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
@@ -134,9 +162,13 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
         // including many empty "new chat" shells that were never associated
         // with a workspace. Drop those empty, workspace-less entries as noise
         // while keeping real orphaned conversations (which still have content).
-        SessionCatalogEntry[] visible = reconciled
+        SessionCatalogEntry[] visibleWithoutInference = reconciled
             .Where(session => !IsEmptyOrphan(session))
             .ToArray();
+        IReadOnlyList<SessionCatalogEntry> visible =
+            _workspaceInferrer.Infer(
+                visibleWithoutInference,
+                workspaceResult.Workspaces);
 
         SessionPlanScanResult planResult =
             await planScan.ConfigureAwait(false);
@@ -151,11 +183,13 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
             .Concat(planResult.Warnings)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        progress?.Report(visible);
 
         return new SessionCatalogScanResult(
             visible,
             transcriptResult.IsComplete &&
                 desktopResult.IsComplete &&
+                workspaceResult.IsComplete &&
                 planResult.IsComplete,
             combinedWarnings)
         {
@@ -163,13 +197,11 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
         };
     }
 
-    private static async Task ReportTranscriptSessionsAsync(
-        Task<SessionCatalogScanResult> transcriptScan,
+    private static void ReportTranscriptSessions(
+        IReadOnlyList<SessionCatalogEntry> sessions,
         IProgress<SessionCatalogEntry> progress)
     {
-        SessionCatalogScanResult result =
-            await transcriptScan.ConfigureAwait(false);
-        foreach (SessionCatalogEntry session in result.Sessions
+        foreach (SessionCatalogEntry session in sessions
                      .OrderBy(
                          static item => item.Workspace.DisplayName,
                          StringComparer.OrdinalIgnoreCase)
@@ -202,10 +234,11 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
             TimeSpan.FromMilliseconds(120);
 
         private readonly Channel<SessionCatalogEntry> _pending =
-            Channel.CreateUnbounded<SessionCatalogEntry>(
-                new UnboundedChannelOptions
+            Channel.CreateBounded<SessionCatalogEntry>(
+                new BoundedChannelOptions(1024)
                 {
-                    SingleReader = true
+                    SingleReader = true,
+                    FullMode = BoundedChannelFullMode.DropOldest
                 });
         private readonly Dictionary<string, SessionCatalogEntry> _sessions =
             new(StringComparer.OrdinalIgnoreCase);

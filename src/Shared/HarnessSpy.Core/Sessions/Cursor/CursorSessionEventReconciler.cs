@@ -14,6 +14,9 @@ namespace HarnessSpy.Core.Sessions.Cursor;
 // retained as provenance so nothing becomes unauditable.
 internal sealed class CursorSessionEventReconciler
 {
+    private readonly CollapsedWhitespaceTextComparer _responseTextComparer =
+        new();
+
     public SessionCatalogEntry Reconcile(SessionCatalogEntry session)
     {
         if (session.Provider != HookProvider.Cursor)
@@ -21,16 +24,21 @@ internal sealed class CursorSessionEventReconciler
             return session;
         }
 
-        bool changed = false;
-        List<SessionTurn> turns = [];
-        foreach (SessionTurn turn in session.Turns)
+        SessionTurn[]? turns = null;
+        for (int index = 0; index < session.Turns.Count; index++)
         {
+            SessionTurn turn = session.Turns[index];
             SessionTurn reconciled = ReconcileTurn(turn);
-            changed |= !ReferenceEquals(reconciled, turn);
-            turns.Add(reconciled);
+            if (ReferenceEquals(reconciled, turn))
+            {
+                continue;
+            }
+
+            turns ??= session.Turns.ToArray();
+            turns[index] = reconciled;
         }
 
-        return changed ? session with { Turns = turns } : session;
+        return turns is null ? session : session with { Turns = turns };
     }
 
     private SessionTurn ReconcileTurn(SessionTurn turn)
@@ -56,8 +64,14 @@ internal sealed class CursorSessionEventReconciler
             droppedTranscriptIds,
             transcriptInferredTime);
         DropDuplicateResponses(events, droppedTranscriptIds);
+        if (canonicalByDesktopId.Count == 0 &&
+            droppedTranscriptIds.Count == 0)
+        {
+            return turn;
+        }
 
-        List<SessionEventRecord> survivors = [];
+        List<SessionEventRecord> survivors =
+            new(events.Count - droppedTranscriptIds.Count);
         foreach (SessionEventRecord item in events)
         {
             if (IsTranscript(item) && droppedTranscriptIds.Contains(item.Id))
@@ -71,12 +85,21 @@ internal sealed class CursorSessionEventReconciler
                     : item);
         }
 
-        SessionEventRecord[] ordered = survivors
+        (SessionEventRecord Item, int OriginalIndex)[] sorted = survivors
             .Select((item, index) => (item, index))
             .OrderBy(entry => SortTime(entry.item, transcriptInferredTime))
             .ThenBy(entry => entry.index)
-            .Select((entry, position) => entry.item with { Order = position + 1 })
             .ToArray();
+        SessionEventRecord[] ordered =
+            new SessionEventRecord[sorted.Length];
+        for (int position = 0; position < sorted.Length; position++)
+        {
+            SessionEventRecord item = sorted[position].Item;
+            int order = position + 1;
+            ordered[position] = item.Order == order
+                ? item
+                : item with { Order = order };
+        }
 
         return turn with { Events = ordered };
     }
@@ -100,8 +123,9 @@ internal sealed class CursorSessionEventReconciler
             return;
         }
 
-        Dictionary<SessionEventRecord, SessionEventRecord> pairs = new();
-        HashSet<SessionEventRecord> usedDesktop = [];
+        Dictionary<string, SessionEventRecord> pairsByTranscriptId =
+            new(StringComparer.Ordinal);
+        CursorToolRequestIndex desktopIndex = new(desktopRequests);
 
         // Tier 1: exact native tool-call id.
         foreach (SessionEventRecord transcript in transcriptRequests)
@@ -111,49 +135,55 @@ internal sealed class CursorSessionEventReconciler
                 continue;
             }
 
-            SessionEventRecord? desktop = desktopRequests.FirstOrDefault(candidate =>
-                !usedDesktop.Contains(candidate) &&
-                string.Equals(
-                    candidate.ToolCallId,
+            if (desktopIndex.TryTakeByToolCallId(
                     transcript.ToolCallId,
-                    StringComparison.Ordinal));
-            if (desktop is not null)
+                    out SessionEventRecord? desktop))
             {
-                pairs[transcript] = desktop;
-                usedDesktop.Add(desktop);
+                pairsByTranscriptId[transcript.Id] = desktop!;
             }
         }
 
         // Tier 2: correlation key FIFO (canonical kind / MCP tool / discovery).
         foreach (SessionEventRecord transcript in transcriptRequests)
         {
-            if (pairs.ContainsKey(transcript))
+            if (pairsByTranscriptId.ContainsKey(transcript.Id))
             {
                 continue;
             }
 
             string key = CorrelationKey(transcript);
-            SessionEventRecord? desktop = desktopRequests.FirstOrDefault(candidate =>
-                !usedDesktop.Contains(candidate) &&
-                string.Equals(CorrelationKey(candidate), key, StringComparison.Ordinal));
-            if (desktop is not null)
+            if (desktopIndex.TryTakeByCorrelationKey(
+                    key,
+                    out SessionEventRecord? desktop))
             {
-                pairs[transcript] = desktop;
-                usedDesktop.Add(desktop);
+                pairsByTranscriptId[transcript.Id] = desktop!;
             }
         }
 
-        foreach ((SessionEventRecord transcript, SessionEventRecord desktop) in pairs)
+        Dictionary<string, DateTimeOffset> pairedTimes =
+            new(StringComparer.Ordinal);
+        foreach (SessionEventRecord transcript in transcriptRequests)
         {
+            if (!pairsByTranscriptId.TryGetValue(
+                    transcript.Id,
+                    out SessionEventRecord? desktop))
+            {
+                continue;
+            }
+
             canonicalByDesktopId[desktop.Id] = Merge(desktop, transcript);
             droppedTranscriptIds.Add(transcript.Id);
             if (desktop.TimestampUtc is DateTimeOffset stamp)
             {
                 transcriptInferredTime[transcript.Id] = stamp;
+                pairedTimes[transcript.Id] = stamp;
             }
         }
 
-        AssignInferredTranscriptTimes(events, pairs, transcriptInferredTime);
+        AssignInferredTranscriptTimes(
+            events,
+            pairedTimes,
+            transcriptInferredTime);
     }
 
     // Transcript rows carry no native clock. To keep transcript-only survivors
@@ -162,7 +192,7 @@ internal sealed class CursorSessionEventReconciler
     // that most recently preceded it in transcript order.
     private static void AssignInferredTranscriptTimes(
         IReadOnlyList<SessionEventRecord> events,
-        IReadOnlyDictionary<SessionEventRecord, SessionEventRecord> pairs,
+        IReadOnlyDictionary<string, DateTimeOffset> pairedTimes,
         Dictionary<string, DateTimeOffset> transcriptInferredTime)
     {
         DateTimeOffset? last = null;
@@ -171,8 +201,9 @@ internal sealed class CursorSessionEventReconciler
             .OrderBy(item => item.Order))
         {
             if (IsToolRequest(item) &&
-                pairs.TryGetValue(item, out SessionEventRecord? desktop) &&
-                desktop.TimestampUtc is DateTimeOffset paired)
+                pairedTimes.TryGetValue(
+                    item.Id,
+                    out DateTimeOffset paired))
             {
                 last = paired;
             }
@@ -185,15 +216,22 @@ internal sealed class CursorSessionEventReconciler
         }
     }
 
-    private static void DropDuplicateResponses(
+    private void DropDuplicateResponses(
         IReadOnlyList<SessionEventRecord> events,
         HashSet<string> droppedTranscriptIds)
     {
-        HashSet<string> desktopResponseText = events
-            .Where(item => IsDesktop(item) && IsResponse(item))
-            .Select(item => NormalizeText(item.Text))
-            .Where(text => text.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
+        HashSet<string> desktopResponseText =
+            new(_responseTextComparer);
+        foreach (SessionEventRecord item in events)
+        {
+            if (IsDesktop(item) &&
+                IsResponse(item) &&
+                !string.IsNullOrWhiteSpace(item.Text))
+            {
+                desktopResponseText.Add(item.Text);
+            }
+        }
+
         if (desktopResponseText.Count == 0)
         {
             return;
@@ -202,7 +240,8 @@ internal sealed class CursorSessionEventReconciler
         foreach (SessionEventRecord item in events
             .Where(item => IsTranscript(item) && IsResponse(item)))
         {
-            if (desktopResponseText.Contains(NormalizeText(item.Text)))
+            if (item.Text is not null &&
+                desktopResponseText.Contains(item.Text))
             {
                 droppedTranscriptIds.Add(item.Id);
             }
@@ -276,18 +315,4 @@ internal sealed class CursorSessionEventReconciler
     private static bool IsResponse(SessionEventRecord item) =>
         item.Role == ObservationRole.AgentResponse ||
         item.EventKind == CanonicalEventKind.AssistantMessage;
-
-    private static string NormalizeText(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        return string.Join(
-            " ",
-            value.Split(
-                (char[]?)null,
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-    }
 }

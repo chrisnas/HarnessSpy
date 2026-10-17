@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Text;
 
 namespace HarnessSpy.Core.Sessions.Cursor;
 
@@ -260,6 +261,7 @@ internal sealed class CursorIdentityBuilder
 
 internal sealed class CursorJsonReader
 {
+    private readonly BoundedTextPreviewBuilder _previewBuilder = new();
     private readonly JsonDocumentOptions _documentOptions = new()
     {
         AllowTrailingCommas = true,
@@ -577,22 +579,7 @@ internal sealed class CursorJsonReader
     }
 
     public string Preview(string? text, int maximumCharacters = 120)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return string.Empty;
-        }
-
-        string oneLine = string.Join(
-            " ",
-            text.Split(
-                (char[]?)null,
-                StringSplitOptions.RemoveEmptyEntries |
-                StringSplitOptions.TrimEntries));
-        return oneLine.Length <= maximumCharacters
-            ? oneLine
-            : oneLine[..maximumCharacters].TrimEnd() + "\u2026";
-    }
+        => _previewBuilder.Build(text, maximumCharacters);
 
     public IReadOnlyList<string> TargetPaths(JsonElement value)
     {

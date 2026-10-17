@@ -11,6 +11,7 @@ public sealed class SessionPlanCatalogAssembler
 {
     private readonly SessionPlanContentNormalizer _normalizer = new();
     private readonly SessionPlanRevisionBuilder _revisionBuilder = new();
+    private readonly SessionPlanWorkspaceInferrer _workspaceInferrer = new();
 
     public IReadOnlyList<SessionPlanArtifact> Assemble(
         IReadOnlyList<SessionCatalogEntry> sessions,
@@ -50,10 +51,21 @@ public sealed class SessionPlanCatalogAssembler
         List<SessionPlanArtifact> bound = [];
         foreach (SessionPlanArtifact artifact in merged)
         {
-            bound.Add(ResolveBinding(
+            IReadOnlyList<SessionPlanActivity> activities =
+                byArtifact[artifact.CatalogPlanId];
+            SessionPlanArtifact resolved = ResolveBinding(
                 artifact,
-                byArtifact[artifact.CatalogPlanId],
-                sessionsById));
+                activities,
+                sessionsById);
+            SessionPlanWorkspaceInference? workspaceInference =
+                _workspaceInferrer.Infer(
+                    resolved,
+                    activities,
+                    sessions);
+            bound.Add(resolved with
+            {
+                WorkspaceInference = workspaceInference
+            });
         }
 
         // Session-scoped content (Claude ExitPlanMode without a path) is added
@@ -126,6 +138,13 @@ public sealed class SessionPlanCatalogAssembler
             merged[artifact.CatalogPlanId] = primary with
             {
                 AlternatePaths = [.. alternates],
+                WorkspacePathHints = primary.WorkspacePathHints
+                    .Concat(secondary.WorkspacePathHints)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                NativeSessionIdHint =
+                    primary.NativeSessionIdHint ??
+                    secondary.NativeSessionIdHint,
                 Sources = primary.Sources
                     .Concat(secondary.Sources)
                     .DistinctBy(
@@ -150,8 +169,12 @@ public sealed class SessionPlanCatalogAssembler
         SessionPlanArtifact first,
         SessionPlanArtifact second)
     {
-        bool firstHasContent = !string.IsNullOrEmpty(first.CurrentMarkdown);
-        bool secondHasContent = !string.IsNullOrEmpty(second.CurrentMarkdown);
+        bool firstHasContent =
+            !string.IsNullOrEmpty(first.CurrentMarkdown) ||
+            !string.IsNullOrEmpty(first.CurrentContentHash);
+        bool secondHasContent =
+            !string.IsNullOrEmpty(second.CurrentMarkdown) ||
+            !string.IsNullOrEmpty(second.CurrentContentHash);
         if (firstHasContent != secondHasContent)
         {
             return firstHasContent ? first : second;
@@ -364,12 +387,39 @@ public sealed class SessionPlanCatalogAssembler
 
         return artifact with
         {
+            CurrentMarkdown = null,
             Revisions = result.Revisions,
+            RevisionSnapshot = CompactSnapshot(
+                artifact.RevisionSnapshot),
+            Activities = CompactActivities(
+                OrderActivities(activities)),
             ObservedUpdateCount = result.ObservedUpdateCount,
             HasIncompleteRevisionHistory = result.HasIncompleteRevisionHistory,
             CreatedAtUtc = artifact.CreatedAtUtc ?? createdAt
         };
     }
+
+    private static SessionPlanContentSnapshot? CompactSnapshot(
+        SessionPlanContentSnapshot? snapshot) =>
+        snapshot is null
+            ? null
+            : new SessionPlanContentSnapshot(
+                string.Empty,
+                snapshot.ContentHash);
+
+    private static IReadOnlyList<SessionPlanActivity> CompactActivities(
+        IReadOnlyList<SessionPlanActivity> activities) =>
+        activities
+            .Select(static activity =>
+                activity.Content is SessionPlanContentSnapshot content
+                    ? activity with
+                    {
+                        Content = new SessionPlanContentSnapshot(
+                            string.Empty,
+                            content.ContentHash)
+                    }
+                    : activity)
+            .ToArray();
 
     private static IReadOnlyList<SessionPlanActivity> OrderActivities(
         IReadOnlyList<SessionPlanActivity> activities) =>
@@ -380,9 +430,10 @@ public sealed class SessionPlanCatalogAssembler
             .ToArray();
 
     private static bool IsOwnership(SessionPlanActivity activity) =>
-        activity.Kind is SessionPlanActivityKind.Created
+        activity.IsSuccessful &&
+        (activity.Kind is SessionPlanActivityKind.Created
             or SessionPlanActivityKind.Updated ||
-        activity.EstablishesOwnership;
+        activity.EstablishesOwnership);
 
     private static IEnumerable<string> ArtifactPaths(SessionPlanArtifact artifact)
     {

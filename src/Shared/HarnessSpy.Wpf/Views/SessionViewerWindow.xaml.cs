@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using HarnessSpy.Core.Services;
 using HarnessSpy.Core.Sessions;
 using HarnessSpy.Wpf.Input;
 using HarnessSpy.Wpf.ViewModels;
@@ -181,6 +182,46 @@ public partial class SessionViewerWindow : Window
         await ViewModel.RefreshAsync();
     }
 
+    private async void ForceRefresh_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (ViewModel is null)
+        {
+            return;
+        }
+
+        ViewerOptionsToggle.IsChecked = false;
+        await ViewModel.ForceRefreshAsync();
+    }
+
+    private async void LoadFullRawSource_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (ViewModel is null)
+        {
+            return;
+        }
+
+        await ViewModel.Inspector.LoadFullAsync();
+    }
+
+    private async void LoadAllSessions_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (ViewModel is null)
+        {
+            return;
+        }
+
+        ViewModel.Preferences.CatalogProfile =
+            SessionCatalogProfile.Complete;
+        ViewerOptionsToggle.IsChecked = false;
+        await ViewModel.ForceRefreshAsync();
+    }
+
     private void FindPrevious_Click(object sender, RoutedEventArgs e)
     {
         Find(previous: true);
@@ -189,6 +230,36 @@ public partial class SessionViewerWindow : Window
     private void FindNext_Click(object sender, RoutedEventArgs e)
     {
         Find(previous: false);
+    }
+
+    private async void FindRaw_Click(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel is null)
+        {
+            return;
+        }
+
+        SessionTreeNodeViewModel? match =
+            await ViewModel.FindNextRawAsync();
+        if (match is null)
+        {
+            return;
+        }
+
+        _isApplyingSelection = true;
+        try
+        {
+            TreeViewItem? item = SelectTreeNode(match);
+            item?.Focus();
+            if (item is not null)
+            {
+                Keyboard.Focus(item);
+            }
+        }
+        finally
+        {
+            _isApplyingSelection = false;
+        }
     }
 
     private void SearchTextBox_KeyDown(object sender, KeyEventArgs e)
@@ -270,9 +341,9 @@ public partial class SessionViewerWindow : Window
 
         ItemsControl parent = SessionTreeView;
         TreeViewItem? container = null;
+        SessionTreeView.UpdateLayout();
         foreach (SessionTreeNodeViewModel step in path)
         {
-            parent.UpdateLayout();
             if (parent.ItemContainerGenerator.ContainerFromItem(step)
                 is not TreeViewItem item)
             {
@@ -326,12 +397,8 @@ public partial class SessionViewerWindow : Window
             return;
         }
 
-        SessionTreeNodeViewModel? target = SessionTreeNodeViewModel
-            .EnumerateDepthFirst(ViewModel.Roots)
-            .FirstOrDefault(node => string.Equals(
-                node.StableId,
-                targetId,
-                StringComparison.Ordinal));
+        SessionTreeNodeViewModel? target =
+            ViewModel.FindNode(targetId);
         if (target is null)
         {
             return;
@@ -437,53 +504,71 @@ public partial class SessionViewerWindow : Window
     // ScrollViewer (a ToolTip dismisses on mouse-leave, leaving its scroll bar
     // unreachable). The row and the popup content share one hover region: any
     // pending close is cancelled whenever the pointer enters either of them.
-    private void DashboardRow_MouseEnter(object sender, MouseEventArgs e)
+    private async void DashboardRow_MouseEnter(
+        object sender,
+        MouseEventArgs e)
     {
         if (sender is not FrameworkElement row ||
-            row.DataContext is not SessionTreeNodeViewModel node ||
-            !node.HasDashboardHover)
+            row.DataContext is not SessionTreeNodeViewModel node)
         {
             return;
         }
 
-        Popup? popup = FindDashboardPopup(row);
-        if (popup is null)
+        if (ViewModel is not null)
+        {
+            await ViewModel.EnsureNodeSummaryAsync(node);
+        }
+
+        if (!node.HasDashboardHover)
         {
             return;
         }
 
-        CancelDashboardPopupClose(popup);
+        CancelDashboardPopupClose(DashboardPopup);
 
-        if (popup.IsOpen)
+        if (DashboardPopup.IsOpen &&
+            ReferenceEquals(DashboardPopup.DataContext, node))
         {
             return;
         }
 
-        _pendingDashboardPopup = popup;
+        DashboardPopup.IsOpen = false;
+        DashboardPopup.PlacementTarget = row;
+        DashboardPopup.DataContext = node;
+        _pendingDashboardPopup = DashboardPopup;
         _dashboardOpenTimer.Stop();
         _dashboardOpenTimer.Start();
     }
 
     private void DashboardRow_MouseLeave(object sender, MouseEventArgs e)
     {
-        Popup? popup = FindDashboardPopup(sender as FrameworkElement);
-        if (popup is not null && ReferenceEquals(popup, _pendingDashboardPopup))
+        if (ReferenceEquals(
+                DashboardPopup.PlacementTarget,
+                sender as FrameworkElement) &&
+            ReferenceEquals(
+                DashboardPopup,
+                _pendingDashboardPopup))
         {
             _dashboardOpenTimer.Stop();
             _pendingDashboardPopup = null;
         }
 
-        ScheduleDashboardPopupClose(popup);
+        if (ReferenceEquals(
+                DashboardPopup.PlacementTarget,
+                sender as FrameworkElement))
+        {
+            ScheduleDashboardPopupClose(DashboardPopup);
+        }
     }
 
     private void DashboardContent_MouseEnter(object sender, MouseEventArgs e)
     {
-        CancelDashboardPopupClose(GetOwningPopup(sender));
+        CancelDashboardPopupClose(DashboardPopup);
     }
 
     private void DashboardContent_MouseLeave(object sender, MouseEventArgs e)
     {
-        ScheduleDashboardPopupClose(GetOwningPopup(sender));
+        ScheduleDashboardPopupClose(DashboardPopup);
     }
 
     private void DashboardOpenTimer_Tick(object? sender, EventArgs e)
@@ -495,27 +580,6 @@ public partial class SessionViewerWindow : Window
             _pendingDashboardPopup = null;
         }
     }
-
-    private static Popup? FindDashboardPopup(FrameworkElement? row)
-    {
-        if (row?.Parent is Panel panel)
-        {
-            foreach (object child in panel.Children)
-            {
-                if (child is Popup popup)
-                {
-                    return popup;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static Popup? GetOwningPopup(object sender) =>
-        sender is FrameworkElement element
-            ? LogicalTreeHelper.GetParent(element) as Popup
-            : null;
 
     private static void ScheduleDashboardPopupClose(Popup? popup)
     {

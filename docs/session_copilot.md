@@ -15,10 +15,14 @@ hook/transcript enrichment pipeline documented in
 
 ## Current scope
 
-One catalog entry is reconstructed from an `events.jsonl` stream plus optional
-`workspace.yaml` and colocated `plan.md`. Current directory layout takes
-precedence over the legacy flat file. Process command lines can enrich the
-final open/closed state.
+One catalog entry is reconstructed from any provider-owned combination of
+`events.jsonl`, `workspace.yaml`, and colocated `plan.md`. A meaningful
+workspace-only directory becomes a metadata-only closed session; a plan-only
+directory becomes a minimal session so its directory-bound plan remains
+visible. Metadata-only sessions are labeled in the tree badge. Empty startup
+shells are suppressed. Current directory layout takes
+precedence over the legacy flat file. Open/closed state comes only from native
+session lifecycle records.
 
 ```mermaid
 flowchart LR
@@ -34,10 +38,8 @@ flowchart LR
     Plan --> Reader
     Legacy --> Reader
     Reader --> Projector["CopilotSessionProjector"]
-    Process["copilot / matching node process"] --> Correlator["ProcessSessionCorrelator"]
     Projector --> Entry["SessionCatalogEntry"]
-    Entry --> Correlator
-    Correlator --> Tree["workspace / session / turn / event tree"]
+    Entry --> Tree["workspace / session / turn / event tree"]
 ```
 
 ## Configuration root and source locations
@@ -60,8 +62,9 @@ supports `~`, `~/...`, and `~\...`.
 | Legacy event stream | `session-state\<session-id>.jsonl` | Same event processing without workspace YAML or directory-bound `plan.md` |
 | Running process | `copilot` or `node` containing `@github/copilot`/`copilot-cli` | Resume/session ID, transcript path, CWD, and PID hints |
 
-If both layouts exist for the same ID, only the current directory layout is
-used. A current directory without `events.jsonl` is ignored.
+If both layouts exist for the same ID, current workspace/plan metadata is
+combined with the legacy event stream when the current directory has no
+`events.jsonl`.
 
 The source does **not** read:
 
@@ -133,7 +136,7 @@ updated_at: 2026-09-05T08:05:00Z
 | Git root | `git_root`, `gitRoot` | Preferred workspace root |
 | Repository | `repository`, `repository_name`, `repositoryName` | Metadata |
 | Branch | `branch`, `git_branch`, `gitBranch` | Metadata |
-| Title | `name`, `title` | Preferred session title |
+| Title | `name`, `title`, then `summary` | Preferred session title |
 | Client | `client_name`, `clientName` | Exact `github/autopilot` selects the `ghapp://` opener; every other value uses the CLI |
 | Host | `host_type`, `hostType` | Metadata |
 | Created | `created_at`, `createdAt`, `creation_time` | Session start candidate |
@@ -143,8 +146,12 @@ Repository values may be scalar or a nested mapping containing
 `full_name`/`fullName`/`name`/`slug`. Timestamps may be ISO strings or numeric
 epoch values.
 
-Every field is retained twice for compatibility: a short key such as `cwd`
-and a `workspace.cwd` key.
+Every scalar field is retained twice for compatibility: a short key such as
+`cwd` and a `workspace.cwd` key. This includes provider control/relationship
+fields such as `mc_task_id`, `mc_session_id`, `mc_last_event_id`,
+`user_named`, `fork_count`, and `remote_steerable`. Directory identity remains
+canonical; `mc_session_id` is a secondary identity and is preferred only by the
+`ghapp://sessions/...` opener for `github/autopilot`.
 
 ## `events.jsonl` format
 
@@ -193,6 +200,7 @@ contract version in provenance.
 | `session.mode_changed`, `session.mode_change` | mode | Current mode |
 | `session.context_changed`, `session.context_change` | CWD/Git/repository/branch | Ordered context history and current context |
 | `session.permissions_changed` | permission mode | Metadata |
+| `session.plan_changed` | `operation` | Native create/update plan activity linked to its parent turn when available |
 | `user.message` | `turnId`, `interactionId`, content, `agentMode` | Prompt and turn binding |
 | `system.message` | content/role, `skills[]` | `role:"system"` becomes a session-level system-prompt snapshot; other roles become hidden turn/pending messages plus available-skill events when a turn is known |
 | `assistant.turn_start` / `assistant.turn_end` | turn/interaction IDs | Durable turn boundaries |
@@ -241,8 +249,8 @@ than used as conversation identity. `messageId` becomes `AssistantStepId`, and
   `GitHubCopilot:CopilotCli:<native-session-id>`.
 - `session.start.data.sessionId` and `workspace.yaml.id` are consistency
   checks. A mismatch is warned and preserved; it is not silently merged.
-- Title precedence is `workspace.yaml` name, first prompt preview, then native
-  ID.
+- Title precedence is `workspace.yaml` name, workspace summary, first prompt
+  preview, then native ID.
 - Workspace root precedence is:
 
 ```text
@@ -252,6 +260,9 @@ workspace.cwd > latest event cwd > Unknown workspace
 
 - `session.context_*` records form numbered `context.<n>.*` metadata. The
   latest non-null fields also update `context.current.*`.
+- Disjoint workspace-metadata and event-context roots retain an `Ambiguous`
+  workspace inference with both alternatives while keeping `workspace.yaml`
+  canonical. A Git root and its descendant CWD are compatible, not a conflict.
 - Session start uses the earliest event/workspace creation time. Last activity
   uses the latest event/workspace update, then the snapshotted event-file
   modification time.
@@ -398,17 +409,10 @@ new lifecycle segment.
 - without lifecycle records, the source currently emits `Open` with `Derived`
   evidence when the log has records (`Unavailable` only for an empty log).
 
-The shared coordinator then applies process correlation when the probe batch
-contains at least one hint. An exact Copilot session/transcript match becomes
-`Open`; a unique workspace/CWD match can become `Open` with `Heuristic`
-evidence; unmatched sessions are forced to `Closed`, even when their event log
-ends with `session.start` or `session.resume`.
-
-Current implementation caveat: when **all** process probes return zero hints,
-the correlator is not invoked and the event-tail lifecycle remains visible.
-Therefore a log ending in `session.start` can appear open without current
-process evidence. This differs from the otherwise conservative process-based
-policy and should not be treated as proof that a terminal is still alive.
+SessionViewer does not enumerate Copilot processes or inspect process command
+lines. Therefore a log ending in `session.start` or `session.resume` can appear
+open without proof that a terminal is still alive; the state means only that no
+later shutdown record was observed.
 
 **Open Session** checks `client_name`:
 
@@ -460,8 +464,11 @@ session directory.
   (`CopilotSessionDirectory`).
 - Legacy flat JSONL sessions have no containing plan path and therefore no
   directory-bound plan artifact.
-- Native `plan`/`update_plan` tools and detected tool requests targeting
-  `plan.md` are surfaced as linked `Plan updated` activities under their turns.
+- Native `session.plan_changed` create/update records are the preferred plan
+  activities and are correlated to their turn through their parent event when
+  possible. Older logs fall back to native `plan`/`update_plan` tools and
+  detected tool requests targeting `plan.md`. Native plan-change evidence and
+  its corresponding file tool are deduplicated.
   Copilot exposes no reliable full resulting body for these, so they are opaque
   evidence and the plan node shows a `partial` marker; the current `plan.md`
   supplies the latest known body.
@@ -476,6 +483,9 @@ session directory.
 - Copilot's event union evolves. Unknown types are preserved but not projected.
 - Only top-level session directories and legacy top-level `.jsonl` files are
   discovered; arbitrary nested stores are ignored.
+- Workspace-only directories are retained only when they contain a name,
+  summary, Mission Control identity, meaningful lifetime, or plan; otherwise
+  they are treated as empty startup shells.
 - `parentId` must not be used as a tool or subagent parent.
 - Synthetic turn binding is deterministic but not native evidence.
 - `ephemeral` records carry `ExcludeFromSummary`. The summary builder normally
@@ -514,12 +524,11 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotSessionProjector.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotExecutionSemantics.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotWorkspaceReader.cs`
+- `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotWorkspaceSessionBuilder.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotEventSemantics.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Copilot/CopilotSessionInfrastructure.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionCatalogCoordinator.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionViewerSettingsService.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Process/CommandLineSessionProbe.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Process/ProcessSessionCorrelator.cs`
 - `src/Shared/HarnessSpy.Wpf/SessionViewerApplicationHost.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionCatalogViewModel.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`

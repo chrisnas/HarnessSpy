@@ -9,6 +9,7 @@ using Microsoft.Data.Sqlite;
 
 namespace HarnessSpy.Tests;
 
+[Collection("Session catalog source integration")]
 public sealed class SessionCatalogSourceTests
 {
     [Fact]
@@ -40,6 +41,7 @@ public sealed class SessionCatalogSourceTests
                 CancellationToken.None);
 
             SessionCatalogEntry session = Assert.Single(result.Sessions);
+            AssertUsesLazyRawSources(session);
             SessionTurn turn = Assert.Single(session.Turns);
             Assert.Equal(HookProvider.Cursor, session.Provider);
             Assert.Equal("inspect the project", turn.Prompt);
@@ -87,6 +89,7 @@ public sealed class SessionCatalogSourceTests
                 CancellationToken.None);
 
             SessionCatalogEntry session = Assert.Single(result.Sessions);
+            AssertUsesLazyRawSources(session);
             Assert.Equal("Desktop session", session.Title);
             SessionTurn turn = Assert.Single(session.Turns);
             Assert.Equal("inspect desktop", turn.Prompt);
@@ -138,6 +141,15 @@ public sealed class SessionCatalogSourceTests
 
             Assert.Equal(4, result.Sessions.Count);
             Assert.NotEmpty(progress.Values);
+            Assert.Equal(
+                [
+                    "desktop-session-4",
+                    "desktop-session-3",
+                    "desktop-session-2",
+                    "desktop-session-1"
+                ],
+                result.Sessions.Select(
+                    static session => session.NativeSessionId));
 
             // Skeletons (no turns) are published first, then the same sessions
             // are rehydrated with their turns. Snapshots are time-coalesced, so
@@ -214,6 +226,117 @@ public sealed class SessionCatalogSourceTests
     }
 
     [Fact]
+    public async Task CursorWorkspaceCatalogReadsManifestWithoutDatabase()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string workspaceRoot = Path.Combine(
+                root,
+                "repos",
+                "repo_with_punctuation");
+            Directory.CreateDirectory(workspaceRoot);
+            string storage = Path.Combine(
+                root,
+                "Cursor",
+                "User",
+                "workspaceStorage",
+                "workspace-id");
+            Directory.CreateDirectory(storage);
+            await File.WriteAllTextAsync(
+                Path.Combine(storage, "workspace.json"),
+                JsonSerializer.Serialize(new
+                {
+                    folder = new Uri(workspaceRoot).AbsoluteUri
+                }));
+
+            SessionDiscoveryContext context = new(
+                root,
+                root,
+                _ => null,
+                new SessionDiscoveryLimits(
+                    MaximumDuration: TimeSpan.FromSeconds(5)));
+            CursorKnownWorkspaceScanResult result =
+                await new CursorWorkspaceManifestCatalog(
+                    context,
+                    new WorkspaceNormalizer())
+                    .ScanAsync(CancellationToken.None);
+
+            WorkspaceContext workspace = Assert.Single(result.Workspaces);
+            Assert.True(result.IsComplete);
+            Assert.Equal(
+                WorkspaceContext.FromRoot(workspaceRoot).Key,
+                workspace.Key);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CursorSourceUsesManifestSlugForInferredPlacement()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            const string projectKey =
+                "c-inference-test-repo-with-punctuation";
+            string transcriptDirectory = Path.Combine(
+                root,
+                ".cursor",
+                "projects",
+                projectKey,
+                "agent-transcripts",
+                "cursor-session");
+            Directory.CreateDirectory(transcriptDirectory);
+            File.Copy(
+                Fixture("Cursor", "session.jsonl"),
+                Path.Combine(
+                    transcriptDirectory,
+                    "cursor-session.jsonl"));
+
+            string storage = Path.Combine(
+                root,
+                "Cursor",
+                "User",
+                "workspaceStorage",
+                "workspace-id");
+            Directory.CreateDirectory(storage);
+            await File.WriteAllTextAsync(
+                Path.Combine(storage, "workspace.json"),
+                """
+                {
+                  "folder": "file:///c%3A/inference-test/repo_with_punctuation"
+                }
+                """);
+
+            SessionDiscoveryContext context = new(
+                root,
+                root,
+                _ => null,
+                new SessionDiscoveryLimits(
+                    MaximumDuration: TimeSpan.FromSeconds(5)));
+            SessionCatalogEntry session = Assert.Single(
+                (await new CursorSessionCatalogSource(context)
+                    .ScanAsync(CancellationToken.None)).Sessions);
+
+            SessionWorkspaceInference inference = Assert.IsType<
+                SessionWorkspaceInference>(session.WorkspaceInference);
+            Assert.Equal(
+                WorkspaceContext.FromRoot(
+                    @"C:\inference-test\repo_with_punctuation").Key,
+                inference.Workspace.Key);
+            Assert.Equal(InferenceEvidence.Derived, inference.Evidence);
+            Assert.Equal(WorkspaceContextKind.Unknown, session.Workspace.Kind);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ClaudeSourceBuildsTurnsAndParallelTools()
     {
         string root = CreateTempDirectory();
@@ -240,6 +363,7 @@ public sealed class SessionCatalogSourceTests
                 CancellationToken.None);
 
             SessionCatalogEntry session = Assert.Single(result.Sessions);
+            AssertUsesLazyRawSources(session);
             SessionTurn turn = Assert.Single(session.Turns);
             Assert.Equal(HookProvider.ClaudeCode, session.Provider);
             Assert.Equal("run the tests", turn.Prompt);
@@ -397,6 +521,7 @@ public sealed class SessionCatalogSourceTests
                 CancellationToken.None);
 
             SessionCatalogEntry session = Assert.Single(result.Sessions);
+            AssertUsesLazyRawSources(session);
             SessionTurn turn = Assert.Single(session.Turns);
             Assert.Equal(HookProvider.GitHubCopilot, session.Provider);
             Assert.Equal("inspect two files", turn.Prompt);
@@ -494,6 +619,29 @@ public sealed class SessionCatalogSourceTests
     private static string Fixture(params string[] parts) =>
         Path.Combine(
             [AppContext.BaseDirectory, "Fixtures", "SessionViewer", .. parts]);
+
+    private static void AssertUsesLazyRawSources(
+        SessionCatalogEntry session)
+    {
+        SessionSourceProvenance[] sources =
+        [
+            .. session.Sources,
+            .. session.SessionEvents.Select(
+                static item => item.Provenance),
+            .. session.Turns
+                .SelectMany(static turn => turn.Events)
+                .Select(static item => item.Provenance),
+            .. session.Turns
+                .SelectMany(static turn => turn.Events)
+                .SelectMany(static item => item.SupplementalProvenance)
+        ];
+        Assert.NotEmpty(sources);
+        Assert.All(sources, static source =>
+        {
+            Assert.Null(source.RawContent);
+            Assert.NotNull(source.RawSource);
+        });
+    }
 
     private static string CreateTempDirectory()
     {
@@ -597,3 +745,8 @@ public sealed class SessionCatalogSourceTests
         public void Report(T value) => Values.Add(value);
     }
 }
+
+[CollectionDefinition(
+    "Session catalog source integration",
+    DisableParallelization = true)]
+public sealed class SessionCatalogSourceIntegrationCollection;

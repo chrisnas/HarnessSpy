@@ -59,8 +59,7 @@ flowchart LR
     TranscriptSource --> CursorSource["CursorSessionCatalogSource"]
     DesktopSource --> CursorSource
     PlanSource --> CursorSource
-    CursorSource --> Coordinator["SessionCatalogCoordinator<br/>cross-provider merge + process correlation"]
-    ProcessProbe["Cursor process probe"] --> Coordinator
+    CursorSource --> Coordinator["SessionCatalogCoordinator<br/>cross-provider merge"]
     Coordinator --> PlanAssembler["SessionPlanCatalogAssembler"]
     Coordinator --> Catalog["SessionCatalogEntry[]"]
     PlanAssembler --> Catalog
@@ -292,6 +291,25 @@ Workspace evidence is chosen in this order:
 Multiple transcript roots become one multiroot `WorkspaceContext`. Workspace
 keys are case-insensitive normalized root sets.
 
+When that observed workspace is unknown, empty, or has multiple roots,
+SessionViewer can add a separate presentation-only workspace inference. It
+builds candidates from every Cursor `workspace.json` manifest, including
+manifests whose directory no longer has a `state.vscdb`, and scores:
+
+- a matching native session already associated with one workspace;
+- a unique Cursor project-key encoding of a known manifest path;
+- tool target/working paths contained by a known workspace;
+- rooted paths in the user prompt;
+- each root of a synthesized multiroot result.
+
+A unique winner is shown beneath its likely workspace with an amber `?` overlay.
+Close competing candidates remain under `Unknown workspace` with an amber `~`
+overlay. The inspector retains the provider-observed workspace, score, evidence,
+and alternatives; inference never changes the catalog ID or canonical
+`Workspace`. Consequently, cross-repository tool use can be displayed near the
+session's likely origin without being claimed as a genuine Cursor multiroot
+workspace.
+
 ### Session fields
 
 | Catalog field | Cursor extraction |
@@ -318,7 +336,6 @@ Important provider metadata keys are:
 | `cursor.parentComposerId`, `cursor.subagentType`, `cursor.sideChatSeedTurnCount` | Direct relationship evidence |
 | `cursor.child.<id>.*`, `cursor.backgroundChildCount` | Background children folded into this session |
 | `cursor.sideChat.<id>.*`, `cursor.sideChatSkippedInheritedTurns` | Side-chat relationship and deduplication results |
-| `process_id`, `process_name` | Process hint that established open state |
 
 Empty Desktop “new chat” shells with no conversation headers or turns are
 discarded. A transcript-only orphan with actual events is retained.
@@ -462,8 +479,16 @@ created them.
   front-matter todo-status changes do not.
 - Bound plans appear directly under their session (before its turns), and the
   `CreatePlan`/plan-edit event is rendered as a linked `Plan created`/`Plan
-  updated` node instead of a duplicate tool node. Unbound plans appear under the
-  top-level **Orphan Plans** root, grouped by provider then workspace.
+  updated` node instead of a duplicate tool node. A small plan-document overlay
+  on the session icon indicates that the session owns one or more bound plans.
+  Unbound plans without a uniquely inferred workspace appear under the top-level
+  **Orphan Plans** root, grouped by provider then workspace.
+- An unbound plan can still receive presentation-only workspace inference from
+  a unique native-session marker, a session that explicitly attached/referenced
+  the plan path, or rooted plan-document links that all resolve to one known
+  workspace. Such plans appear in that workspace under **Unbound plans
+  (inferred)** with a `?` icon overlay and remain canonically unbound. Conflicting
+  or unavailable evidence leaves the plan under **Unknown workspace**.
 
 ## Limitations and troubleshooting
 
@@ -479,8 +504,9 @@ created them.
 - Duplicate native IDs that cannot be corroborated by workspace stay separate.
 - SQLite values larger than 16 MiB are intentionally skipped even though the
   database itself may be larger.
-- Process command lines often omit Desktop conversation IDs. Open state is
-  therefore conservative except for selected-Composer corroboration.
+- SessionViewer does not enumerate Cursor processes or inspect their command
+  lines. Cursor sessions are therefore shown conservatively as closed; Desktop
+  selection remains catalog metadata rather than proof of a live session.
 - Focused `CursorParityReconciliationTests` use synthetic dual-source turns.
   There is not yet one end-to-end fixture in which the same captured
   conversation is read from both transcript JSONL and Desktop SQLite.
@@ -521,7 +547,6 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Services/SessionCatalogCoordinator.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionViewerSettingsService.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/SessionCatalogMerger.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Process/ProcessSessionCorrelator.cs`
 - `src/Shared/HarnessSpy.Wpf/SessionViewerApplicationHost.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionCatalogViewModel.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`

@@ -5,6 +5,7 @@ using HarnessSpy.Core.Runtimes;
 namespace HarnessSpy.Core.Sessions.Cursor;
 
 internal sealed record CursorSqliteJsonRecord(
+    string Table,
     string Key,
     string RawContent,
     JsonElement Json);
@@ -31,6 +32,7 @@ internal sealed class CursorDesktopBubbleProjector
     public CursorBubbleProjection Project(
         string databasePath,
         string composerId,
+        CursorSqliteJsonRecord composerRecord,
         JsonElement composer,
         IReadOnlyDictionary<string, CursorSqliteJsonRecord> bubbles,
         int maximumRecords,
@@ -101,15 +103,18 @@ internal sealed class CursorDesktopBubbleProjector
                 $"header:{order}";
             string databaseKey = record?.Key ??
                 $"bubbleId:{composerId}:{effectiveBubbleId}";
-            string raw = record?.RawContent ?? header.GetRawText();
+            CursorSqliteJsonRecord provenanceRecord =
+                record ?? composerRecord;
             SessionSourceProvenance provenance = new(
                 SessionSourceKind.CursorDesktopSqlite,
                 databasePath,
                 "cursor-desktop-bubble-json",
-                raw,
                 RecordId: effectiveBubbleId,
                 ParentRecordId: RequestId(header, bubble),
-                DatabaseKey: databaseKey);
+                DatabaseKey: databaseKey,
+                RawSource: RawReference(
+                    databasePath,
+                    provenanceRecord));
             if (record is null)
             {
                 sources.Add(provenance);
@@ -740,14 +745,31 @@ internal sealed class CursorDesktopBubbleProjector
             SessionSourceKind.CursorDesktopSqlite,
             databasePath,
             "cursor-desktop-bubble-json",
-            record.RawContent,
             RecordId: _json.String(
                 record.Json,
                 "bubbleId",
                 "bubble_id",
                 "id"),
             ParentRecordId: composerId,
-            DatabaseKey: record.Key);
+            DatabaseKey: record.Key,
+            RawSource: RawReference(databasePath, record));
+
+    private SessionRawSourceReference RawReference(
+        string databasePath,
+        CursorSqliteJsonRecord record) =>
+        new(
+            SessionRawSourceKind.SqliteValue,
+            databasePath,
+            DatabaseTable: record.Table,
+            DatabaseKey: LookupKey(record));
+
+    private string LookupKey(CursorSqliteJsonRecord record) =>
+        record.Table == "composerHeaders" &&
+        record.Key.StartsWith(
+            "composerHeaders:",
+            StringComparison.Ordinal)
+            ? record.Key["composerHeaders:".Length..]
+            : record.Key;
 
     private IReadOnlyList<SessionTurn> MarkParallelToolCalls(
         IReadOnlyList<SessionTurn> turns)

@@ -4,7 +4,6 @@ using System.Threading.Channels;
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Sessions;
 using HarnessSpy.Core.Sessions.Plans;
-using HarnessSpy.Core.Sessions.Process;
 
 namespace HarnessSpy.Core.Services;
 
@@ -25,38 +24,37 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
 {
     private readonly IReadOnlyList<ISessionCatalogSource> _sources;
     private readonly IReadOnlyList<ISessionMetadataEnricher> _enrichers;
-    private readonly IReadOnlyList<IRunningSessionProbe> _probes;
     private readonly SessionCatalogMerger _merger;
-    private readonly ProcessSessionCorrelator _correlator;
     private readonly SessionPlanCatalogAssembler _planAssembler = new();
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
-    private readonly object _requestGate = new();
-    private readonly TimeSpan _recoveryInterval;
+    private readonly object _providerGate = new();
     private readonly SessionCatalogScanResult?[] _cachedSourceResults;
-    private readonly HashSet<int> _queuedSourceIndices = [];
-    private DebouncedFileSystemWatcher? _watcher;
-    private Timer? _recoveryTimer;
-    private CancellationTokenSource? _backgroundRefreshCancellation;
+    private readonly SessionSourceSnapshot?[] _sourceSnapshots;
+    private readonly HashSet<HookProvider> _enabledProviders;
+    private readonly SessionSourceSnapshotter _snapshotter;
+    private readonly SessionCatalogCompactor? _compactor;
     private CatalogFingerprint _lastPublishedFingerprint;
     private bool _hasPublishedFinal;
-    private volatile bool _backgroundRefreshRunning;
     private bool _disposed;
 
     public SessionCatalogCoordinator(
         IEnumerable<ISessionCatalogSource> sources,
-        IEnumerable<IRunningSessionProbe>? probes = null,
         IEnumerable<ISessionMetadataEnricher>? enrichers = null,
-        TimeSpan? recoveryInterval = null,
-        SessionCatalogMerger? merger = null,
-        ProcessSessionCorrelator? correlator = null)
+        IEnumerable<HookProvider>? enabledProviders = null,
+        SessionSourceSnapshotter? snapshotter = null,
+        SessionCatalogCompactor? compactor = null,
+        SessionCatalogMerger? merger = null)
     {
         _sources = [.. sources];
-        _probes = probes is null ? [] : [.. probes];
         _enrichers = enrichers is null ? [] : [.. enrichers];
-        _recoveryInterval = recoveryInterval ?? TimeSpan.FromMinutes(1);
         _merger = merger ?? new SessionCatalogMerger();
-        _correlator = correlator ?? new ProcessSessionCorrelator();
         _cachedSourceResults = new SessionCatalogScanResult?[_sources.Count];
+        _sourceSnapshots = new SessionSourceSnapshot?[_sources.Count];
+        _snapshotter = snapshotter ?? new SessionSourceSnapshotter();
+        _compactor = compactor;
+        _enabledProviders = enabledProviders is null
+            ? [.. _sources.Select(static source => source.Provider)]
+            : [.. enabledProviders];
     }
 
     public event EventHandler<SessionCatalogUpdatedEventArgs>? Updated;
@@ -64,11 +62,51 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
     public Task<SessionCatalogUpdatedEventArgs> RefreshAsync(
         CancellationToken cancellationToken = default) =>
         RefreshAsync(
-            Enumerable.Range(0, _sources.Count).ToHashSet(),
+            new SessionRefreshRequest(
+                SessionRefreshTrigger.RefreshButton),
             cancellationToken);
+
+    public Task<SessionCatalogUpdatedEventArgs> RefreshAsync(
+        SessionRefreshRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return RefreshAsync(
+            SourceIndicesFor(request),
+            request.Mode,
+            cancellationToken);
+    }
+
+    public void SetEnabledProviders(
+        IEnumerable<HookProvider> providers,
+        bool evictDisabled = true)
+    {
+        ArgumentNullException.ThrowIfNull(providers);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        lock (_providerGate)
+        {
+            _enabledProviders.Clear();
+            _enabledProviders.UnionWith(providers);
+            if (evictDisabled)
+            {
+                for (int index = 0; index < _sources.Count; index++)
+                {
+                    if (!_enabledProviders.Contains(_sources[index].Provider))
+                    {
+                        _cachedSourceResults[index] = null;
+                        _sourceSnapshots[index] = null;
+                    }
+                }
+            }
+
+            _hasPublishedFinal = false;
+        }
+    }
 
     private async Task<SessionCatalogUpdatedEventArgs> RefreshAsync(
         IReadOnlySet<int> sourceIndices,
+        SessionRefreshMode refreshMode,
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -76,32 +114,25 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
         Stopwatch stopwatch = Stopwatch.StartNew();
         try
         {
-            // Probe running processes once up front. The result is independent
-            // of which provider files have been scanned so far, so every
-            // incremental batch can already carry accurate open/closed state.
-            RunningSessionHint[] hints = [];
-            if (_probes.Count > 0)
-            {
-                IReadOnlyList<RunningSessionHint>[] probeResults = await Task.WhenAll(
-                    _probes.Select(probe => probe.ProbeAsync(cancellationToken)))
-                    .ConfigureAwait(false);
-                hints = [.. probeResults.SelectMany(static value => value)];
-            }
-
             int sourceCount = _sources.Count;
-            int selectedSourceCount = sourceIndices.Count;
+            HashSet<int> enabledSourceIndices = EnabledSourceIndices();
+            int[] selectedIndices = sourceIndices
+                .Where(enabledSourceIndices.Contains)
+                .Distinct()
+                .ToArray();
+            int selectedSourceCount = selectedIndices.Length;
 
             // The freshest sessions known for each source: streaming sources
-            // update their slot as they discover sessions. Sources unaffected
-            // by a file notification keep their cached authoritative result,
-            // so a Claude/Copilot edit does not force another Cursor scan.
+            // update their slot as they discover sessions. Enabled sources not
+            // selected by this explicit request keep their cached result.
             IReadOnlyList<SessionCatalogEntry>[] sessionsBySource =
                 new IReadOnlyList<SessionCatalogEntry>[sourceCount];
             for (int index = 0; index < sourceCount; index++)
             {
-                sessionsBySource[index] =
-                    _cachedSourceResults[index]?.Sessions ??
-                    Array.Empty<SessionCatalogEntry>();
+                sessionsBySource[index] = enabledSourceIndices.Contains(index)
+                    ? CachedSourceResult(index)?.Sessions ??
+                        Array.Empty<SessionCatalogEntry>()
+                    : Array.Empty<SessionCatalogEntry>();
             }
 
             int completedCount = 0;
@@ -110,27 +141,57 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
             // merge and publish updates without cross-thread races. Streaming
             // sources push progress snapshots; every source pushes a final
             // completion event.
-            Channel<ScanEvent> channel = Channel.CreateUnbounded<ScanEvent>(
-                new UnboundedChannelOptions
+            Channel<ScanEvent> channel = Channel.CreateBounded<ScanEvent>(
+                new BoundedChannelOptions(Math.Max(4, sourceCount * 2))
                 {
-                    SingleReader = true
+                    SingleReader = true,
+                    FullMode = BoundedChannelFullMode.Wait
                 });
 
             List<Task> scanTasks = [];
-            foreach (int index in sourceIndices)
+            foreach (int index in selectedIndices)
             {
                 int sourceIndex = index;
                 ISessionCatalogSource source = _sources[sourceIndex];
                 scanTasks.Add(Task.Run(
                     async () =>
                     {
+                        SessionSourceSnapshot snapshot = await _snapshotter
+                            .CaptureAsync(source, cancellationToken)
+                            .ConfigureAwait(false);
+                        SessionCatalogScanResult? cached =
+                            CachedSourceResult(sourceIndex);
+                        if (refreshMode == SessionRefreshMode.CacheAware &&
+                            snapshot.CanValidate &&
+                            cached?.IsComplete == true &&
+                            snapshot.Equals(
+                                CachedSourceSnapshot(sourceIndex)))
+                        {
+                            await channel.Writer.WriteAsync(
+                                new ScanEvent(
+                                    sourceIndex,
+                                    cached,
+                                    null,
+                                    snapshot,
+                                    PerformedScan: false),
+                                cancellationToken).ConfigureAwait(false);
+                            return;
+                        }
+
                         SourceProgress reporter = new(channel.Writer, sourceIndex);
                         SessionCatalogScanResult scan = await ScanSafeAsync(
                             source,
                             reporter,
                             cancellationToken).ConfigureAwait(false);
-                        channel.Writer.TryWrite(
-                            new ScanEvent(sourceIndex, scan, null));
+                        scan = _compactor?.Compact(scan) ?? scan;
+                        await channel.Writer.WriteAsync(
+                            new ScanEvent(
+                                sourceIndex,
+                                scan,
+                                null,
+                                snapshot,
+                                PerformedScan: true),
+                            cancellationToken).ConfigureAwait(false);
                     },
                     cancellationToken));
             }
@@ -155,17 +216,34 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
                 CancellationToken.None);
 
             SessionCatalogUpdatedEventArgs? lastResult = null;
+            bool performedSourceScan = false;
             await foreach (ScanEvent scanEvent in channel.Reader
                 .ReadAllAsync(cancellationToken)
                 .ConfigureAwait(false))
             {
+                performedSourceScan |= scanEvent.PerformedScan;
                 if (scanEvent.Result is SessionCatalogScanResult completedScan)
                 {
-                    _cachedSourceResults[scanEvent.SourceIndex] = completedScan;
-                    sessionsBySource[scanEvent.SourceIndex] = completedScan.Sessions;
+                    if (IsSourceEnabled(scanEvent.SourceIndex))
+                    {
+                        SetCachedSourceState(
+                            scanEvent.SourceIndex,
+                            completedScan,
+                            scanEvent.Snapshot);
+                        sessionsBySource[scanEvent.SourceIndex] =
+                            completedScan.Sessions;
+                    }
+                    else
+                    {
+                        sessionsBySource[scanEvent.SourceIndex] =
+                            Array.Empty<SessionCatalogEntry>();
+                    }
+
                     completedCount++;
                 }
-                else if (scanEvent.Partial is IReadOnlyList<SessionCatalogEntry> partial)
+                else if (
+                    IsSourceEnabled(scanEvent.SourceIndex) &&
+                    scanEvent.Partial is IReadOnlyList<SessionCatalogEntry> partial)
                 {
                     sessionsBySource[scanEvent.SourceIndex] = partial;
                 }
@@ -183,28 +261,27 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
                     }
                 }
 
-                if (hints.Length > 0)
-                {
-                    sessions = _correlator.Apply(sessions, hints);
-                }
-
                 IReadOnlyList<SessionPlanArtifact> plans = isFinal
                     ? AssemblePlans(sessions)
                     : [];
                 bool hasCatalogChanges = true;
                 if (isFinal)
                 {
-                    CatalogFingerprint fingerprint =
-                        CatalogFingerprint.Create(sessions, plans);
-                    hasCatalogChanges =
-                        !_hasPublishedFinal ||
-                        fingerprint != _lastPublishedFingerprint;
-                    _lastPublishedFingerprint = fingerprint;
-                    _hasPublishedFinal = true;
+                    if (!performedSourceScan &&
+                        _enrichers.Count == 0 &&
+                        HasPublishedFinal())
+                    {
+                        hasCatalogChanges = false;
+                    }
+                    else
+                    {
+                        CatalogFingerprint fingerprint =
+                            CatalogFingerprint.Create(sessions, plans);
+                        hasCatalogChanges = UpdateFingerprint(fingerprint);
+                    }
                 }
 
-                bool allComplete = _cachedSourceResults.All(
-                    static result => result?.IsComplete == true);
+                bool allComplete = AllEnabledSourcesComplete();
                 lastResult = new SessionCatalogUpdatedEventArgs(
                     sessions,
                     CollectWarnings(),
@@ -226,22 +303,17 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
             if (lastResult is null)
             {
                 IReadOnlyList<SessionCatalogEntry> sessions = _merger.Merge(
-                    _cachedSourceResults
+                    EnabledSourceResults()
                         .Where(static result => result is not null)
                         .SelectMany(static result => result!.Sessions));
                 IReadOnlyList<SessionPlanArtifact> plans = AssemblePlans(sessions);
                 CatalogFingerprint fingerprint =
                     CatalogFingerprint.Create(sessions, plans);
-                bool hasCatalogChanges =
-                    !_hasPublishedFinal ||
-                    fingerprint != _lastPublishedFingerprint;
-                _lastPublishedFingerprint = fingerprint;
-                _hasPublishedFinal = true;
+                bool hasCatalogChanges = UpdateFingerprint(fingerprint);
                 lastResult = new SessionCatalogUpdatedEventArgs(
                     sessions,
                     CollectWarnings(),
-                    _cachedSourceResults.All(
-                        static result => result?.IsComplete == true),
+                    AllEnabledSourcesComplete(),
                     stopwatch.Elapsed,
                     IsFinal: true,
                     HasCatalogChanges: hasCatalogChanges)
@@ -264,7 +336,9 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
     private sealed record ScanEvent(
         int SourceIndex,
         SessionCatalogScanResult? Result,
-        IReadOnlyList<SessionCatalogEntry>? Partial);
+        IReadOnlyList<SessionCatalogEntry>? Partial,
+        SessionSourceSnapshot? Snapshot,
+        bool PerformedScan);
 
     private sealed class SourceProgress(
         ChannelWriter<ScanEvent> writer,
@@ -273,7 +347,13 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
     {
         public void Report(IReadOnlyList<SessionCatalogEntry> value)
         {
-            writer.TryWrite(new ScanEvent(sourceIndex, null, value));
+            writer.TryWrite(
+                new ScanEvent(
+                    sourceIndex,
+                    null,
+                    value,
+                    null,
+                    PerformedScan: true));
         }
     }
 
@@ -305,6 +385,27 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
                 foreach (string root in session.Workspace.DisplayRoots)
                 {
                     hash.Add(root, StringComparer.OrdinalIgnoreCase);
+                }
+
+                hash.Add(
+                    session.WorkspaceInference?.Workspace.Key,
+                    StringComparer.OrdinalIgnoreCase);
+                hash.Add(session.WorkspaceInference?.Evidence);
+                hash.Add(session.WorkspaceInference?.Score);
+                foreach (SessionWorkspaceEvidence evidence in
+                         session.WorkspaceInference?.EvidenceItems ?? [])
+                {
+                    hash.Add(evidence.Kind);
+                    hash.Add(evidence.Value, StringComparer.OrdinalIgnoreCase);
+                    hash.Add(evidence.Score);
+                }
+                foreach (SessionWorkspaceCandidate alternative in
+                         session.WorkspaceInference?.Alternatives ?? [])
+                {
+                    hash.Add(
+                        alternative.Workspace.Key,
+                        StringComparer.OrdinalIgnoreCase);
+                    hash.Add(alternative.Score);
                 }
 
                 hash.Add(session.Title, StringComparer.Ordinal);
@@ -391,6 +492,17 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
             hash.Add(plan.HasIncompleteRevisionHistory);
             hash.Add(plan.Title, StringComparer.Ordinal);
             hash.Add(plan.Workspace.Key, StringComparer.Ordinal);
+            hash.Add(
+                plan.WorkspaceInference?.Workspace.Key,
+                StringComparer.Ordinal);
+            hash.Add(plan.WorkspaceInference?.Evidence);
+            foreach (SessionPlanWorkspaceEvidence item in
+                     plan.WorkspaceInference?.EvidenceItems ?? [])
+            {
+                hash.Add(item.Kind);
+                hash.Add(item.Value, StringComparer.OrdinalIgnoreCase);
+            }
+
             foreach (SessionPlanRevision revision in plan.Revisions)
             {
                 hash.Add(revision.Sequence);
@@ -462,7 +574,10 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
             hash.Add(item.Provenance.ByteOffset);
             hash.Add(item.Provenance.RecordId, StringComparer.Ordinal);
             hash.Add(item.Provenance.DatabaseKey, StringComparer.Ordinal);
-            hash.Add(item.Provenance.RawContent.Length);
+            hash.Add(
+                item.Provenance.RawContent?.Length ??
+                item.Provenance.RawSource?.ByteLength ??
+                item.Provenance.RawSource?.SourceLength);
         }
     }
 
@@ -471,7 +586,7 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
     {
         List<SessionPlanArtifact> artifacts = [];
         List<SessionPlanActivity> activities = [];
-        foreach (SessionCatalogScanResult? result in _cachedSourceResults)
+        foreach (SessionCatalogScanResult? result in EnabledSourceResults())
         {
             if (result is null)
             {
@@ -497,33 +612,11 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
     }
 
     private string[] CollectWarnings() =>
-        _cachedSourceResults
+        EnabledSourceResults()
             .Where(static result => result is not null)
             .SelectMany(static result => result!.Warnings)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-
-    public void StartWatching()
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_watcher is not null)
-        {
-            return;
-        }
-
-        _watcher = new DebouncedFileSystemWatcher(
-            _sources.SelectMany(static source => source.WatchRoots),
-            changedPaths => QueueRefresh(
-                changedPaths,
-                isRecovery: false));
-        _watcher.Start();
-
-        _recoveryTimer = new Timer(
-            _ => QueueRefresh([], isRecovery: true),
-            null,
-            _recoveryInterval,
-            _recoveryInterval);
-    }
 
     public async ValueTask DisposeAsync()
     {
@@ -533,233 +626,142 @@ public sealed class SessionCatalogCoordinator : IAsyncDisposable
         }
 
         _disposed = true;
-        _watcher?.Dispose();
-        _recoveryTimer?.Dispose();
-
-        CancellationTokenSource? pending;
-        lock (_requestGate)
-        {
-            pending = _backgroundRefreshCancellation;
-            _backgroundRefreshCancellation = null;
-            _queuedSourceIndices.Clear();
-        }
-
-        if (pending is not null)
-        {
-            try
-            {
-                await pending.CancelAsync().ConfigureAwait(false);
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-        }
-
         await _refreshGate.WaitAsync().ConfigureAwait(false);
         _refreshGate.Release();
         _refreshGate.Dispose();
-    }
-
-    private void QueueRefresh(
-        IReadOnlyCollection<string> changedPaths,
-        bool isRecovery)
-    {
-        if (_disposed || !ShouldRefresh(changedPaths))
+        lock (_providerGate)
         {
-            return;
+            Array.Clear(_cachedSourceResults);
+            Array.Clear(_sourceSnapshots);
+            _enabledProviders.Clear();
         }
-
-        // A recovery tick is only a fallback for missed notifications. Never
-        // queue another full scan while any refresh is already active/queued;
-        // otherwise a slow Cursor scan and a short timer interval can create a
-        // permanent back-to-back rescan loop.
-        if (isRecovery &&
-            (_backgroundRefreshRunning || _refreshGate.CurrentCount == 0))
-        {
-            return;
-        }
-
-        IReadOnlySet<int> sourceIndices = SourceIndicesFor(changedPaths);
-        if (sourceIndices.Count == 0)
-        {
-            return;
-        }
-
-        CancellationTokenSource? requestToStart = null;
-        lock (_requestGate)
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _queuedSourceIndices.UnionWith(sourceIndices);
-            if (!_backgroundRefreshRunning)
-            {
-                _backgroundRefreshRunning = true;
-                requestToStart = new CancellationTokenSource();
-                _backgroundRefreshCancellation = requestToStart;
-            }
-        }
-
-        if (requestToStart is not null)
-        {
-            _ = RefreshQueuedAsync(requestToStart);
-        }
-    }
-
-    private async Task RefreshQueuedAsync(CancellationTokenSource request)
-    {
-        try
-        {
-            while (!request.IsCancellationRequested)
-            {
-                HashSet<int> sourceIndices;
-                lock (_requestGate)
-                {
-                    if (_disposed || request.IsCancellationRequested)
-                    {
-                        return;
-                    }
-
-                    sourceIndices = [.. _queuedSourceIndices];
-                    _queuedSourceIndices.Clear();
-                }
-
-                if (sourceIndices.Count == 0)
-                {
-                    return;
-                }
-
-                try
-                {
-                    await RefreshAsync(sourceIndices, request.Token)
-                        .ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                    when (request.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception exception) when (
-                    exception is IOException or UnauthorizedAccessException)
-                {
-                }
-
-                lock (_requestGate)
-                {
-                    if (_disposed ||
-                        request.IsCancellationRequested ||
-                        _queuedSourceIndices.Count == 0)
-                    {
-                        return;
-                    }
-                }
-            }
-        }
-        finally
-        {
-            CancellationTokenSource? replacement = null;
-            lock (_requestGate)
-            {
-                if (ReferenceEquals(_backgroundRefreshCancellation, request))
-                {
-                    _backgroundRefreshCancellation = null;
-                    _backgroundRefreshRunning = false;
-                    if (!_disposed && _queuedSourceIndices.Count > 0)
-                    {
-                        _backgroundRefreshRunning = true;
-                        replacement = new CancellationTokenSource();
-                        _backgroundRefreshCancellation = replacement;
-                    }
-                }
-            }
-
-            request.Dispose();
-            if (replacement is not null)
-            {
-                _ = RefreshQueuedAsync(replacement);
-            }
-        }
-    }
-
-    private bool ShouldRefresh(IReadOnlyCollection<string> changedPaths)
-    {
-        if (changedPaths.Count == 0)
-        {
-            return true;
-        }
-
-        foreach (string path in changedPaths)
-        {
-            string fileName = Path.GetFileName(path);
-            string extension = Path.GetExtension(path);
-            if (extension.Equals(".jsonl", StringComparison.OrdinalIgnoreCase) ||
-                extension.Equals(".vscdb", StringComparison.OrdinalIgnoreCase) ||
-                fileName.EndsWith(".vscdb-wal", StringComparison.OrdinalIgnoreCase) ||
-                fileName.Equals("workspace.yaml", StringComparison.OrdinalIgnoreCase) ||
-                fileName.Equals("workspace.json", StringComparison.OrdinalIgnoreCase) ||
-                fileName.Equals("sessions-index.json", StringComparison.OrdinalIgnoreCase) ||
-                extension.Equals(".md", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private IReadOnlySet<int> SourceIndicesFor(
-        IReadOnlyCollection<string> changedPaths)
+        SessionRefreshRequest request)
     {
-        if (changedPaths.Count == 0)
+        lock (_providerGate)
         {
-            return Enumerable.Range(0, _sources.Count).ToHashSet();
-        }
-
-        HashSet<int> sourceIndices = [];
-        for (int index = 0; index < _sources.Count; index++)
-        {
-            ISessionCatalogSource source = _sources[index];
-            if (changedPaths.Any(changedPath =>
-                    source.WatchRoots.Any(root =>
-                        IsPathWithinRoot(changedPath, root))))
+            IReadOnlySet<HookProvider> requestedProviders =
+                request.Providers ?? _enabledProviders;
+            HashSet<int> indices = [];
+            for (int index = 0; index < _sources.Count; index++)
             {
-                sourceIndices.Add(index);
+                HookProvider provider = _sources[index].Provider;
+                if (_enabledProviders.Contains(provider) &&
+                    requestedProviders.Contains(provider))
+                {
+                    indices.Add(index);
+                }
             }
-        }
 
-        return sourceIndices;
+            return indices;
+        }
     }
 
-    private static bool IsPathWithinRoot(string path, string root)
+    private HashSet<int> EnabledSourceIndices()
     {
-        try
+        lock (_providerGate)
         {
-            string fullPath = Path.TrimEndingDirectorySeparator(
-                Path.GetFullPath(path));
-            string fullRoot = Path.TrimEndingDirectorySeparator(
-                Path.GetFullPath(root));
-            if (string.Equals(
-                fullPath,
-                fullRoot,
-                StringComparison.OrdinalIgnoreCase))
+            HashSet<int> indices = [];
+            for (int index = 0; index < _sources.Count; index++)
             {
-                return true;
+                if (_enabledProviders.Contains(_sources[index].Provider))
+                {
+                    indices.Add(index);
+                }
             }
 
-            string rootPrefix =
-                fullRoot + Path.DirectorySeparatorChar;
-            return fullPath.StartsWith(
-                rootPrefix,
-                StringComparison.OrdinalIgnoreCase);
+            return indices;
         }
-        catch (Exception exception) when (
-            exception is ArgumentException or
-                NotSupportedException or
-                PathTooLongException)
+    }
+
+    private SessionCatalogScanResult? CachedSourceResult(int sourceIndex)
+    {
+        lock (_providerGate)
         {
-            return false;
+            return _cachedSourceResults[sourceIndex];
+        }
+    }
+
+    private SessionSourceSnapshot? CachedSourceSnapshot(int sourceIndex)
+    {
+        lock (_providerGate)
+        {
+            return _sourceSnapshots[sourceIndex];
+        }
+    }
+
+    private void SetCachedSourceState(
+        int sourceIndex,
+        SessionCatalogScanResult result,
+        SessionSourceSnapshot? snapshot)
+    {
+        lock (_providerGate)
+        {
+            if (_enabledProviders.Contains(_sources[sourceIndex].Provider))
+            {
+                _cachedSourceResults[sourceIndex] = result;
+                _sourceSnapshots[sourceIndex] = snapshot;
+            }
+        }
+    }
+
+    private bool IsSourceEnabled(int sourceIndex)
+    {
+        lock (_providerGate)
+        {
+            return _enabledProviders.Contains(
+                _sources[sourceIndex].Provider);
+        }
+    }
+
+    private SessionCatalogScanResult?[] EnabledSourceResults()
+    {
+        lock (_providerGate)
+        {
+            return _cachedSourceResults
+                .Where((_, index) =>
+                    _enabledProviders.Contains(_sources[index].Provider))
+                .ToArray();
+        }
+    }
+
+    private bool AllEnabledSourcesComplete()
+    {
+        lock (_providerGate)
+        {
+            for (int index = 0; index < _sources.Count; index++)
+            {
+                if (_enabledProviders.Contains(_sources[index].Provider) &&
+                    _cachedSourceResults[index]?.IsComplete != true)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    private bool UpdateFingerprint(CatalogFingerprint fingerprint)
+    {
+        lock (_providerGate)
+        {
+            bool hasChanges =
+                !_hasPublishedFinal ||
+                fingerprint != _lastPublishedFingerprint;
+            _lastPublishedFingerprint = fingerprint;
+            _hasPublishedFinal = true;
+            return hasChanges;
+        }
+    }
+
+    private bool HasPublishedFinal()
+    {
+        lock (_providerGate)
+        {
+            return _hasPublishedFinal;
         }
     }
 

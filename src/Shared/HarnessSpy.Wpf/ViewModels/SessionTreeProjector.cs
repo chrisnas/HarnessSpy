@@ -2,12 +2,14 @@ using System.IO;
 using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Sessions;
 using HarnessSpy.Core.Sessions.Plans;
+using HarnessSpy.Core.Text;
 
 namespace HarnessSpy.Wpf.ViewModels;
 
 public sealed class SessionTreeProjector
 {
     private readonly SessionNodeSummaryBuilder _summaryBuilder;
+    private readonly BoundedTextPreviewBuilder _previewBuilder = new();
 
     public SessionTreeProjector(SessionNodeSummaryBuilder? summaryBuilder = null)
     {
@@ -18,7 +20,8 @@ public sealed class SessionTreeProjector
         IReadOnlyList<SessionCatalogEntry> sessions,
         IReadOnlySet<string> expandedNodeIds,
         bool expandWorkspaceRoots,
-        IReadOnlyList<SessionPlanArtifact>? plans = null)
+        IReadOnlyList<SessionPlanArtifact>? plans = null,
+        bool lazy = false)
     {
         ArgumentNullException.ThrowIfNull(sessions);
         ArgumentNullException.ThrowIfNull(expandedNodeIds);
@@ -31,13 +34,13 @@ public sealed class SessionTreeProjector
         List<WorkspacePlacement> placements = [];
         IEnumerable<IGrouping<string, SessionCatalogEntry>> workspaceGroups = sessions
             .GroupBy(
-                static session => session.Workspace.Key,
+                static session => PlacementWorkspace(session).Key,
                 StringComparer.OrdinalIgnoreCase);
 
         foreach (IGrouping<string, SessionCatalogEntry> group in workspaceGroups)
         {
             SessionCatalogEntry firstSession = group.First();
-            WorkspaceContext workspace = firstSession.Workspace;
+            WorkspaceContext workspace = PlacementWorkspace(firstSession);
             string workspaceId = $"workspace:{workspace.Key}";
             SessionCatalogEntry[] workspaceSessions = group
                 .OrderByDescending(static session => session.LastActivityAtUtc)
@@ -64,10 +67,24 @@ public sealed class SessionTreeProjector
                     expandedNodeIds.Contains(workspaceId)
             };
 
+            if (planContext.InferredOrphansByWorkspace.TryGetValue(
+                    workspace.Key,
+                    out List<SessionPlanArtifact>? inferredPlans))
+            {
+                workspaceNode.Children.Add(BuildInferredPlansGroup(
+                    workspace,
+                    inferredPlans,
+                    expandedNodeIds));
+            }
+
             foreach (SessionCatalogEntry session in workspaceSessions)
             {
                 workspaceNode.Children.Add(
-                    BuildSessionNode(session, expandedNodeIds, planContext));
+                    BuildSessionNode(
+                        session,
+                        expandedNodeIds,
+                        planContext,
+                        lazy));
             }
 
             DateTimeOffset? maxActivity = workspaceSessions
@@ -130,6 +147,42 @@ public sealed class SessionTreeProjector
 
         return roots;
     }
+
+    public IReadOnlyList<SessionTreeNodeViewModel> ProjectSessionChildren(
+        SessionCatalogEntry session,
+        IReadOnlySet<string> expandedNodeIds,
+        IReadOnlyList<SessionPlanArtifact>? plans = null) =>
+        BuildSessionChildren(
+            session,
+            expandedNodeIds,
+            BuildPlanContext(plans ?? []),
+            lazy: true);
+
+    public IReadOnlyList<SessionTreeNodeViewModel> ProjectTurnChildren(
+        SessionCatalogEntry session,
+        SessionTurn turn,
+        IReadOnlySet<string> expandedNodeIds,
+        IReadOnlyList<SessionPlanArtifact>? plans = null) =>
+        BuildTurnEvents(
+            session,
+            turn,
+            expandedNodeIds,
+            BuildPlanContext(plans ?? []));
+
+    public NodeSummary BuildSummary(SessionCatalogEntry session) =>
+        _summaryBuilder.Build(session);
+
+    public NodeSummary BuildSummary(SessionTurn turn) =>
+        _summaryBuilder.Build(turn);
+
+    private static SessionTreeNodeViewModel Placeholder(
+        string parentId,
+        HookProvider provider) =>
+        new(
+            $"{parentId}:placeholder",
+            "Expand to load",
+            SessionTreeNodeKind.Placeholder,
+            provider);
 
     private static bool IsUnknownGroup(SessionTreeNodeViewModel node) =>
         node.Workspace?.Kind is
@@ -421,33 +474,88 @@ public sealed class SessionTreeProjector
     private SessionTreeNodeViewModel BuildSessionNode(
         SessionCatalogEntry session,
         IReadOnlySet<string> expandedNodeIds,
-        PlanProjectionContext planContext)
+        PlanProjectionContext planContext,
+        bool lazy)
     {
         string sessionId = $"session:{session.CatalogSessionId}";
-        NodeSummary summary = _summaryBuilder.Build(session);
+        bool isExpanded = expandedNodeIds.Contains(sessionId);
+        int associatedPlanCount =
+            planContext.BoundBySession.TryGetValue(
+                session.CatalogSessionId,
+                out List<SessionPlanArtifact>? associatedPlans)
+                ? associatedPlans.Count
+                : 0;
+        NodeSummary? summary =
+            !lazy || isExpanded
+                ? _summaryBuilder.Build(session)
+                : null;
+        string badge = summary?.Badge ??
+            $"{session.Turns.Count} turn" +
+            (session.Turns.Count == 1 ? string.Empty : "s");
+        if (session.Metadata.TryGetValue(
+                "copilot.metadataOnly",
+                out string? metadataOnly) &&
+            string.Equals(
+                metadataOnly,
+                "true",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            badge += " \u00b7 metadata only";
+        }
+
         SessionTreeNodeViewModel sessionNode = new(
             sessionId,
             SessionHeader(session),
             SessionTreeNodeKind.Session,
             session.Provider,
-            summary.Badge,
-            SessionHoverText(session),
-            session.Workspace,
+            badge,
+            SessionHoverText(session, associatedPlanCount),
+            PlacementWorkspace(session),
             session,
-            details: BuildSessionDetails(session),
+            details: BuildSessionDetails(
+                session,
+                associatedPlanCount),
             provenance: BuildSessionProvenance(session),
             rawSource: FirstRawSource(session.Sources),
-            nodeSummary: summary)
+            nodeSummary: summary,
+            associatedPlanCount: associatedPlanCount)
         {
-            IsExpanded = expandedNodeIds.Contains(sessionId)
+            IsExpanded = isExpanded
         };
 
+        if (lazy && !isExpanded)
+        {
+            sessionNode.SetChildrenLoaded(false);
+            sessionNode.Children.Add(Placeholder(sessionId, session.Provider));
+            return sessionNode;
+        }
+
+        foreach (SessionTreeNodeViewModel child in BuildSessionChildren(
+                     session,
+                     expandedNodeIds,
+                     planContext,
+                     lazy))
+        {
+            sessionNode.Children.Add(child);
+        }
+
+        sessionNode.SetChildrenLoaded(true);
+        return sessionNode;
+    }
+
+    private IReadOnlyList<SessionTreeNodeViewModel> BuildSessionChildren(
+        SessionCatalogEntry session,
+        IReadOnlySet<string> expandedNodeIds,
+        PlanProjectionContext planContext,
+        bool lazy)
+    {
+        List<SessionTreeNodeViewModel> children = [];
         SessionTreeNodeViewModel? systemPrompts = BuildSystemPromptGroup(
             session,
             expandedNodeIds);
         if (systemPrompts is not null)
         {
-            sessionNode.Children.Add(systemPrompts);
+            children.Add(systemPrompts);
         }
 
         // Canonical bound plans appear directly under the session, before turns.
@@ -456,10 +564,13 @@ public sealed class SessionTreeProjector
                 out List<SessionPlanArtifact>? boundPlans))
         {
             foreach (SessionPlanArtifact plan in boundPlans
-                         .OrderBy(static item => item.CreatedAtUtc ?? DateTimeOffset.MaxValue)
+                         .OrderByDescending(static item =>
+                             item.LastModifiedAtUtc ??
+                             item.CreatedAtUtc ??
+                             DateTimeOffset.MinValue)
                          .ThenBy(static item => item.Title, StringComparer.OrdinalIgnoreCase))
             {
-                sessionNode.Children.Add(BuildPlanNode(
+                children.Add(BuildPlanNode(
                     plan,
                     planContext.CanonicalNodeIdByPlan[plan.CatalogPlanId],
                     expandedNodeIds));
@@ -471,11 +582,16 @@ public sealed class SessionTreeProjector
                      .ThenBy(static item => item.StartedAtUtc)
                      .ThenBy(static item => item.Id, StringComparer.Ordinal))
         {
-            sessionNode.Children.Add(
-                BuildTurnNode(session, turn, expandedNodeIds, planContext));
+            children.Add(
+                BuildTurnNode(
+                    session,
+                    turn,
+                    expandedNodeIds,
+                    planContext,
+                    lazy));
         }
 
-        return sessionNode;
+        return children;
     }
 
     private SessionTreeNodeViewModel? BuildSystemPromptGroup(
@@ -681,16 +797,22 @@ public sealed class SessionTreeProjector
         SessionCatalogEntry session,
         SessionTurn turn,
         IReadOnlySet<string> expandedNodeIds,
-        PlanProjectionContext planContext)
+        PlanProjectionContext planContext,
+        bool lazy)
     {
         string turnId = $"session:{session.CatalogSessionId}:turn:{turn.Id}";
-        NodeSummary summary = _summaryBuilder.Build(turn);
+        bool isExpanded = expandedNodeIds.Contains(turnId);
+        NodeSummary? summary =
+            !lazy || isExpanded
+                ? _summaryBuilder.Build(turn)
+                : null;
         string prompt = string.IsNullOrWhiteSpace(turn.Prompt)
             ? $"Turn {turn.Number}"
             : Preview(turn.Prompt, 180);
-        string turnSummary = string.IsNullOrWhiteSpace(summary.Badge)
-            ? $"Turn {turn.Number}"
-            : $"Turn {turn.Number} \u00b7 {summary.Badge}";
+        string turnSummary = summary is null ||
+            string.IsNullOrWhiteSpace(summary.Badge)
+                ? $"Turn {turn.Number} \u00b7 {turn.Events.Count} events"
+                : $"Turn {turn.Number} \u00b7 {summary.Badge}";
 
         SessionTreeNodeViewModel turnNode = new(
             turnId,
@@ -708,20 +830,30 @@ public sealed class SessionTreeProjector
                 turn.Events.Select(static item => item.Provenance)),
             nodeSummary: summary)
         {
-            IsExpanded = expandedNodeIds.Contains(turnId)
+            IsExpanded = isExpanded
         };
 
-        ProjectTurnEvents(
-            turnNode,
-            session,
-            turn,
-            expandedNodeIds,
-            planContext);
+        if (lazy && !isExpanded)
+        {
+            turnNode.SetChildrenLoaded(false);
+            turnNode.Children.Add(Placeholder(turnId, session.Provider));
+            return turnNode;
+        }
+
+        foreach (SessionTreeNodeViewModel child in BuildTurnEvents(
+                     session,
+                     turn,
+                     expandedNodeIds,
+                     planContext))
+        {
+            turnNode.Children.Add(child);
+        }
+
+        turnNode.SetChildrenLoaded(true);
         return turnNode;
     }
 
-    private void ProjectTurnEvents(
-        SessionTreeNodeViewModel turnNode,
+    private IReadOnlyList<SessionTreeNodeViewModel> BuildTurnEvents(
         SessionCatalogEntry session,
         SessionTurn turn,
         IReadOnlySet<string> expandedNodeIds,
@@ -734,41 +866,53 @@ public sealed class SessionTreeProjector
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
             .ToArray();
 
-        Dictionary<SessionEventRecord, SessionTreeNodeViewModel> nodes = [];
-        Dictionary<SessionEventRecord, int> recordIndexes = [];
-
+        SessionTreeNodeViewModel[] nodes =
+            new SessionTreeNodeViewModel[records.Length];
         for (int index = 0; index < records.Length; index++)
         {
             SessionEventRecord record = records[index];
-            nodes[record] = BuildEventNode(
+            nodes[index] = BuildEventNode(
                 session,
                 turn,
                 record,
                 expandedNodeIds,
                 planContext);
-            recordIndexes[record] = index;
         }
 
-        Dictionary<string, List<SessionEventRecord>> toolRequestsById = records
-            .Where(IsToolRequest)
-            .Where(static item => !string.IsNullOrWhiteSpace(item.ToolCallId))
-            .GroupBy(static item => item.ToolCallId!, StringComparer.Ordinal)
-            .ToDictionary(
-                static group => group.Key,
-                static group => group.ToList(),
-                StringComparer.Ordinal);
+        Dictionary<string, List<int>> toolRequestsById =
+            new(StringComparer.Ordinal);
+        for (int index = 0; index < records.Length; index++)
+        {
+            SessionEventRecord record = records[index];
+            if (!IsToolRequest(record) ||
+                string.IsNullOrWhiteSpace(record.ToolCallId))
+            {
+                continue;
+            }
+
+            if (!toolRequestsById.TryGetValue(
+                    record.ToolCallId,
+                    out List<int>? requests))
+            {
+                requests = [];
+                toolRequestsById[record.ToolCallId] = requests;
+            }
+
+            requests.Add(index);
+        }
 
         List<SessionTreeNodeViewModel> rootEvents = [];
-        foreach (SessionEventRecord record in records)
+        for (int index = 0; index < records.Length; index++)
         {
-            SessionEventRecord? parent = FindParentRecord(
+            SessionEventRecord record = records[index];
+            int parentIndex = FindParentRecordIndex(
                 record,
-                toolRequestsById,
-                recordIndexes);
-            SessionTreeNodeViewModel node = nodes[record];
-            if (parent is not null)
+                index,
+                toolRequestsById);
+            SessionTreeNodeViewModel node = nodes[index];
+            if (parentIndex >= 0)
             {
-                nodes[parent].Children.Add(node);
+                nodes[parentIndex].Children.Add(node);
             }
             else
             {
@@ -776,14 +920,11 @@ public sealed class SessionTreeProjector
             }
         }
 
-        foreach (SessionTreeNodeViewModel node in GroupParallelEvents(
-                     rootEvents,
-                     session,
-                     turn,
-                     expandedNodeIds))
-        {
-            turnNode.Children.Add(node);
-        }
+        return GroupParallelEvents(
+            rootEvents,
+            session,
+            turn,
+            expandedNodeIds);
     }
 
     private SessionTreeNodeViewModel BuildEventNode(
@@ -918,30 +1059,29 @@ public sealed class SessionTreeProjector
         return projected;
     }
 
-    private static SessionEventRecord? FindParentRecord(
+    private static int FindParentRecordIndex(
         SessionEventRecord record,
-        IReadOnlyDictionary<string, List<SessionEventRecord>> toolRequestsById,
-        IReadOnlyDictionary<SessionEventRecord, int> recordIndexes)
+        int recordIndex,
+        IReadOnlyDictionary<string, List<int>> toolRequestsById)
     {
         if (!IsToolRequest(record) &&
             !string.IsNullOrWhiteSpace(record.ToolCallId) &&
             toolRequestsById.TryGetValue(
                 record.ToolCallId,
-                out List<SessionEventRecord>? candidates))
+                out List<int>? candidates))
         {
-            return candidates.LastOrDefault(
-                candidate => IsEarlier(candidate, record, recordIndexes));
+            for (int index = candidates.Count - 1; index >= 0; index--)
+            {
+                int candidateIndex = candidates[index];
+                if (candidateIndex < recordIndex)
+                {
+                    return candidateIndex;
+                }
+            }
         }
 
-        return null;
+        return -1;
     }
-
-    private static bool IsEarlier(
-        SessionEventRecord candidate,
-        SessionEventRecord record,
-        IReadOnlyDictionary<SessionEventRecord, int> recordIndexes) =>
-        !ReferenceEquals(candidate, record) &&
-        recordIndexes[candidate] < recordIndexes[record];
 
     private static PlanProjectionContext BuildPlanContext(
         IReadOnlyList<SessionPlanArtifact> plans)
@@ -951,6 +1091,8 @@ public sealed class SessionTreeProjector
         Dictionary<string, string> canonicalById = new(StringComparer.Ordinal);
         Dictionary<string, PlanActivityLink> activityByEventId =
             new(StringComparer.Ordinal);
+        Dictionary<string, List<SessionPlanArtifact>> inferredOrphansByWorkspace =
+            new(StringComparer.OrdinalIgnoreCase);
         List<SessionPlanArtifact> orphans = [];
 
         foreach (SessionPlanArtifact plan in plans)
@@ -972,7 +1114,25 @@ public sealed class SessionTreeProjector
             else
             {
                 canonical = $"orphan-plan:{plan.CatalogPlanId}";
-                orphans.Add(plan);
+                WorkspaceContext? inferredWorkspace =
+                    plan.WorkspaceInference?.Workspace;
+                if (inferredWorkspace?.Kind == WorkspaceContextKind.Normal)
+                {
+                    if (!inferredOrphansByWorkspace.TryGetValue(
+                            inferredWorkspace.Key,
+                            out List<SessionPlanArtifact>? inferredPlans))
+                    {
+                        inferredPlans = [];
+                        inferredOrphansByWorkspace[inferredWorkspace.Key] =
+                            inferredPlans;
+                    }
+
+                    inferredPlans.Add(plan);
+                }
+                else
+                {
+                    orphans.Add(plan);
+                }
             }
 
             canonicalById[plan.CatalogPlanId] = canonical;
@@ -990,6 +1150,7 @@ public sealed class SessionTreeProjector
             boundBySession,
             activityByEventId,
             canonicalById,
+            inferredOrphansByWorkspace,
             orphans);
     }
 
@@ -1004,7 +1165,7 @@ public sealed class SessionTreeProjector
             plan.Provider,
             PlanSummaryBadge(plan),
             PlanHoverText(plan),
-            plan.Workspace,
+            plan.WorkspaceInference?.Workspace ?? plan.Workspace,
             details: BuildPlanDetails(plan),
             provenance: BuildPlanProvenance(plan),
             rawSource: plan.CurrentMarkdown ?? string.Empty,
@@ -1093,7 +1254,54 @@ public sealed class SessionTreeProjector
         return root;
     }
 
-    private static string PlanHeader(SessionPlanArtifact plan) =>
+    private SessionTreeNodeViewModel BuildInferredPlansGroup(
+        WorkspaceContext workspace,
+        IReadOnlyList<SessionPlanArtifact> plans,
+        IReadOnlySet<string> expandedNodeIds)
+    {
+        string stableId =
+            $"workspace:{workspace.Key}:inferred-orphan-plans";
+        SessionTreeNodeViewModel group = new(
+            stableId,
+            "Unbound plans (inferred)",
+            SessionTreeNodeKind.PlanGroup,
+            HookProvider.Unknown,
+            $"{plans.Count} plan{(plans.Count == 1 ? string.Empty : "s")}",
+            $"These plans are not bound to a creator session. Their placement " +
+            $"under {workspace.DisplayName} is inferred from weaker evidence.",
+            workspace,
+            details:
+            [
+                new SessionDetailRow(
+                    "Likely workspace",
+                    workspace.DisplayName),
+                new SessionDetailRow(
+                    "Plan count",
+                    plans.Count.ToString()),
+                new SessionDetailRow(
+                    "Binding",
+                    "Unbound; workspace placement is inferred")
+            ])
+        {
+            IsExpanded = expandedNodeIds.Contains(stableId)
+        };
+
+        foreach (SessionPlanArtifact plan in plans
+                     .OrderByDescending(static item => item.LastModifiedAtUtc)
+                     .ThenBy(static item => item.Provider)
+                     .ThenBy(static item => item.Title,
+                         StringComparer.OrdinalIgnoreCase))
+        {
+            group.Children.Add(BuildPlanNode(
+                plan,
+                $"orphan-plan:{plan.CatalogPlanId}",
+                expandedNodeIds));
+        }
+
+        return group;
+    }
+
+    private string PlanHeader(SessionPlanArtifact plan) =>
         string.IsNullOrWhiteSpace(plan.Title)
             ? "Plan"
             : Preview(plan.Title, 140);
@@ -1104,9 +1312,24 @@ public sealed class SessionTreeProjector
         string text = count == 1
             ? "1 observed update"
             : $"{count} observed updates";
-        return plan.HasIncompleteRevisionHistory
+        text = plan.HasIncompleteRevisionHistory
             ? text + " \u00b7 partial"
             : text;
+        if (plan.Metadata.TryGetValue(
+                "claude.plan.sourceFileMissing",
+                out string? sourceFileMissing) &&
+            string.Equals(
+                sourceFileMissing,
+                "true",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            text += " \u00b7 source file missing";
+        }
+
+        return plan.BoundCatalogSessionId is null &&
+            plan.WorkspaceInference is not null
+                ? text + " \u00b7 inferred workspace"
+                : text;
     }
 
     private static string PlanHoverText(SessionPlanArtifact plan)
@@ -1115,6 +1338,13 @@ public sealed class SessionTreeProjector
         if (!string.IsNullOrWhiteSpace(plan.PrimaryPath))
         {
             lines.Add(plan.PrimaryPath!);
+        }
+
+        if (plan.BoundCatalogSessionId is null &&
+            plan.WorkspaceInference is SessionPlanWorkspaceInference inference)
+        {
+            lines.Add($"Likely workspace: {inference.Workspace.DisplayName}");
+            lines.Add($"Workspace evidence: {inference.Evidence}");
         }
 
         lines.Add(PlanSummaryBadge(plan));
@@ -1152,6 +1382,26 @@ public sealed class SessionTreeProjector
             new("Last modified", FormatTimestamp(plan.LastModifiedAtUtc))
         ];
 
+        if (plan.WorkspaceInference is SessionPlanWorkspaceInference inference)
+        {
+            details.Add(new SessionDetailRow(
+                "Likely workspace",
+                inference.Workspace.DisplayName));
+            details.Add(new SessionDetailRow(
+                "Workspace inference",
+                inference.Evidence.ToString()));
+            for (int index = 0;
+                 index < inference.EvidenceItems.Count;
+                 index++)
+            {
+                SessionPlanWorkspaceEvidence evidence =
+                    inference.EvidenceItems[index];
+                details.Add(new SessionDetailRow(
+                    $"Workspace evidence {index + 1}",
+                    $"{WorkspaceEvidenceName(evidence.Kind)}: {evidence.Value}"));
+            }
+        }
+
         for (int index = 0; index < plan.AlternatePaths.Count; index++)
         {
             details.Add(new SessionDetailRow(
@@ -1176,6 +1426,19 @@ public sealed class SessionTreeProjector
 
         return details;
     }
+
+    private static string WorkspaceEvidenceName(
+        SessionPlanWorkspaceEvidenceKind kind) =>
+        kind switch
+        {
+            SessionPlanWorkspaceEvidenceKind.NativeSessionIdentifier =>
+                "Native session identifier",
+            SessionPlanWorkspaceEvidenceKind.ReferencingSession =>
+                "Referencing session",
+            SessionPlanWorkspaceEvidenceKind.PlanContentPath =>
+                "Plan content path",
+            _ => kind.ToString()
+        };
 
     private static IReadOnlyList<SessionDetailRow> BuildPlanProvenance(
         SessionPlanArtifact plan)
@@ -1219,17 +1482,21 @@ public sealed class SessionTreeProjector
         IReadOnlyDictionary<string, List<SessionPlanArtifact>> BoundBySession,
         IReadOnlyDictionary<string, PlanActivityLink> ActivityByEventId,
         IReadOnlyDictionary<string, string> CanonicalNodeIdByPlan,
+        IReadOnlyDictionary<string, List<SessionPlanArtifact>>
+            InferredOrphansByWorkspace,
         IReadOnlyList<SessionPlanArtifact> OrphanPlans);
 
     private static IReadOnlyList<SessionDetailRow> BuildWorkspaceDetails(
         WorkspaceContext workspace,
         IReadOnlyCollection<SessionCatalogEntry> sessions)
     {
+        int inferredCount = sessions.Count(HasInferredPlacement);
         List<SessionDetailRow> details =
         [
             new("Name", workspace.DisplayName),
             new("Kind", workspace.Kind.ToString()),
-            new("Session count", sessions.Count.ToString())
+            new("Session count", sessions.Count.ToString()),
+            new("Inferred placements", inferredCount.ToString())
         ];
         for (int index = 0; index < workspace.DisplayRoots.Count; index++)
         {
@@ -1242,7 +1509,8 @@ public sealed class SessionTreeProjector
     }
 
     private static IReadOnlyList<SessionDetailRow> BuildSessionDetails(
-        SessionCatalogEntry session)
+        SessionCatalogEntry session,
+        int associatedPlanCount)
     {
         List<SessionDetailRow> details =
         [
@@ -1260,12 +1528,53 @@ public sealed class SessionTreeProjector
             new("Model", session.Model ?? "\u2014"),
             new("Mode", session.Mode ?? "\u2014"),
             new("Turn count", session.Turns.Count.ToString()),
+            new("Associated plans", associatedPlanCount.ToString()),
             new(
                 "System prompt snapshots",
                 session.SessionEvents.Count(IsSystemPrompt).ToString()),
             new("Source count", session.Sources.Count.ToString()),
             new("File count", session.Files.Count.ToString())
         ];
+
+        if (session.WorkspaceInference is SessionWorkspaceInference inference)
+        {
+            details.Add(new SessionDetailRow(
+                inference.Workspace.Kind == WorkspaceContextKind.Normal
+                    ? "Likely workspace"
+                    : "Workspace placement",
+                inference.Workspace.Kind == WorkspaceContextKind.Normal
+                    ? inference.Workspace.DisplayName
+                    : "Ambiguous"));
+            details.Add(new SessionDetailRow(
+                "Workspace inference",
+                inference.Evidence.ToString()));
+            details.Add(new SessionDetailRow(
+                "Workspace inference score",
+                $"{inference.Score}/100"));
+            for (int index = 0;
+                 index < inference.EvidenceItems.Count;
+                 index++)
+            {
+                SessionWorkspaceEvidence evidence =
+                    inference.EvidenceItems[index];
+                details.Add(new SessionDetailRow(
+                    $"Workspace evidence {index + 1}",
+                    $"{WorkspaceEvidenceName(evidence.Kind)} " +
+                    $"({evidence.Score}/100): {evidence.Value}"));
+            }
+
+            for (int index = 0;
+                 index < inference.Alternatives.Count;
+                 index++)
+            {
+                SessionWorkspaceCandidate alternative =
+                    inference.Alternatives[index];
+                details.Add(new SessionDetailRow(
+                    $"Workspace alternative {index + 1}",
+                    $"{alternative.Workspace.DisplayName} " +
+                    $"({alternative.Score}/100)"));
+            }
+        }
 
         foreach ((string key, string? value) in session.Metadata
                      .OrderBy(static item => item.Key, StringComparer.OrdinalIgnoreCase))
@@ -1497,7 +1806,7 @@ public sealed class SessionTreeProjector
         AddDetail(rows, $"{prefix} contract", source.ContractVersion);
     }
 
-    private static string EventHeader(SessionEventRecord record)
+    private string EventHeader(SessionEventRecord record)
     {
         string? content = FirstText(record);
         string contentSuffix = string.IsNullOrWhiteSpace(content)
@@ -1596,7 +1905,7 @@ public sealed class SessionTreeProjector
     private static string? FirstText(SessionEventRecord record) =>
         record.Text ?? record.PromptText;
 
-    private static string SessionHeader(SessionCatalogEntry session)
+    private string SessionHeader(SessionCatalogEntry session)
     {
         if (!string.IsNullOrWhiteSpace(session.Title))
         {
@@ -1606,7 +1915,9 @@ public sealed class SessionTreeProjector
         return session.NativeSessionId;
     }
 
-    private static string SessionHoverText(SessionCatalogEntry session)
+    private static string SessionHoverText(
+        SessionCatalogEntry session,
+        int associatedPlanCount)
     {
         List<string> lines =
         [
@@ -1614,9 +1925,26 @@ public sealed class SessionTreeProjector
             session.NativeSessionId,
             session.Workspace.DisplayName
         ];
+        if (session.WorkspaceInference is SessionWorkspaceInference inference)
+        {
+            lines.Add(
+                inference.Workspace.Kind == WorkspaceContextKind.Normal
+                    ? $"Likely workspace: {inference.Workspace.DisplayName} " +
+                        $"({inference.Score}/100, {inference.Evidence})"
+                    : $"Workspace placement: ambiguous " +
+                        $"({inference.Score}/100)");
+        }
+
         if (session.LastActivityAtUtc is DateTimeOffset lastActivity)
         {
             lines.Add($"Last activity: {lastActivity.ToLocalTime():g}");
+        }
+
+        if (associatedPlanCount > 0)
+        {
+            lines.Add(
+                $"{associatedPlanCount} associated plan" +
+                (associatedPlanCount == 1 ? string.Empty : "s"));
         }
 
         return string.Join(Environment.NewLine, lines);
@@ -1627,12 +1955,62 @@ public sealed class SessionTreeProjector
     {
         int openCount = sessions.Count(
             static item => item.LifecycleState == SessionLifecycleState.Open);
+        int inferredCount = sessions.Count(HasInferredPlacement);
         string summary =
             $"{sessions.Count} session{(sessions.Count == 1 ? string.Empty : "s")}";
-        return openCount > 0
-            ? $"{summary} \u00b7 {openCount} open"
-            : summary;
+        if (openCount > 0)
+        {
+            summary += $" \u00b7 {openCount} open";
+        }
+
+        if (inferredCount > 0)
+        {
+            summary += $" \u00b7 {inferredCount} inferred";
+        }
+
+        return summary;
     }
+
+    private static WorkspaceContext PlacementWorkspace(
+        SessionCatalogEntry session)
+    {
+        if (session.WorkspaceInference?.Workspace.Kind ==
+            WorkspaceContextKind.Normal)
+        {
+            return session.WorkspaceInference.Workspace;
+        }
+
+        if (session.WorkspaceInference?.Evidence ==
+                InferenceEvidence.Ambiguous &&
+            session.Workspace.DisplayRoots.Count > 1)
+        {
+            return WorkspaceContext.Unknown;
+        }
+
+        return session.Workspace;
+    }
+
+    private static bool HasInferredPlacement(
+        SessionCatalogEntry session) =>
+        session.WorkspaceInference?.Workspace.Kind ==
+        WorkspaceContextKind.Normal;
+
+    private static string WorkspaceEvidenceName(
+        SessionWorkspaceEvidenceKind kind) =>
+        kind switch
+        {
+            SessionWorkspaceEvidenceKind.NativeSessionIdentifier =>
+                "Matching native session",
+            SessionWorkspaceEvidenceKind.ProviderProjectKey =>
+                "Cursor project key",
+            SessionWorkspaceEvidenceKind.SessionPath =>
+                "Session path",
+            SessionWorkspaceEvidenceKind.PromptPath =>
+                "Prompt path",
+            SessionWorkspaceEvidenceKind.ObservedWorkspaceRoot =>
+                "Observed root candidate",
+            _ => kind.ToString()
+        };
 
     private static string FirstRawSource(
         IEnumerable<SessionSourceProvenance> sources) =>
@@ -1696,13 +2074,8 @@ public sealed class SessionTreeProjector
         record.ToolKind == CanonicalToolKind.Mcp ||
         !string.IsNullOrWhiteSpace(record.McpServerName);
 
-    private static string Preview(string value, int maximumLength)
-    {
-        string oneLine = value.ReplaceLineEndings(" ").Trim();
-        return oneLine.Length <= maximumLength
-            ? oneLine
-            : oneLine[..maximumLength].TrimEnd() + "\u2026";
-    }
+    private string Preview(string value, int maximumLength) =>
+        _previewBuilder.Build(value, maximumLength);
 
     private static string Humanize(string value)
     {

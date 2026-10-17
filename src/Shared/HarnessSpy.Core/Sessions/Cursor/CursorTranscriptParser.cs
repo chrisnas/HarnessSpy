@@ -910,11 +910,17 @@ internal sealed class CursorTranscriptParser
             SessionSourceKind.CursorTranscriptJsonl,
             source.Path,
             DialectIds.CursorTranscript,
-            row.RawContent,
-            row.LineNumber,
-            row.ByteOffset,
-            recordId ?? $"line:{row.LineNumber}",
-            parentRecordId);
+            LineNumber: row.LineNumber,
+            ByteOffset: row.ByteOffset,
+            RecordId: recordId ?? $"line:{row.LineNumber}",
+            ParentRecordId: parentRecordId,
+            RawSource: new SessionRawSourceReference(
+                SessionRawSourceKind.JsonLine,
+                source.Path,
+                row.ByteOffset,
+                row.ByteLength,
+                SourceLastWriteTimeUtc: row.SourceLastWriteTimeUtc,
+                SourceLength: row.SourceLength));
 
     private bool IsToolCallType(string type) =>
         string.Equals(type, "tool_use", StringComparison.OrdinalIgnoreCase) ||

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using HarnessSpy.Core.Models;
@@ -10,15 +11,25 @@ namespace HarnessSpy.Wpf.ViewModels;
 
 public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
 {
+    private const int MaximumDeepSearchBytes = 16 * 1024 * 1024;
+
     private readonly SessionCatalogCoordinator _coordinator;
     private readonly ISessionOpener _sessionOpener;
     private readonly SessionTreeProjector _projector;
+    private readonly ISessionRawSourceResolver _rawSourceResolver;
     private readonly Dispatcher _dispatcher;
-    private readonly bool _watchEnabled;
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _refreshRequestGate = new(1, 1);
+    private CancellationTokenSource? _rawSearchCancellation;
     private readonly List<string> _favoriteIds = [];
     private readonly Action<IReadOnlyList<string>>? _persistFavorites;
     private readonly HashSet<HookProvider> _enabledProviders = [];
+    private readonly HashSet<SessionTreeNodeViewModel> _observedNodes = [];
+    private readonly HashSet<string> _hydratingNodeIds =
+        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SessionTreeNodeViewModel> _nodesById =
+        new(StringComparer.Ordinal);
+    private readonly List<SessionTreeNodeViewModel> _nodeOrder = [];
     private readonly Action<IReadOnlyList<HookProvider>>? _persistEnabledProviders;
     private readonly ConditionalWeakTable<
         SessionCatalogUpdatedEventArgs,
@@ -56,9 +67,10 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
     public SessionCatalogViewModel(
         SessionCatalogCoordinator coordinator,
         ISessionOpener sessionOpener,
-        bool watchEnabled,
         Dispatcher dispatcher,
         SessionTreeProjector? projector = null,
+        SessionViewerPreferencesViewModel? preferences = null,
+        ISessionRawSourceResolver? rawSourceResolver = null,
         IReadOnlyList<string>? initialFavorites = null,
         Action<IReadOnlyList<string>>? persistFavorites = null,
         IReadOnlyList<HookProvider>? initialEnabledProviders = null,
@@ -70,9 +82,14 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
 
         _coordinator = coordinator;
         _sessionOpener = sessionOpener;
-        _watchEnabled = watchEnabled;
         _dispatcher = dispatcher;
         _projector = projector ?? new SessionTreeProjector();
+        Preferences = preferences ?? new SessionViewerPreferencesViewModel();
+        _rawSourceResolver =
+            rawSourceResolver ?? new SessionRawSourceResolver();
+        Inspector = new SessionInspectorViewModel(
+            _rawSourceResolver,
+            Preferences);
         _persistFavorites = persistFavorites;
         _persistEnabledProviders = persistEnabledProviders;
         if (initialFavorites is not null)
@@ -87,6 +104,7 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         }
 
         InitializeProviderFilters(initialEnabledProviders);
+        _coordinator.SetEnabledProviders(_enabledProviders);
 
         _coordinator.Updated += Coordinator_Updated;
     }
@@ -132,6 +150,10 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
     public ObservableCollection<SessionTreeNodeViewModel> FavoriteRoots { get; } = [];
 
     public bool HasFavorites => FavoriteRoots.Count > 0;
+
+    public SessionViewerPreferencesViewModel Preferences { get; }
+
+    public SessionInspectorViewModel Inspector { get; }
 
     // Multi-select harness filter bound to the Session Viewer combobox.
     public ObservableCollection<ProviderFilterOption> ProviderFilters { get; } = [];
@@ -230,60 +252,119 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         }
 
         _isInitialized = true;
-        await RefreshAsync(cancellationToken).ConfigureAwait(true);
-        if (_watchEnabled && !_isDisposed)
-        {
-            _coordinator.StartWatching();
-        }
+        await RefreshAsync(
+            new SessionRefreshRequest(
+                SessionRefreshTrigger.Startup),
+            cancellationToken).ConfigureAwait(true);
     }
 
     public async Task RefreshAsync(
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await RefreshAsync(
+            new SessionRefreshRequest(
+                SessionRefreshTrigger.RefreshButton),
+            cancellationToken).ConfigureAwait(true);
+
+    public async Task ForceRefreshAsync(
+        CancellationToken cancellationToken = default) =>
+        await RefreshAsync(
+            new SessionRefreshRequest(
+                SessionRefreshTrigger.RefreshButton,
+                Mode: SessionRefreshMode.ForceFull),
+            cancellationToken).ConfigureAwait(true);
+
+    private async Task RefreshAsync(
+        SessionRefreshRequest request,
+        CancellationToken cancellationToken)
     {
-        if (_isDisposed || IsRefreshing)
+        if (_isDisposed)
         {
             return;
         }
 
-        using CancellationTokenSource request =
-            CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                _lifetime.Token);
-
-        await InvokeOnDispatcherAsync(() =>
-        {
-            IsRefreshing = true;
-            StatusText = "Discovering provider sessions...";
-        }).ConfigureAwait(false);
-
+        await _refreshRequestGate
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
         try
         {
-            // Batches are projected incrementally through Coordinator_Updated
-            // as each provider source finishes, so the tree fills in as
-            // sessions are discovered instead of after the slowest source.
-            SessionCatalogUpdatedEventArgs update = await _coordinator
-                .RefreshAsync(request.Token)
-                .ConfigureAwait(false);
-            await WaitForUpdateAppliedAsync(update).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-            when (request.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
+            using CancellationTokenSource refreshCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    _lifetime.Token);
+
             await InvokeOnDispatcherAsync(() =>
             {
-                StatusText = $"Session discovery failed: {exception.Message}";
+                IsRefreshing = true;
+                StatusText = "Discovering provider sessions...";
             }).ConfigureAwait(false);
+
+            try
+            {
+                // Batches are projected incrementally through Coordinator_Updated
+                // as each provider source finishes, so the tree fills in as
+                // sessions are discovered instead of after the slowest source.
+                SessionCatalogUpdatedEventArgs update = await _coordinator
+                    .RefreshAsync(request, refreshCancellation.Token)
+                    .ConfigureAwait(false);
+                await WaitForUpdateAppliedAsync(update).ConfigureAwait(false);
+                await InvokeOnDispatcherAsync(
+                    () => UpdateProviderScanStatuses(request, update))
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (refreshCancellation.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                await InvokeOnDispatcherAsync(() =>
+                {
+                    StatusText =
+                        $"Session discovery failed: {exception.Message}";
+                    UpdateProviderScanStatuses(
+                        request,
+                        update: null,
+                        error: exception.Message);
+                }).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (!_dispatcher.HasShutdownStarted)
+                {
+                    await InvokeOnDispatcherAsync(
+                            () => IsRefreshing = false)
+                        .ConfigureAwait(false);
+                }
+            }
         }
         finally
         {
-            if (!_dispatcher.HasShutdownStarted)
+            _refreshRequestGate.Release();
+        }
+    }
+
+    private void UpdateProviderScanStatuses(
+        SessionRefreshRequest request,
+        SessionCatalogUpdatedEventArgs? update,
+        string? error = null)
+    {
+        IReadOnlySet<HookProvider> providers =
+            request.Providers ?? _enabledProviders;
+        string timestamp = DateTime.Now.ToString("T");
+        foreach (ProviderFilterOption option in ProviderFilters.Where(
+                     option => providers.Contains(option.Provider)))
+        {
+            if (error is not null)
             {
-                await InvokeOnDispatcherAsync(() => IsRefreshing = false)
-                    .ConfigureAwait(false);
+                option.UpdateScanStatus($"Failed at {timestamp}");
+                continue;
             }
+
+            int sessionCount = update?.Sessions.Count(
+                session => session.Provider == option.Provider) ?? 0;
+            option.UpdateScanStatus(
+                $"{timestamp} \u00b7 {sessionCount} session" +
+                (sessionCount == 1 ? string.Empty : "s"));
         }
     }
 
@@ -307,6 +388,9 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
             node.IsSelected = true;
         }
 
+        _ = Inspector.SelectAsync(node, _lifetime.Token);
+        _ = EnsureNodeSummaryAsync(node);
+
         if (!preserveSearch)
         {
             ClearSearchMatch();
@@ -321,12 +405,13 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
             return null;
         }
 
-        List<SessionTreeNodeViewModel> allNodes =
-            SessionTreeNodeViewModel.EnumerateDepthFirst(Roots).ToList();
+        List<SessionTreeNodeViewModel> allNodes = [.. _nodeOrder];
         List<SessionTreeNodeViewModel> matches = allNodes
             .Where(node => SearchHookNamesOnly
                 ? node.MatchesHookName(SearchQuery)
-                : node.Matches(SearchQuery))
+                : node.Matches(
+                    SearchQuery,
+                    Preferences.IncludeRawSourceInSearch))
             .ToList();
         if (matches.Count == 0)
         {
@@ -377,6 +462,238 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         SelectNode(match, preserveSearch: true);
         return match;
     }
+
+    public async Task<SessionTreeNodeViewModel?> FindNextRawAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(SearchQuery))
+        {
+            ClearSearchMatch();
+            return null;
+        }
+
+        CancellationTokenSource searchCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                _lifetime.Token);
+        CancellationTokenSource? previous = Interlocked.Exchange(
+            ref _rawSearchCancellation,
+            searchCancellation);
+        previous?.Cancel();
+        previous?.Dispose();
+
+        List<RawSearchCandidate> candidates = BuildRawSearchCandidates();
+        int selectedIndex = _currentSearchNodeId is null
+            ? -1
+            : candidates.FindIndex(candidate =>
+                string.Equals(
+                    candidate.StableId,
+                    _currentSearchNodeId,
+                    StringComparison.Ordinal));
+        HashSet<SessionRawSourceReference> visited = [];
+        SearchStatus = "Searching raw sources...";
+        try
+        {
+            for (int offset = 1; offset <= candidates.Count; offset++)
+            {
+                searchCancellation.Token.ThrowIfCancellationRequested();
+                int index =
+                    (selectedIndex + offset + candidates.Count) %
+                    candidates.Count;
+                RawSearchCandidate candidate = candidates[index];
+                SessionSourceProvenance provenance = candidate.Provenance;
+                if (provenance.RawSource is
+                        SessionRawSourceReference source &&
+                    !visited.Add(source))
+                {
+                    continue;
+                }
+
+                SessionRawSourceContent content = await _rawSourceResolver
+                    .LoadAsync(
+                        provenance,
+                        MaximumDeepSearchBytes,
+                        searchCancellation.Token)
+                    .ConfigureAwait(true);
+                if (!content.Content.Contains(
+                        SearchQuery,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                SessionTreeNodeViewModel? node =
+                    await MaterializeRawSearchCandidateAsync(
+                        candidate,
+                        searchCancellation.Token).ConfigureAwait(true);
+                if (node is null)
+                {
+                    continue;
+                }
+
+                List<SessionTreeNodeViewModel>? path =
+                    SessionTreeNodeViewModel.FindAncestorPath(Roots, node);
+                if (path is not null)
+                {
+                    foreach (SessionTreeNodeViewModel ancestor in path.Take(
+                                 path.Count - 1))
+                    {
+                        ancestor.IsExpanded = true;
+                    }
+                }
+
+                _currentSearchNodeId = node.StableId;
+                SearchStatus = content.IsTruncated
+                    ? "Raw match found in bounded source."
+                    : "Raw match found.";
+                SelectNode(node, preserveSearch: true);
+                return node;
+            }
+
+            SearchStatus = "No raw-source match.";
+            return null;
+        }
+        catch (OperationCanceledException)
+            when (searchCancellation.IsCancellationRequested)
+        {
+            return null;
+        }
+        finally
+        {
+            Interlocked.CompareExchange(
+                ref _rawSearchCancellation,
+                null,
+                searchCancellation);
+            searchCancellation.Dispose();
+        }
+    }
+
+    private List<RawSearchCandidate> BuildRawSearchCandidates()
+    {
+        List<RawSearchCandidate> candidates = [];
+        IReadOnlyList<SessionCatalogEntry> sessions =
+            _lastRenderedUpdate is null
+                ? []
+                : ApplyProviderFilter(_lastRenderedUpdate.Sessions);
+        foreach (SessionCatalogEntry session in sessions)
+        {
+            string sessionId = $"session:{session.CatalogSessionId}";
+            foreach (SessionSourceProvenance source in session.Sources)
+            {
+                candidates.Add(new RawSearchCandidate(
+                    sessionId,
+                    session.CatalogSessionId,
+                    TurnId: null,
+                    source));
+            }
+
+            foreach (SessionEventRecord item in session.SessionEvents)
+            {
+                string eventId =
+                    $"{sessionId}:system-prompt:{item.Id}";
+                candidates.Add(new RawSearchCandidate(
+                    eventId,
+                    session.CatalogSessionId,
+                    TurnId: null,
+                    item.Provenance));
+            }
+
+            foreach (SessionTurn turn in session.Turns)
+            {
+                foreach (SessionEventRecord item in turn.Events)
+                {
+                    string eventId =
+                        $"{sessionId}:turn:{turn.Id}:event:{item.Id}";
+                    candidates.Add(new RawSearchCandidate(
+                        eventId,
+                        session.CatalogSessionId,
+                        turn.Id,
+                        item.Provenance));
+                    foreach (SessionSourceProvenance supplemental in
+                             item.SupplementalProvenance)
+                    {
+                        candidates.Add(new RawSearchCandidate(
+                            eventId,
+                            session.CatalogSessionId,
+                            turn.Id,
+                            supplemental));
+                    }
+                }
+            }
+        }
+
+        foreach (SessionPlanArtifact plan in
+                 _lastRenderedUpdate?.Plans ?? [])
+        {
+            string stableId =
+                plan.BoundCatalogSessionId is string sessionId
+                    ? $"session:{sessionId}:plan:{plan.CatalogPlanId}"
+                    : $"orphan-plan:{plan.CatalogPlanId}";
+            foreach (SessionSourceProvenance source in plan.Sources)
+            {
+                candidates.Add(new RawSearchCandidate(
+                    stableId,
+                    plan.BoundCatalogSessionId,
+                    TurnId: null,
+                    source));
+            }
+        }
+
+        return candidates;
+    }
+
+    private async Task<SessionTreeNodeViewModel?>
+        MaterializeRawSearchCandidateAsync(
+            RawSearchCandidate candidate,
+            CancellationToken cancellationToken)
+    {
+        if (FindNode(candidate.StableId) is SessionTreeNodeViewModel existing)
+        {
+            return existing;
+        }
+
+        if (candidate.CatalogSessionId is not string catalogSessionId ||
+            FindNode($"session:{catalogSessionId}") is not
+                SessionTreeNodeViewModel sessionNode)
+        {
+            return FindNode(candidate.StableId);
+        }
+
+        await ExpandAndWaitAsync(
+            sessionNode,
+            cancellationToken).ConfigureAwait(true);
+        if (candidate.TurnId is string turnId &&
+            FindNode($"session:{catalogSessionId}:turn:{turnId}") is
+                SessionTreeNodeViewModel turnNode)
+        {
+            await ExpandAndWaitAsync(
+                turnNode,
+                cancellationToken).ConfigureAwait(true);
+            return FindNode(candidate.StableId) ?? turnNode;
+        }
+
+        return FindNode(candidate.StableId) ?? sessionNode;
+    }
+
+    private async Task ExpandAndWaitAsync(
+        SessionTreeNodeViewModel node,
+        CancellationToken cancellationToken)
+    {
+        node.IsExpanded = true;
+        while (!node.AreChildrenLoaded)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(10),
+                cancellationToken).ConfigureAwait(true);
+        }
+    }
+
+    private sealed record RawSearchCandidate(
+        string StableId,
+        string? CatalogSessionId,
+        string? TurnId,
+        SessionSourceProvenance Provenance);
 
     public bool CanOpenSession(SessionTreeNodeViewModel? node) =>
         node?.Session is SessionCatalogEntry session &&
@@ -448,8 +765,9 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         _persistFavorites?.Invoke([.. _favoriteIds]);
     }
 
-    // Raised when a harness checkbox is toggled: update the enabled set, refresh
-    // the summary, persist the selection, and re-filter the tree in place.
+    // A harness selection is also an explicit discovery action. Newly enabled
+    // providers are scanned once; disabled providers are hidden and evicted
+    // without touching provider storage.
     private void OnProviderFilterChanged(ProviderFilterOption option)
     {
         if (option.IsSelected)
@@ -472,8 +790,50 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
             return;
         }
 
+        _coordinator.SetEnabledProviders(
+            _enabledProviders,
+            evictDisabled: !Preferences.KeepDisabledProviderCache);
+        TrimStoredUpdatesToEnabledProviders();
         _persistEnabledProviders?.Invoke([.. _enabledProviders]);
         EnqueueFilterRerender();
+        if (option.IsSelected)
+        {
+            option.UpdateScanStatus("Scanning...");
+            _ = RefreshHarnessSelectionAsync(option.Provider);
+        }
+        else
+        {
+            option.UpdateScanStatus("Disabled");
+        }
+    }
+
+    private async Task RefreshHarnessSelectionAsync(HookProvider provider)
+    {
+        await RefreshAsync(
+            new SessionRefreshRequest(
+                SessionRefreshTrigger.HarnessSelection,
+                new HashSet<HookProvider> { provider }),
+            _lifetime.Token).ConfigureAwait(false);
+    }
+
+    private void TrimStoredUpdatesToEnabledProviders()
+    {
+        if (_lastRenderedUpdate is null)
+        {
+            return;
+        }
+
+        IReadOnlyList<SessionCatalogEntry> sessions =
+            ApplyProviderFilter(_lastRenderedUpdate.Sessions);
+        IReadOnlyList<SessionPlanArtifact> plans =
+            FilterPlans(_lastRenderedUpdate.Plans, sessions);
+        SessionCatalogUpdatedEventArgs trimmed = _lastRenderedUpdate with
+        {
+            Sessions = sessions,
+            Plans = plans
+        };
+        _lastRenderedUpdate = trimmed;
+        _lastAppliedUpdate = trimmed;
     }
 
     // Queues a harness re-filter on the same single-flight loop that projects
@@ -580,18 +940,11 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         List<SessionTreeNodeViewModel> desired = [];
         if (_favoriteIds.Count > 0)
         {
-            Dictionary<string, SessionTreeNodeViewModel> byId =
-                SessionTreeNodeViewModel
-                    .EnumerateDepthFirst(Roots)
-                    .Where(node => _favoriteIds.Contains(node.StableId))
-                    .GroupBy(static node => node.StableId, StringComparer.Ordinal)
-                    .ToDictionary(
-                        static group => group.Key,
-                        static group => group.First(),
-                        StringComparer.Ordinal);
             foreach (string id in _favoriteIds)
             {
-                if (byId.TryGetValue(id, out SessionTreeNodeViewModel? node))
+                if (_nodesById.TryGetValue(
+                        id,
+                        out SessionTreeNodeViewModel? node))
                 {
                     desired.Add(node);
                 }
@@ -634,8 +987,20 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         }
 
         _isDisposed = true;
+        foreach (SessionTreeNodeViewModel node in _observedNodes)
+        {
+            node.PropertyChanged -= TreeNode_PropertyChanged;
+        }
+
+        _observedNodes.Clear();
         _coordinator.Updated -= Coordinator_Updated;
         _lifetime.Cancel();
+        CancellationTokenSource? rawSearch = Interlocked.Exchange(
+            ref _rawSearchCancellation,
+            null);
+        rawSearch?.Cancel();
+        rawSearch?.Dispose();
+        Inspector.Dispose();
         _lifetime.Dispose();
     }
 
@@ -840,8 +1205,11 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
             .Run(() => _projector.Project(
                 visibleSessions,
                 expandedNodeIds,
-                expandWorkspaceRoots: isInitialProjection,
-                plans: visiblePlans))
+                expandWorkspaceRoots:
+                    isInitialProjection &&
+                    Preferences.ExpandWorkspacesOnStartup,
+                plans: visiblePlans,
+                lazy: true))
             .ConfigureAwait(true);
 
         if (_isDisposed)
@@ -867,15 +1235,11 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         // their identity (and their expansion, selection, and scroll position)
         // while they are rehydrated with newly discovered detail.
         SessionTreeNodeViewModel.Reconcile(Roots, projected);
+        RebuildNodeIndexAndSubscriptions();
 
         SessionTreeNodeViewModel? replacement = selectedNodeId is null
             ? null
-            : SessionTreeNodeViewModel
-                .EnumerateDepthFirst(Roots)
-                .FirstOrDefault(node =>
-                    StringComparer.Ordinal.Equals(
-                        node.StableId,
-                        selectedNodeId));
+            : FindNode(selectedNodeId);
         SelectNode(replacement, preserveSearch: true);
         OnPropertyChanged(nameof(CanOpenSelectedSession));
 
@@ -888,14 +1252,188 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         }
 
         if (_currentSearchNodeId is not null &&
-            !SessionTreeNodeViewModel
-                .EnumerateDepthFirst(Roots)
-                .Any(node => StringComparer.Ordinal.Equals(
-                    node.StableId,
-                    _currentSearchNodeId)))
+            !_nodesById.ContainsKey(_currentSearchNodeId))
         {
             ClearSearchMatch();
         }
+    }
+
+    public SessionTreeNodeViewModel? FindNode(string stableId) =>
+        _nodesById.TryGetValue(
+            stableId,
+            out SessionTreeNodeViewModel? node)
+            ? node
+            : null;
+
+    public async Task EnsureNodeSummaryAsync(
+        SessionTreeNodeViewModel? node)
+    {
+        if (_isDisposed ||
+            node is null ||
+            node.NodeSummary is not null)
+        {
+            return;
+        }
+
+        NodeSummary? summary = await Task.Run(() =>
+            node.Session is SessionCatalogEntry session && node.IsSession
+                ? _projector.BuildSummary(session)
+                : node.Turn is SessionTurn turn && node.IsTurn
+                    ? _projector.BuildSummary(turn)
+                    : null).ConfigureAwait(true);
+        if (!_isDisposed && summary is not null)
+        {
+            node.SetNodeSummary(summary);
+        }
+    }
+
+    private void RebuildNodeIndexAndSubscriptions()
+    {
+        foreach (SessionTreeNodeViewModel node in _observedNodes)
+        {
+            node.PropertyChanged -= TreeNode_PropertyChanged;
+        }
+
+        _observedNodes.Clear();
+        _nodesById.Clear();
+        _nodeOrder.Clear();
+        foreach (SessionTreeNodeViewModel node in
+                 SessionTreeNodeViewModel.EnumerateDepthFirst(Roots))
+        {
+            _nodesById.TryAdd(node.StableId, node);
+            if (!node.IsPlaceholder)
+            {
+                _nodeOrder.Add(node);
+            }
+
+            if (node.IsSession || node.IsTurn)
+            {
+                node.PropertyChanged += TreeNode_PropertyChanged;
+                _observedNodes.Add(node);
+            }
+        }
+    }
+
+    private async void TreeNode_PropertyChanged(
+        object? sender,
+        PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(SessionTreeNodeViewModel.IsExpanded) ||
+            sender is not SessionTreeNodeViewModel node ||
+            _isDisposed)
+        {
+            return;
+        }
+
+        if (!node.IsExpanded)
+        {
+            UnloadNodeChildren(node);
+            return;
+        }
+
+        if (!node.AreChildrenLoaded)
+        {
+            await HydrateNodeChildrenAsync(node).ConfigureAwait(true);
+        }
+    }
+
+    private async Task HydrateNodeChildrenAsync(
+        SessionTreeNodeViewModel node)
+    {
+        if (!_hydratingNodeIds.Add(node.StableId))
+        {
+            return;
+        }
+
+        try
+        {
+            HashSet<string> expandedNodeIds = _nodeOrder
+                .Where(static item => item.IsExpanded)
+                .Select(static item => item.StableId)
+                .ToHashSet(StringComparer.Ordinal);
+            IReadOnlyList<SessionPlanArtifact> plans =
+                _lastRenderedUpdate?.Plans ?? [];
+            (
+                IReadOnlyList<SessionTreeNodeViewModel> Children,
+                NodeSummary? Summary) hydration = await Task.Run(() =>
+            {
+                if (node.IsSession &&
+                    node.Session is SessionCatalogEntry session)
+                {
+                    return (
+                        _projector.ProjectSessionChildren(
+                            session,
+                            expandedNodeIds,
+                            plans),
+                        (NodeSummary?)_projector.BuildSummary(session));
+                }
+
+                if (node.IsTurn &&
+                    node.Session is SessionCatalogEntry owningSession &&
+                    node.Turn is SessionTurn turn)
+                {
+                    return (
+                        _projector.ProjectTurnChildren(
+                            owningSession,
+                            turn,
+                            expandedNodeIds,
+                            plans),
+                        (NodeSummary?)_projector.BuildSummary(turn));
+                }
+
+                return (
+                    (IReadOnlyList<SessionTreeNodeViewModel>)[],
+                    null);
+            }).ConfigureAwait(true);
+
+            if (_isDisposed || !node.IsExpanded)
+            {
+                return;
+            }
+
+            SessionTreeNodeViewModel.Reconcile(
+                node.Children,
+                hydration.Children);
+            node.SetChildrenLoaded(true);
+            node.SetNodeSummary(hydration.Summary);
+            RebuildNodeIndexAndSubscriptions();
+        }
+        catch (Exception exception)
+        {
+            StatusText =
+                $"Could not load session details: {exception.Message}";
+            node.Children.Clear();
+            node.Children.Add(new SessionTreeNodeViewModel(
+                $"{node.StableId}:load-error",
+                "Details could not be loaded",
+                SessionTreeNodeKind.Placeholder,
+                node.Provider));
+            node.SetChildrenLoaded(true);
+            RebuildNodeIndexAndSubscriptions();
+        }
+        finally
+        {
+            _hydratingNodeIds.Remove(node.StableId);
+        }
+    }
+
+    private void UnloadNodeChildren(SessionTreeNodeViewModel node)
+    {
+        if (!node.AreChildrenLoaded ||
+            !node.IsSession && !node.IsTurn)
+        {
+            return;
+        }
+
+        node.Children.Clear();
+        node.Children.Add(new SessionTreeNodeViewModel(
+            $"{node.StableId}:placeholder",
+            "Expand to load",
+            SessionTreeNodeKind.Placeholder,
+            node.Provider));
+        node.SetChildrenLoaded(false);
+        node.SetNodeSummary(null);
+        RebuildNodeIndexAndSubscriptions();
     }
 
     private void UpdateStatus(SessionCatalogUpdatedEventArgs update)
@@ -918,22 +1456,7 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
             $"in {FormatDuration(update.Duration)}.{planSummary}{completeness}";
         WarningText = string.Join(
             Environment.NewLine,
-            update.Warnings.Where(IsRelevantWarning));
-    }
-
-    // Discovery-guard limits are intentionally generous in Session Viewer, so
-    // their advisory "time/size limit reached" and "skipped oversized value"
-    // messages are noise and are never surfaced to the user.
-    private static bool IsRelevantWarning(string warning)
-    {
-        string text = warning ?? string.Empty;
-        return !(text.Contains("time limit", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("oversized", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("directory limit", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("file limit", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains(
-                "discovery warnings were suppressed",
-                StringComparison.OrdinalIgnoreCase));
+            update.Warnings);
     }
 
     private Task InvokeOnDispatcherAsync(Action action)

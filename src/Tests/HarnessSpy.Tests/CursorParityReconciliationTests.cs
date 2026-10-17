@@ -28,6 +28,8 @@ public sealed class CursorParityReconciliationTests
     [InlineData("glob_file_search", CanonicalToolKind.FileSearch)]
     [InlineData("read_file_v2", CanonicalToolKind.FileRead)]
     [InlineData("edit_file_v2", CanonicalToolKind.FileEdit)]
+    [InlineData("ReadFile", CanonicalToolKind.FileRead)]
+    [InlineData("ApplyPatch", CanonicalToolKind.FileEdit)]
     [InlineData("Shell", CanonicalToolKind.Shell)]
     [InlineData("Grep", CanonicalToolKind.TextSearch)]
     public void DesktopAliasesResolveToTranscriptKind(
@@ -174,6 +176,196 @@ public sealed class CursorParityReconciliationTests
         Assert.DoesNotContain(summary.McpCalls, row => row.Name == "GetDynamicTools");
     }
 
+    [Fact]
+    public void ReconcilerPairsCorrelationBucketsInFifoOrder()
+    {
+        SessionEventRecord firstTranscript = TranscriptTool(
+            1,
+            "Shell",
+            CanonicalToolKind.Shell,
+            groupId: "wave-1");
+        SessionEventRecord secondTranscript = TranscriptTool(
+            2,
+            "Shell",
+            CanonicalToolKind.Shell,
+            groupId: "wave-2");
+        SessionEventRecord firstDesktop = DesktopTool(
+            1,
+            "run_terminal_command_v2",
+            CanonicalToolKind.Shell) with
+        {
+            DurationMs = 10
+        };
+        SessionEventRecord secondDesktop = DesktopTool(
+            2,
+            "run_terminal_command_v2",
+            CanonicalToolKind.Shell) with
+        {
+            DurationMs = 20
+        };
+        SessionCatalogEntry entry = Entry(
+            [
+                firstTranscript,
+                secondTranscript,
+                firstDesktop,
+                secondDesktop
+            ]);
+
+        SessionEventRecord[] requests =
+            new CursorSessionEventReconciler()
+                .Reconcile(entry)
+                .Turns
+                .Single()
+                .Events
+                .Where(item => item.Role == ObservationRole.ToolRequest)
+                .ToArray();
+
+        Assert.Collection(
+            requests,
+            item =>
+            {
+                Assert.Equal("wave-1", item.ParallelGroupId);
+                Assert.Equal(10, item.DurationMs);
+            },
+            item =>
+            {
+                Assert.Equal("wave-2", item.ParallelGroupId);
+                Assert.Equal(20, item.DurationMs);
+            });
+    }
+
+    [Fact]
+    public void ReconcilerHandlesLargePayloadPairingBatch()
+    {
+        const int pairCount = 100;
+        string raw = new('x', 64 * 1024);
+        List<SessionEventRecord> events = new(pairCount * 2);
+        for (int index = 0; index < pairCount; index++)
+        {
+            events.Add(TranscriptTool(
+                index + 1,
+                "Shell",
+                CanonicalToolKind.Shell,
+                groupId: $"wave-{index}") with
+            {
+                Provenance = new SessionSourceProvenance(
+                    SessionSourceKind.CursorTranscriptJsonl,
+                    "C:/transcript.jsonl",
+                    "cursor-transcript-jsonl",
+                    raw)
+            });
+        }
+
+        for (int index = 0; index < pairCount; index++)
+        {
+            events.Add(DesktopTool(
+                index + 1,
+                "run_terminal_command_v2",
+                CanonicalToolKind.Shell) with
+            {
+                Provenance = new SessionSourceProvenance(
+                    SessionSourceKind.CursorDesktopSqlite,
+                    "C:/state.vscdb",
+                    "cursor-desktop-composer-json",
+                    raw)
+            });
+        }
+
+        SessionEventRecord[] requests =
+            new CursorSessionEventReconciler()
+                .Reconcile(Entry(events))
+                .Turns
+                .Single()
+                .Events
+                .Where(item => item.Role == ObservationRole.ToolRequest)
+                .ToArray();
+
+        Assert.Equal(pairCount, requests.Length);
+        Assert.Equal(
+            Enumerable.Range(0, pairCount)
+                .Select(index => $"wave-{index}"),
+            requests.Select(item => item.ParallelGroupId));
+    }
+
+    [Fact]
+    public void ReconcilerDropsWhitespaceEquivalentTranscriptResponse()
+    {
+        SessionCatalogEntry entry = Entry(
+            [
+                ResponseEvent(
+                    SessionSourceKind.CursorTranscriptJsonl,
+                    1,
+                    "  completed\r\n\t successfully "),
+                ResponseEvent(
+                    SessionSourceKind.CursorDesktopSqlite,
+                    2,
+                    "completed successfully")
+            ]);
+
+        SessionEventRecord response = Assert.Single(
+            new CursorSessionEventReconciler()
+                .Reconcile(entry)
+                .Turns
+                .Single()
+                .Events,
+            item => item.Role == ObservationRole.AgentResponse);
+
+        Assert.Equal(
+            SessionSourceKind.CursorDesktopSqlite,
+            response.Provenance.SourceKind);
+    }
+
+    private static SessionCatalogEntry Entry(
+        IReadOnlyList<SessionEventRecord> events) =>
+        new()
+        {
+            CatalogSessionId = "cursor:x",
+            NativeSessionId = "x",
+            Provider = HookProvider.Cursor,
+            Surface = HookSurface.CursorIde,
+            Workspace = WorkspaceContext.Unknown,
+            Title = "inspect",
+            Turns =
+            [
+                new SessionTurn(
+                    "turn-1",
+                    1,
+                    "inspect",
+                    null,
+                    null,
+                    InferenceEvidence.Derived,
+                    events)
+            ]
+        };
+
+    private static SessionEventRecord ResponseEvent(
+        SessionSourceKind sourceKind,
+        int order,
+        string text) =>
+        new()
+        {
+            Id = $"{sourceKind}:response:{order}",
+            NativeName = "assistant",
+            Provider = HookProvider.Cursor,
+            Surface = HookSurface.CursorIde,
+            Role = ObservationRole.AgentResponse,
+            EventKind = CanonicalEventKind.AssistantMessage,
+            Direction = ObservationDirection.Output,
+            Order = order,
+            TurnId = "turn-1",
+            TimestampUtc = sourceKind == SessionSourceKind.CursorDesktopSqlite
+                ? DesktopTimestamp(order)
+                : null,
+            Text = text,
+            Provenance = new SessionSourceProvenance(
+                sourceKind,
+                sourceKind == SessionSourceKind.CursorTranscriptJsonl
+                    ? "C:/transcript.jsonl"
+                    : "C:/state.vscdb",
+                "json",
+                text)
+        };
+
     private static SessionEventRecord TranscriptTool(
         int order,
         string nativeName,
@@ -205,7 +397,17 @@ public sealed class CursorParityReconciliationTests
             server,
             mcpTool,
             groupId: null,
-            timestamp: new DateTimeOffset(2026, 9, 20, 8, 40, order, TimeSpan.Zero));
+            timestamp: DesktopTimestamp(order));
+
+    private static DateTimeOffset DesktopTimestamp(int order) =>
+        new DateTimeOffset(
+            2026,
+            9,
+            20,
+            8,
+            40,
+            0,
+            TimeSpan.Zero).AddSeconds(order);
 
     private static SessionEventRecord ToolEvent(
         SessionSourceKind sourceKind,

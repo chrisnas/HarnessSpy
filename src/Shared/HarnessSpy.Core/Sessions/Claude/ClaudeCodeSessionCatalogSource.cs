@@ -12,13 +12,18 @@ public sealed class ClaudeCodeSessionCatalogSource : ISessionCatalogSource
     private readonly ClaudeTranscriptFileReader _transcriptReader;
     private readonly ClaudeSessionIndexReader _indexReader;
     private readonly ClaudeJsonFileReader _jsonReader;
+    private readonly ClaudeSessionCacheParser _cacheParser = new();
+    private readonly ClaudeSessionHistoryEntryParser _historyParser = new();
     private readonly WorkspaceNormalizer _workspaceNormalizer;
     private readonly SessionPlanFileReader _planFileReader;
     private readonly SessionPlanContentNormalizer _planNormalizer = new();
     private readonly ClaudePlanActivityExtractor _planActivityExtractor = new();
+    private readonly ClaudeTranscriptPlanArtifactBuilder
+        _transcriptPlanArtifactBuilder = new();
     private readonly string _configRoot;
     private readonly string _projectsRoot;
     private readonly string _plansRoot;
+    private readonly string _historyPath;
 
     public ClaudeCodeSessionCatalogSource()
         : this(new SessionDiscoveryContext(), new WorkspaceNormalizer())
@@ -44,40 +49,96 @@ public sealed class ClaudeCodeSessionCatalogSource : ISessionCatalogSource
         _configRoot = ResolveConfigRoot(_context);
         _projectsRoot = Path.Combine(_configRoot, "projects");
         _plansRoot = Path.Combine(_configRoot, "plans");
+        _historyPath = Path.Combine(_configRoot, "history.jsonl");
     }
 
     public string Name => "Claude Code";
 
     public HookProvider Provider => HookProvider.ClaudeCode;
 
-    public IReadOnlyList<string> WatchRoots => [_projectsRoot, _plansRoot];
+    public IReadOnlyList<string> WatchRoots =>
+        [_projectsRoot, _plansRoot, _historyPath];
 
     public async Task<SessionCatalogScanResult> ScanAsync(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ClaudeScanBudget budget = new(_context.Limits);
+        ClaudeSessionCatalogBuilder catalog = new(_workspaceNormalizer);
+        ClaudeTranscriptIdentityResolver identityResolver = new();
+        Dictionary<string, int> recordCounts = new(StringComparer.Ordinal);
+
+        await ScanProjectsAsync(
+            catalog,
+            identityResolver,
+            recordCounts,
+            budget,
+            cancellationToken).ConfigureAwait(false);
+        await ReadHistoryAsync(
+            catalog,
+            budget,
+            cancellationToken).ConfigureAwait(false);
+
+        IReadOnlyList<SessionCatalogEntry> sessions = catalog.Build();
+        List<Plans.SessionPlanActivity> planActivities =
+        [
+            .. catalog.BuildPlanActivities(),
+            .. _planActivityExtractor.Extract(sessions)
+        ];
+        SessionPlanScanResult planScan = await ScanPlansAsync(cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<SessionPlanArtifact> recoveredPlanArtifacts =
+            _transcriptPlanArtifactBuilder.Build(
+                sessions,
+                planScan.Fragment.Artifacts,
+                planActivities);
+        SessionPlanCatalogFragment planFragment = new()
+        {
+            Artifacts =
+            [
+                .. planScan.Fragment.Artifacts,
+                .. recoveredPlanArtifacts
+            ],
+            Activities = planActivities
+        };
+        string[] combinedWarnings = budget.Warnings
+            .Concat(planScan.Warnings)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        return new SessionCatalogScanResult(
+            sessions,
+            budget.IsComplete && planScan.IsComplete,
+            combinedWarnings)
+        {
+            PlanFragment = planFragment
+        };
+    }
+
+    private async Task ScanProjectsAsync(
+        ClaudeSessionCatalogBuilder catalog,
+        ClaudeTranscriptIdentityResolver identityResolver,
+        Dictionary<string, int> recordCounts,
+        ClaudeScanBudget budget,
+        CancellationToken cancellationToken)
+    {
         if (!Directory.Exists(_projectsRoot))
         {
-            return SessionCatalogScanResult.Empty;
+            return;
         }
 
-        ClaudeScanBudget budget = new(_context.Limits);
         if (IsReparsePoint(_projectsRoot, budget))
         {
             budget.MarkIncomplete(
                 $"Skipped unsafe Claude projects root '{_projectsRoot}'.");
-            return new SessionCatalogScanResult([], false, budget.Warnings);
+            return;
         }
-
-        ClaudeSessionCatalogBuilder catalog = new(_workspaceNormalizer);
-        ClaudeTranscriptIdentityResolver identityResolver = new();
-        Dictionary<string, int> recordCounts = new(StringComparer.Ordinal);
 
         if (!budget.TryTakeDirectory(_projectsRoot))
         {
             budget.AddWarning(
                 $"Claude directory limit reached before scanning '{_projectsRoot}'.");
-            return new SessionCatalogScanResult([], false, budget.Warnings);
+            return;
         }
 
         IReadOnlyList<string> projectDirectories = GetDirectories(
@@ -108,6 +169,11 @@ public sealed class ClaudeCodeSessionCatalogSource : ISessionCatalogSource
             }
 
             ClaudeProjectLocation project = new(projectDirectory);
+            await ReadSessionCacheAsync(
+                project,
+                catalog,
+                budget,
+                cancellationToken).ConfigureAwait(false);
             ClaudeSessionIndex? index = await ReadIndexAsync(
                 project,
                 budget,
@@ -118,26 +184,35 @@ public sealed class ClaudeCodeSessionCatalogSource : ISessionCatalogSource
                 {
                     if (!entry.IsSidechain)
                     {
-                        catalog.GetOrCreate(entry.SessionId).AddIndex(project, index, entry);
+                        catalog.GetOrCreate(entry.SessionId).AddIndex(
+                            project,
+                            index,
+                            entry);
                     }
                 }
             }
 
-            IReadOnlyList<ClaudeMainFileCandidate> mainFiles = DiscoverMainFiles(
-                project,
-                budget,
-                cancellationToken);
+            IReadOnlyList<ClaudeMainFileCandidate> mainFiles =
+                DiscoverMainFiles(
+                    project,
+                    budget,
+                    cancellationToken);
             foreach (ClaudeMainFileCandidate candidate in mainFiles
                          .OrderByDescending(static file => file.IsRecovery)
-                         .ThenBy(static file => file.Path, StringComparer.OrdinalIgnoreCase))
+                         .ThenBy(
+                             static file => file.Path,
+                             StringComparer.OrdinalIgnoreCase))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                int remaining = RemainingRecords(recordCounts, candidate.SessionId);
-                ClaudeTranscriptReadResult read = await _transcriptReader.ReadAsync(
-                    candidate.Path,
-                    remaining,
-                    budget.DeadlineExceeded,
-                    cancellationToken).ConfigureAwait(false);
+                int remaining = RemainingRecords(
+                    recordCounts,
+                    candidate.SessionId);
+                ClaudeTranscriptReadResult read =
+                    await _transcriptReader.ReadAsync(
+                        candidate.Path,
+                        remaining,
+                        budget.DeadlineExceeded,
+                        cancellationToken).ConfigureAwait(false);
                 budget.Add(read);
 
                 string resolvedSessionId = read.Rows.Count > 0
@@ -146,7 +221,10 @@ public sealed class ClaudeCodeSessionCatalogSource : ISessionCatalogSource
                         candidate.SessionId,
                         budget.MutableWarnings)
                     : candidate.SessionId;
-                AddRecordCount(recordCounts, resolvedSessionId, read.RecordsRead);
+                AddRecordCount(
+                    recordCounts,
+                    resolvedSessionId,
+                    read.RecordsRead);
 
                 ClaudeTranscriptFile file = new()
                 {
@@ -170,49 +248,121 @@ public sealed class ClaudeCodeSessionCatalogSource : ISessionCatalogSource
                 budget,
                 cancellationToken).ConfigureAwait(false);
         }
+    }
 
-        IReadOnlyList<SessionCatalogEntry> sessions = catalog.Build();
-        List<Plans.SessionPlanActivity> planActivities =
-        [
-            .. catalog.BuildPlanActivities(),
-            .. _planActivityExtractor.Extract(sessions)
-        ];
-        SessionPlanScanResult planScan = await ScanPlansAsync(cancellationToken)
-            .ConfigureAwait(false);
-        SessionPlanCatalogFragment planFragment = new()
+    private async Task ReadSessionCacheAsync(
+        ClaudeProjectLocation project,
+        ClaudeSessionCatalogBuilder catalog,
+        ClaudeScanBudget budget,
+        CancellationToken cancellationToken)
+    {
+        string path = Path.Combine(
+            project.DirectoryPath,
+            ".session_cache.json");
+        if (!File.Exists(path))
         {
-            Artifacts = planScan.Fragment.Artifacts,
-            Activities = planActivities
-        };
-        string[] combinedWarnings = budget.Warnings
-            .Concat(planScan.Warnings)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        return new SessionCatalogScanResult(
-            sessions,
-            budget.IsComplete && planScan.IsComplete,
-            combinedWarnings)
-        {
-            PlanFragment = planFragment
-        };
-
-        int RemainingRecords(
-            IReadOnlyDictionary<string, int> counts,
-            string sessionId)
-        {
-            int current = counts.GetValueOrDefault(sessionId);
-            return Math.Max(0, _context.Limits.MaximumRecordsPerSession - current);
+            return;
         }
 
-        static void AddRecordCount(
-            IDictionary<string, int> counts,
-            string sessionId,
-            int count)
+        if (IsReparsePoint(path, budget))
         {
-            counts.TryGetValue(sessionId, out int current);
-            counts[sessionId] = current + count;
+            budget.MarkIncomplete(
+                $"Skipped linked Claude session cache '{path}'.");
+            return;
         }
+
+        if (!budget.TryTakeFile(path))
+        {
+            return;
+        }
+
+        ClaudeJsonFileReadResult read = await _jsonReader.ReadAsync(
+            path,
+            budget.DeadlineExceeded,
+            cancellationToken).ConfigureAwait(false);
+        budget.Add(read);
+        if (read.Json is not JsonElement root)
+        {
+            return;
+        }
+
+        ClaudeSessionCacheParseResult parsed = _cacheParser.Parse(
+            path,
+            root);
+        foreach (string warning in parsed.Warnings)
+        {
+            budget.MarkIncomplete(warning);
+        }
+
+        if (parsed.Cache is not ClaudeSessionCache cache)
+        {
+            return;
+        }
+
+        foreach (ClaudeSessionCacheEntry entry in cache.Entries)
+        {
+            catalog.GetOrCreate(entry.SessionId).AddSessionCache(
+                project,
+                cache,
+                entry);
+        }
+    }
+
+    private async Task ReadHistoryAsync(
+        ClaudeSessionCatalogBuilder catalog,
+        ClaudeScanBudget budget,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(_historyPath))
+        {
+            return;
+        }
+
+        if (IsReparsePoint(_historyPath, budget))
+        {
+            budget.MarkIncomplete(
+                $"Skipped linked Claude history file '{_historyPath}'.");
+            return;
+        }
+
+        if (!budget.TryTakeFile(_historyPath))
+        {
+            return;
+        }
+
+        ClaudeTranscriptReadResult read = await _transcriptReader.ReadAsync(
+            _historyPath,
+            Math.Max(0, _context.Limits.MaximumRecordsPerSession),
+            budget.DeadlineExceeded,
+            cancellationToken).ConfigureAwait(false);
+        budget.Add(read);
+        foreach (ClaudeTranscriptRow row in read.Rows)
+        {
+            ClaudeSessionHistoryEntry? entry = _historyParser.Parse(row);
+            if (entry is not null)
+            {
+                catalog.GetOrCreate(entry.SessionId).AddHistory(entry);
+            }
+        }
+    }
+
+    private int RemainingRecords(
+        IReadOnlyDictionary<string, int> counts,
+        string sessionId)
+    {
+        int current = counts.GetValueOrDefault(sessionId);
+        return Math.Max(
+            0,
+            _context.Limits.MaximumRecordsPerSession - current);
+    }
+
+    private static void AddRecordCount(
+        IDictionary<string, int> counts,
+        string sessionId,
+        int count)
+    {
+        counts.TryGetValue(sessionId, out int current);
+        counts[sessionId] = current + count;
     }
 
     // Scans {config}/plans/*.md into unbound plan artifacts. Standalone plans
@@ -503,7 +653,6 @@ public sealed class ClaudeCodeSessionCatalogSource : ISessionCatalogSource
                             catalog.GetOrCreate(parentSessionId).AddAgentMetadata(
                                 project,
                                 metadataFile,
-                                raw,
                                 json);
                         }
 
