@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using HarnessSpy.Core.Models;
+using HarnessSpy.Core.Sessions.Cursor.Inspection;
 using Microsoft.Data.Sqlite;
 
 namespace HarnessSpy.Core.Sessions.Cursor;
@@ -18,6 +19,8 @@ internal sealed class CursorDesktopSqliteReader
     private readonly CursorJsonReader _json;
     private readonly CursorWorkspaceResolver _workspaceResolver;
     private readonly CursorDesktopBubbleProjector _bubbleProjector;
+    private readonly CursorSqliteConnectionFactory _connectionFactory;
+    private readonly CursorSqliteSchemaReader _schemaReader;
     private readonly string _globalDatabasePath;
     private readonly string _workspaceStorageRoot;
 
@@ -114,6 +117,8 @@ internal sealed class CursorDesktopSqliteReader
         _json = json ?? throw new ArgumentNullException(nameof(json));
         _workspaceResolver = new CursorWorkspaceResolver(_normalizer, _json);
         _bubbleProjector = new CursorDesktopBubbleProjector(_json, identity);
+        _connectionFactory = new CursorSqliteConnectionFactory();
+        _schemaReader = new CursorSqliteSchemaReader();
         _globalDatabasePath = globalDatabasePath;
         _workspaceStorageRoot = workspaceStorageRoot;
     }
@@ -123,7 +128,8 @@ internal sealed class CursorDesktopSqliteReader
         CursorWarningCollector warnings,
         CancellationToken cancellationToken,
         bool readBubbles = true,
-        IProgress<SessionCatalogEntry>? progress = null)
+        IProgress<SessionCatalogEntry>? progress = null,
+        IReadOnlySet<string>? hydrationComposerIds = null)
     {
         IReadOnlyList<CursorDesktopDatabase> databases =
             await DiscoverDatabasesAsync(
@@ -164,6 +170,7 @@ internal sealed class CursorDesktopSqliteReader
                 relationships,
                 selectedComposerIds,
                 readBubbles,
+                hydrationComposerIds,
                 progress,
                 guard,
                 warnings,
@@ -447,6 +454,7 @@ internal sealed class CursorDesktopSqliteReader
         Dictionary<string, CursorComposerRelationship> relationships,
         HashSet<string> selectedComposerIds,
         bool readBubbles,
+        IReadOnlySet<string>? hydrationComposerIds,
         IProgress<SessionCatalogEntry>? progress,
         CursorDiscoveryGuard guard,
         CursorWarningCollector warnings,
@@ -464,19 +472,10 @@ internal sealed class CursorDesktopSqliteReader
             return;
         }
 
-        SqliteConnectionStringBuilder connectionString = new()
-        {
-            DataSource = database.Path,
-            Mode = SqliteOpenMode.ReadOnly,
-            Cache = SqliteCacheMode.Private,
-            Pooling = false,
-            DefaultTimeout = 2
-        };
-
         try
         {
-            await using SqliteConnection connection = new(
-                connectionString.ToString());
+            await using SqliteConnection connection =
+                _connectionFactory.Create(database.Path);
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             bool hasDiskKv = await TableExistsAsync(
@@ -594,8 +593,11 @@ internal sealed class CursorDesktopSqliteReader
                     SelectHydrationInputs(
                         hydrationInputs,
                         builders,
+                        relationships,
+                        hydrationComposerIds,
                         guard,
                         warnings),
+                    hydrationComposerIds is not null,
                     progress,
                     guard,
                     warnings,
@@ -1226,9 +1228,39 @@ internal sealed class CursorDesktopSqliteReader
         SelectHydrationInputs(
             IReadOnlyDictionary<string, CursorComposerHydrationInput> inputs,
             IReadOnlyDictionary<string, CursorDesktopSessionBuilder> builders,
+            IReadOnlyDictionary<string, CursorComposerRelationship> relationships,
+            IReadOnlySet<string>? requestedComposerIds,
             CursorDiscoveryGuard guard,
             CursorWarningCollector warnings)
     {
+        if (requestedComposerIds is not null)
+        {
+            HashSet<string> requested = new(
+                requestedComposerIds,
+                StringComparer.Ordinal);
+            bool changed;
+            do
+            {
+                changed = false;
+                foreach ((string childId, CursorComposerRelationship relationship)
+                         in relationships)
+                {
+                    if (requested.Contains(relationship.ParentComposerId))
+                    {
+                        changed |= requested.Add(childId);
+                    }
+                }
+            }
+            while (changed);
+
+            return inputs
+                .Where(item => requested.Contains(item.Key))
+                .ToDictionary(
+                    static item => item.Key,
+                    static item => item.Value,
+                    StringComparer.Ordinal);
+        }
+
         int maximum = Math.Max(
             0,
             _context.Limits.MaximumHydratedSessions);
@@ -1268,6 +1300,7 @@ internal sealed class CursorDesktopSqliteReader
         Dictionary<string, CursorDesktopSessionBuilder> builders,
         Dictionary<string, CursorComposerRelationship> relationships,
         IReadOnlyDictionary<string, CursorComposerHydrationInput> inputs,
+        bool useTargetedQuery,
         IProgress<SessionCatalogEntry>? progress,
         CursorDiscoveryGuard guard,
         CursorWarningCollector warnings,
@@ -1315,6 +1348,7 @@ internal sealed class CursorDesktopSqliteReader
         Task producer = ProduceBubbleWorkItemsAsync(
             connection,
             inputs,
+            useTargetedQuery,
             work.Writer,
             byteBudget,
             guard,
@@ -1362,6 +1396,7 @@ internal sealed class CursorDesktopSqliteReader
     private async Task ProduceBubbleWorkItemsAsync(
         SqliteConnection connection,
         IReadOnlyDictionary<string, CursorComposerHydrationInput> inputs,
+        bool useTargetedQuery,
         ChannelWriter<CursorBubbleWorkItem> writer,
         CursorHydrationByteBudget byteBudget,
         CursorDiscoveryGuard guard,
@@ -1373,13 +1408,32 @@ internal sealed class CursorDesktopSqliteReader
         {
             long maximumValueBytes = MaximumValueBytes();
             await using SqliteCommand command = connection.CreateCommand();
+            string predicate = "key LIKE 'bubbleId:%'";
+            if (useTargetedQuery)
+            {
+                List<string> clauses = [];
+                int parameterIndex = 0;
+                foreach (string composerId in inputs.Keys)
+                {
+                    string parameterName = $"$bubblePrefix{parameterIndex++}";
+                    clauses.Add(
+                        $"key LIKE {parameterName} ESCAPE '\\'");
+                    command.Parameters.AddWithValue(
+                        parameterName,
+                        EscapeLike(
+                            $"bubbleId:{composerId}:") + "%");
+                }
+
+                predicate = string.Join(" OR ", clauses);
+            }
+
             command.CommandText =
-                """
+                $"""
                 SELECT key, length(CAST(value AS BLOB)),
                        CASE WHEN length(CAST(value AS BLOB)) <= $maximumBytes
                             THEN value ELSE NULL END
                 FROM "cursorDiskKV"
-                WHERE key LIKE 'bubbleId:%'
+                WHERE {predicate}
                 ORDER BY key
                 """;
             command.CommandTimeout = 2;
@@ -1801,39 +1855,25 @@ internal sealed class CursorDesktopSqliteReader
     private async Task<bool> TableExistsAsync(
         SqliteConnection connection,
         string tableName,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $name LIMIT 1";
-        command.CommandTimeout = 2;
-        command.Parameters.AddWithValue("$name", tableName);
-        object? value = await command.ExecuteScalarAsync(
+        CancellationToken cancellationToken) =>
+        await _schemaReader.TableExistsAsync(
+            connection,
+            tableName,
             cancellationToken).ConfigureAwait(false);
-        return value is not null && value is not DBNull;
-    }
 
     private async Task<HashSet<string>> ReadColumnsAsync(
         SqliteConnection connection,
         string tableName,
         CancellationToken cancellationToken)
     {
-        HashSet<string> columns = new(StringComparer.OrdinalIgnoreCase);
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            $"PRAGMA table_info({QuoteIdentifier(tableName)})";
-        command.CommandTimeout = 2;
-        await using SqliteDataReader reader = await command.ExecuteReaderAsync(
+        CursorSqliteTableSchema? table = await _schemaReader.ReadTableAsync(
+            connection,
+            tableName,
             cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (!reader.IsDBNull(1))
-            {
-                columns.Add(reader.GetString(1));
-            }
-        }
-
-        return columns;
+        return table?.Columns
+            .Select(static column => column.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase) ??
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task<bool> HasKeyValueColumnsAsync(

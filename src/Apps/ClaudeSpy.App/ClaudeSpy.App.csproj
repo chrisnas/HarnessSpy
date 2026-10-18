@@ -16,7 +16,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="ClaudeSpy.png" />
+    <Resource Include="..\..\Shared\Assets\ClaudeSpy.png">
+      <Link>ClaudeSpy.png</Link>
+    </Resource>
   </ItemGroup>
 
 </Project>

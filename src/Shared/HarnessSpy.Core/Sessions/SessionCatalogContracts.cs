@@ -141,6 +141,19 @@ public interface ISessionMetadataEnricher
         CancellationToken cancellationToken);
 }
 
+public sealed record SessionDetailHydrationResult(
+    SessionCatalogEntry Session,
+    IReadOnlyList<string> Warnings);
+
+public interface ISessionDetailHydrator
+{
+    bool CanHydrate(SessionCatalogEntry session);
+
+    Task<SessionDetailHydrationResult> HydrateAsync(
+        SessionCatalogEntry session,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed record SessionOpenResult(bool Started, string? Error = null);
 
 public interface ISessionOpener

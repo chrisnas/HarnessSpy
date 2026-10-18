@@ -52,12 +52,13 @@ public sealed class SessionViewerApplicationHost : IAsyncDisposable
             () => preferences.RawSourceMode ==
                 SessionRawSourceMode.SnapshotCache);
 
-        // Both profiles remain finite. Balanced bounds initial hydration while
-        // retaining catalog headers; Complete raises the limits explicitly
-        // without returning to unbounded directory/time scans.
+        // Both profiles remain finite. Startup retains catalog headers only;
+        // these limits bound the per-session detail hydration triggered by
+        // expansion. Complete raises the limits without becoming unbounded.
+        CursorSessionCatalogSource cursorSource = new(discoveryContext);
         IReadOnlyList<ISessionCatalogSource> sources =
         [
-            new CursorSessionCatalogSource(discoveryContext),
+            cursorSource,
             new ClaudeCodeSessionCatalogSource(discoveryContext),
             new CopilotCliSessionCatalogSource(discoveryContext)
         ];
@@ -74,6 +75,7 @@ public sealed class SessionViewerApplicationHost : IAsyncDisposable
             application.Dispatcher,
             preferences: preferences,
             rawSourceResolver: rawSourceResolver,
+            detailHydrators: [cursorSource],
             initialFavorites: settings.Favorites,
             persistFavorites: favorites =>
             {

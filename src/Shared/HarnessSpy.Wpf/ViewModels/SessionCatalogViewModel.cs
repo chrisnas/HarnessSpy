@@ -17,6 +17,7 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
     private readonly ISessionOpener _sessionOpener;
     private readonly SessionTreeProjector _projector;
     private readonly ISessionRawSourceResolver _rawSourceResolver;
+    private readonly IReadOnlyList<ISessionDetailHydrator> _detailHydrators;
     private readonly Dispatcher _dispatcher;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _refreshRequestGate = new(1, 1);
@@ -71,6 +72,7 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         SessionTreeProjector? projector = null,
         SessionViewerPreferencesViewModel? preferences = null,
         ISessionRawSourceResolver? rawSourceResolver = null,
+        IReadOnlyList<ISessionDetailHydrator>? detailHydrators = null,
         IReadOnlyList<string>? initialFavorites = null,
         Action<IReadOnlyList<string>>? persistFavorites = null,
         IReadOnlyList<HookProvider>? initialEnabledProviders = null,
@@ -87,6 +89,7 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         Preferences = preferences ?? new SessionViewerPreferencesViewModel();
         _rawSourceResolver =
             rawSourceResolver ?? new SessionRawSourceResolver();
+        _detailHydrators = detailHydrators ?? [];
         Inspector = new SessionInspectorViewModel(
             _rawSourceResolver,
             Preferences);
@@ -240,8 +243,16 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
     public bool IsRefreshing
     {
         get => _isRefreshing;
-        private set => SetProperty(ref _isRefreshing, value);
+        private set
+        {
+            if (SetProperty(ref _isRefreshing, value))
+            {
+                OnPropertyChanged(nameof(IsComputing));
+            }
+        }
     }
+
+    public bool IsComputing => IsRefreshing || _hydratingNodeIds.Count > 0;
 
     public async Task InitializeAsync(
         CancellationToken cancellationToken = default)
@@ -1145,7 +1156,6 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         }
 
         _lastAppliedUpdate = update;
-        _lastRenderedUpdate = update;
         if (update.IsFinal &&
             _hasRenderedFinal &&
             !update.HasCatalogChanges)
@@ -1154,6 +1164,7 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
             return;
         }
 
+        _lastRenderedUpdate = update;
         await RenderProjectionAsync(
             update.Sessions,
             update.Plans,
@@ -1344,9 +1355,34 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         {
             return;
         }
+        OnPropertyChanged(nameof(IsComputing));
 
         try
         {
+            SessionCatalogEntry? hydratedSession = null;
+            if (node.IsSession &&
+                node.Session is SessionCatalogEntry session)
+            {
+                ISessionDetailHydrator? hydrator =
+                    _detailHydrators.FirstOrDefault(item =>
+                        item.CanHydrate(session));
+                if (hydrator is not null)
+                {
+                    SessionDetailHydrationResult result =
+                        await hydrator.HydrateAsync(
+                            session,
+                            _lifetime.Token).ConfigureAwait(true);
+                    if (_isDisposed)
+                    {
+                        return;
+                    }
+
+                    hydratedSession = result.Session;
+                    ReplaceRenderedSession(hydratedSession);
+                    AddHydrationWarnings(result.Warnings);
+                }
+            }
+
             HashSet<string> expandedNodeIds = _nodeOrder
                 .Where(static item => item.IsExpanded)
                 .Select(static item => item.StableId)
@@ -1355,17 +1391,24 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
                 _lastRenderedUpdate?.Plans ?? [];
             (
                 IReadOnlyList<SessionTreeNodeViewModel> Children,
-                NodeSummary? Summary) hydration = await Task.Run(() =>
+                NodeSummary? Summary,
+                SessionTreeNodeViewModel? Replacement) hydration =
+                await Task.Run(() =>
             {
                 if (node.IsSession &&
-                    node.Session is SessionCatalogEntry session)
+                    (hydratedSession ?? node.Session) is
+                        SessionCatalogEntry effectiveSession)
                 {
-                    return (
-                        _projector.ProjectSessionChildren(
-                            session,
+                    SessionTreeNodeViewModel replacement =
+                        _projector.ProjectSession(
+                            effectiveSession,
                             expandedNodeIds,
-                            plans),
-                        (NodeSummary?)_projector.BuildSummary(session));
+                            plans);
+                    return (
+                        (IReadOnlyList<SessionTreeNodeViewModel>)
+                            replacement.Children.ToArray(),
+                        replacement.NodeSummary,
+                        replacement);
                 }
 
                 if (node.IsTurn &&
@@ -1378,17 +1421,24 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
                             turn,
                             expandedNodeIds,
                             plans),
-                        (NodeSummary?)_projector.BuildSummary(turn));
+                        (NodeSummary?)_projector.BuildSummary(turn),
+                        (SessionTreeNodeViewModel?)null);
                 }
 
                 return (
                     (IReadOnlyList<SessionTreeNodeViewModel>)[],
-                    null);
+                    null,
+                    (SessionTreeNodeViewModel?)null);
             }).ConfigureAwait(true);
 
             if (_isDisposed || !node.IsExpanded)
             {
                 return;
+            }
+
+            if (hydration.Replacement is not null)
+            {
+                node.UpdateFrom(hydration.Replacement);
             }
 
             SessionTreeNodeViewModel.Reconcile(
@@ -1414,7 +1464,46 @@ public sealed class SessionCatalogViewModel : ObservableObject, IDisposable
         finally
         {
             _hydratingNodeIds.Remove(node.StableId);
+            OnPropertyChanged(nameof(IsComputing));
         }
+    }
+
+    private void ReplaceRenderedSession(SessionCatalogEntry session)
+    {
+        if (_lastRenderedUpdate is null)
+        {
+            return;
+        }
+
+        _lastRenderedUpdate = _lastRenderedUpdate with
+        {
+            Sessions = _lastRenderedUpdate.Sessions
+                .Select(item => string.Equals(
+                    item.CatalogSessionId,
+                    session.CatalogSessionId,
+                    StringComparison.Ordinal)
+                        ? session
+                        : item)
+                .ToArray()
+        };
+    }
+
+    private void AddHydrationWarnings(IReadOnlyList<string> warnings)
+    {
+        if (warnings.Count == 0)
+        {
+            return;
+        }
+
+        WarningText = string.Join(
+            Environment.NewLine,
+            WarningText
+                .Split(
+                    Environment.NewLine,
+                    StringSplitOptions.RemoveEmptyEntries)
+                .Concat(warnings)
+                .Distinct(StringComparer.Ordinal)
+                .Take(20));
     }
 
     private void UnloadNodeChildren(SessionTreeNodeViewModel node)

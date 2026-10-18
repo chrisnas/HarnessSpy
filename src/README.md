@@ -26,6 +26,12 @@ The implementation is independent from the reference POC under
 - `Apps/SessionViewer`: file-backed Cursor, Claude Code, and Copilot CLI
   history grouped by workspace, with explicit, cache-aware refresh.
   It does not require hooks or start provider SDK runtimes while refreshing.
+- `Apps/CursorDBNavigator`: read-only physical browser for Cursor
+  `state.vscdb` databases. Its default Reconstruction view explains
+  workspace → composer/session → ordered bubbles → turns/events, with the
+  applied rule and source evidence selectable at every stage. The Physical
+  storage tab still pages every table generically and preserves the underlying
+  table/key evidence.
 - `Hooks/*Spy.Hook`: three short-lived fail-open hook executables.
 - `Tests/HarnessSpy.Tests`: parity, provider, replay, pipe, process, and future
   agent-contract tests.
@@ -51,6 +57,7 @@ Run the passive local-history viewer independently of the hook applications:
 
 ```powershell
 dotnet run --project src/Apps/SessionViewer
+dotnet run --project src/Apps/CursorDBNavigator
 ```
 
 SessionViewer reads provider-owned files directly:
@@ -105,6 +112,9 @@ SessionViewer stores its settings under
 `%APPDATA%\HarnessSpy\SessionViewer\settings.json`; an optional bounded raw
 snapshot cache lives under
 `%LOCALAPPDATA%\HarnessSpy\SessionViewer\RawCache`.
+CursorDBNavigator stores only UI preferences under
+`%APPDATA%\HarnessSpy\CursorDBNavigator\settings.json`; it does not cache or
+modify Cursor database content.
 
 ## Manual hook activation
 

@@ -16,7 +16,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="CopilotSpy.png" />
+    <Resource Include="..\..\Shared\Assets\CopilotSpy.png">
+      <Link>CopilotSpy.png</Link>
+    </Resource>
   </ItemGroup>
 
 </Project>

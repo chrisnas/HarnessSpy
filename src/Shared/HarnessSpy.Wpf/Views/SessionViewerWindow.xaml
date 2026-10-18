@@ -18,6 +18,10 @@
         Icon="pack://application:,,,/SessionViewer;component/Assets/SessionViewer.png"
         KeyDown="Window_KeyDown">
     <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/HarnessSpy.Wpf;component/Themes/InspectorStyles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
         <converters:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter" />
 
@@ -40,12 +44,6 @@
                 </DrawingGroup>
             </DrawingImage.Drawing>
         </DrawingImage>
-
-        <Style x:Key="SectionHeaderStyle" TargetType="TextBlock">
-            <Setter Property="Margin" Value="0,0,0,6" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Foreground" Value="#24292F" />
-        </Style>
 
         <DataTemplate x:Key="KpiChipTemplate" DataType="{x:Type viewModels:KpiItem}">
             <Border MinWidth="88"
@@ -313,25 +311,6 @@
             </StackPanel>
         </DataTemplate>
 
-        <Style x:Key="InspectorGridStyle" TargetType="DataGrid">
-            <Setter Property="AutoGenerateColumns" Value="False" />
-            <Setter Property="BorderBrush" Value="#D0D7DE" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CanUserAddRows" Value="False" />
-            <Setter Property="CanUserDeleteRows" Value="False" />
-            <Setter Property="CanUserReorderColumns" Value="False" />
-            <Setter Property="CanUserResizeRows" Value="False" />
-            <Setter Property="AlternatingRowBackground" Value="#F6F8FA" />
-            <Setter Property="RowBackground" Value="White" />
-            <Setter Property="GridLinesVisibility" Value="None" />
-            <Setter Property="HeadersVisibility" Value="Column" />
-            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
-            <Setter Property="IsReadOnly" Value="True" />
-            <Setter Property="RowHeaderWidth" Value="0" />
-            <Setter Property="SelectionMode" Value="Single" />
-            <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
-        </Style>
-
         <HierarchicalDataTemplate DataType="{x:Type viewModels:SessionTreeNodeViewModel}"
                                   ItemsSource="{Binding Children}">
             <Grid Background="Transparent"
@@ -586,9 +565,20 @@
             <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
             <Setter Property="Padding" Value="1" />
         </Style>
+        </ResourceDictionary>
     </Window.Resources>
 
     <Grid Margin="12">
+        <Grid.Style>
+            <Style TargetType="Grid">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsComputing}" Value="True">
+                        <Setter Property="Cursor" Value="Wait" />
+                        <Setter Property="ForceCursor" Value="True" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </Grid.Style>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="500" MinWidth="360" />
             <ColumnDefinition Width="5" />
@@ -752,7 +742,7 @@
                                         HorizontalAlignment="Left"
                                         Padding="10,4"
                                         Click="LoadAllSessions_Click"
-                                        Content="Load all session details" />
+                                        Content="Use complete limits" />
                             </StackPanel>
                         </Border>
                     </Popup>

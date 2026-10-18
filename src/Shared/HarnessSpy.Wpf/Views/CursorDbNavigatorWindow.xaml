@@ -1,0 +1,503 @@
+<Window x:Class="HarnessSpy.Wpf.Views.CursorDbNavigatorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:converters="clr-namespace:HarnessSpy.Wpf.Converters"
+        xmlns:input="clr-namespace:HarnessSpy.Wpf.Input"
+        xmlns:viewModels="clr-namespace:HarnessSpy.Wpf.ViewModels"
+        xmlns:views="clr-namespace:HarnessSpy.Wpf.Views"
+        Title="CursorDBNavigator"
+        Width="1480"
+        Height="860"
+        MinWidth="1080"
+        MinHeight="620"
+        Background="White"
+        Foreground="#24292F"
+        Icon="pack://application:,,,/CursorDBNavigator;component/Assets/Cursor.png"
+        WindowStartupLocation="CenterScreen"
+        Loaded="Window_Loaded"
+        Closing="Window_Closing"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/HarnessSpy.Wpf;component/Themes/InspectorStyles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+            <converters:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter" />
+
+            <HierarchicalDataTemplate DataType="{x:Type viewModels:CursorSchemaNodeViewModel}"
+                                      ItemsSource="{Binding Children}">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock FontWeight="{Binding FontWeight}"
+                               Text="{Binding Header}" />
+                    <Border Margin="7,0,0,0"
+                            Padding="5,0"
+                            Background="#DDF4FF"
+                            BorderBrush="#54AEFF"
+                            BorderThickness="1"
+                            CornerRadius="7"
+                            Visibility="{Binding HasBadge, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock FontSize="10"
+                                   Foreground="#0969DA"
+                                   Text="{Binding Badge}" />
+                    </Border>
+                    <TextBlock Margin="7,0,0,0"
+                               Foreground="#57606A"
+                               Text="{Binding Summary}" />
+                </StackPanel>
+            </HierarchicalDataTemplate>
+            <Style TargetType="{x:Type TreeViewItem}">
+                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                <Setter Property="Padding" Value="1" />
+            </Style>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <DockPanel Margin="12">
+        <DockPanel.Style>
+            <Style TargetType="DockPanel">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsComputing}" Value="True">
+                        <Setter Property="Cursor" Value="Wait" />
+                        <Setter Property="ForceCursor" Value="True" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </DockPanel.Style>
+        <Border DockPanel.Dock="Top"
+                Margin="0,0,0,10"
+                Padding="10,8"
+                Background="#F6F8FA"
+                BorderBrush="#D0D7DE"
+                BorderThickness="1"
+                CornerRadius="4">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0"
+                        MinWidth="54"
+                        Padding="8,4"
+                        Click="Back_Click"
+                        Content="Back"
+                        IsEnabled="{Binding CanNavigateBack}" />
+                <Button Grid.Column="1"
+                        MinWidth="64"
+                        Margin="6,0,0,0"
+                        Padding="8,4"
+                        Click="Forward_Click"
+                        Content="Forward"
+                        IsEnabled="{Binding CanNavigateForward}" />
+                <Button Grid.Column="2"
+                        MinWidth="106"
+                        Margin="12,0,0,0"
+                        Padding="8,4"
+                        Click="OpenDatabase_Click"
+                        Content="Open database…" />
+                <TextBlock Grid.Column="3"
+                           Margin="12,0"
+                           VerticalAlignment="Center"
+                           FontFamily="Consolas"
+                           Foreground="#57606A"
+                           Text="{Binding Breadcrumb}"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding Breadcrumb}" />
+                <Button Grid.Column="4"
+                        MinWidth="118"
+                        Padding="8,4"
+                        Click="DiscoverStores_Click"
+                        Content="Discover stores" />
+                <Button Grid.Column="5"
+                        MinWidth="82"
+                        Margin="6,0,0,0"
+                        Padding="8,4"
+                        Click="Refresh_Click"
+                        Content="Refresh"
+                        IsEnabled="{Binding CanRefresh}" />
+            </Grid>
+        </Border>
+
+        <Border DockPanel.Dock="Bottom"
+                Margin="0,10,0,0"
+                Padding="8,6"
+                Background="#F6F8FA"
+                BorderBrush="#D0D7DE"
+                BorderThickness="1"
+                CornerRadius="4">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Foreground="#57606A"
+                               Text="{Binding StatusText}"
+                               TextWrapping="Wrap" />
+                    <TextBlock Margin="0,3,0,0"
+                               Foreground="#CF222E"
+                               Text="{Binding WarningText}"
+                               TextWrapping="Wrap"
+                               Visibility="{Binding HasWarnings, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1"
+                            Margin="12,0,0,0"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal">
+                    <TextBlock Margin="0,0,8,0"
+                               VerticalAlignment="Center"
+                               Foreground="#1A7F37"
+                               FontWeight="SemiBold"
+                               Text="READ ONLY" />
+                    <ProgressBar Width="110"
+                                 Height="5"
+                                 IsIndeterminate="True"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <TabControl BorderThickness="0"
+                    SelectionChanged="MainTabs_SelectionChanged"
+                    SelectedIndex="{Binding SelectedMainTabIndex, Mode=TwoWay}">
+            <TabItem Header="Reconstruction">
+                <views:CursorReconstructionView Margin="0,8,0,0" />
+            </TabItem>
+            <TabItem Header="Physical storage">
+        <Grid Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="DatabaseColumn" Width="260" MinWidth="190" />
+                <ColumnDefinition Width="5" />
+                <ColumnDefinition x:Name="RowsColumn" Width="520" MinWidth="340" />
+                <ColumnDefinition Width="5" />
+                <ColumnDefinition Width="*" MinWidth="420" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0"
+                    BorderBrush="#D0D7DE"
+                    BorderThickness="1"
+                    CornerRadius="4">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Margin="10,8">
+                        <TextBlock FontWeight="SemiBold"
+                                   Text="Databases and schema" />
+                        <TextBox Margin="0,8,0,0"
+                                 VerticalContentAlignment="Center"
+                                 Text="{Binding WorkspaceFilterText, UpdateSourceTrigger=PropertyChanged}"
+                                 TextChanged="WorkspaceFilter_TextChanged"
+                                 ToolTip="Filter by workspace path, storage id, or database path" />
+                    </StackPanel>
+                    <TreeView x:Name="SchemaTree"
+                              Padding="4"
+                              BorderThickness="0"
+                              ItemsSource="{Binding SchemaRoots}"
+                              SelectedItemChanged="SchemaTree_SelectedItemChanged"
+                              ScrollViewer.CanContentScroll="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling" />
+                </DockPanel>
+            </Border>
+
+            <GridSplitter Grid.Column="1"
+                          Width="5"
+                          HorizontalAlignment="Stretch"
+                          Background="#EEF1F4" />
+
+            <Border Grid.Column="2"
+                    BorderBrush="#D0D7DE"
+                    BorderThickness="1"
+                    CornerRadius="4">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Margin="10,8">
+                        <TextBlock FontWeight="SemiBold"
+                                   Text="{Binding SelectedTableTitle}" />
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="FilterTextBox"
+                                     Grid.Column="0"
+                                     VerticalContentAlignment="Center"
+                                     KeyDown="FilterTextBox_KeyDown"
+                                     Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Enter a key prefix; start with = for an exact key" />
+                            <Button Grid.Column="1"
+                                    MinWidth="58"
+                                    Margin="6,0,0,0"
+                                    Padding="8,3"
+                                    Click="ApplyFilter_Click"
+                                    Content="Apply" />
+                            <Button Grid.Column="2"
+                                    MinWidth="54"
+                                    Margin="6,0,0,0"
+                                    Padding="8,3"
+                                    Click="ClearFilter_Click"
+                                    Content="Clear" />
+                        </Grid>
+                    </StackPanel>
+
+                    <Grid DockPanel.Dock="Bottom" Margin="10,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0"
+                                MinWidth="72"
+                                Padding="8,3"
+                                Click="PreviousPage_Click"
+                                Content="Previous"
+                                IsEnabled="{Binding CanMovePreviousPage}" />
+                        <Button Grid.Column="1"
+                                MinWidth="54"
+                                Margin="6,0,0,0"
+                                Padding="8,3"
+                                Click="NextPage_Click"
+                                Content="Next"
+                                IsEnabled="{Binding CanMoveNextPage}" />
+                        <TextBlock Grid.Column="2"
+                                   Margin="10,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="#57606A"
+                                   Text="{Binding PageStatus}" />
+                        <TextBlock Grid.Column="3"
+                                   Margin="0,0,6,0"
+                                   VerticalAlignment="Center"
+                                   Text="Page size" />
+                        <ComboBox Grid.Column="4"
+                                  Width="72"
+                                  ItemsSource="{Binding PageSizes}"
+                                  SelectionChanged="PageSize_SelectionChanged"
+                                  SelectedItem="{Binding PageSize, Mode=TwoWay}" />
+                    </Grid>
+
+                    <DataGrid x:Name="RowsDataGrid"
+                              Margin="8,0"
+                              AutoGenerateColumns="False"
+                              AlternatingRowBackground="#F6F8FA"
+                              BorderThickness="0"
+                              CanUserAddRows="False"
+                              CanUserDeleteRows="False"
+                              GridLinesVisibility="None"
+                              IsReadOnly="True"
+                              ItemsSource="{Binding Rows}"
+                              SelectedItem="{Binding SelectedRow, Mode=OneWay}"
+                              SelectionChanged="RowsDataGrid_SelectionChanged"
+                              SelectionMode="Single"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Locator"
+                                                Binding="{Binding LocatorText}"
+                                                Width="120" />
+                            <DataGridTextColumn Header="Key"
+                                                Binding="{Binding KeyText}"
+                                                Width="190" />
+                            <DataGridTextColumn Header="Kind"
+                                                Binding="{Binding RecordKindText}"
+                                                Width="110" />
+                            <DataGridTextColumn Header="Size"
+                                                Binding="{Binding SizeText}"
+                                                Width="72" />
+                            <DataGridTextColumn Header="Preview"
+                                                Binding="{Binding Preview}"
+                                                Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+
+            <GridSplitter Grid.Column="3"
+                          Width="5"
+                          HorizontalAlignment="Stretch"
+                          Background="#EEF1F4" />
+
+            <Grid Grid.Column="4">
+                <Border Padding="24"
+                        BorderBrush="#D0D7DE"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Visibility="{Binding HasSelectedRow, Converter={StaticResource InverseBooleanToVisibilityConverter}}">
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   Foreground="#57606A"
+                                   Text="Select a database table and row" />
+                        <TextBlock Margin="0,8,0,0"
+                                   Foreground="#8C959F"
+                                   Text="Columns, raw JSON, and relationships appear here." />
+                    </StackPanel>
+                </Border>
+
+                <DockPanel Visibility="{Binding HasSelectedRow, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <Border DockPanel.Dock="Top"
+                            Margin="0,0,0,10"
+                            Padding="12,10"
+                            Background="#F6F8FA"
+                            BorderBrush="#D0D7DE"
+                            BorderThickness="1"
+                            CornerRadius="4">
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding SelectedRowTitle}"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Margin="0,3,0,0"
+                                       FontFamily="Consolas"
+                                       Foreground="#57606A"
+                                       Text="{Binding SelectedRowLocation}"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding SelectedRowLocation}" />
+                        </StackPanel>
+                    </Border>
+
+                    <TabControl>
+                        <TabItem Header="Columns">
+                            <DataGrid x:Name="ColumnsDataGrid"
+                                      Margin="8"
+                                      ItemsSource="{Binding SelectedCells}"
+                                      Style="{StaticResource InspectorGridStyle}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Column"
+                                                        Binding="{Binding Name}"
+                                                        Width="150" />
+                                    <DataGridTextColumn Header="Type"
+                                                        Binding="{Binding TypeName}"
+                                                        Width="90" />
+                                    <DataGridTemplateColumn Header="Value" Width="*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Margin="4,2"
+                                                           FontFamily="Consolas"
+                                                           Text="{Binding Value}"
+                                                           TextWrapping="Wrap" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+
+                        <TabItem Header="JSON">
+                            <Grid Margin="8">
+                                <input:FindableTextBox Text="{Binding SelectedJsonText, Mode=OneWay}" />
+                            </Grid>
+                        </TabItem>
+
+                        <TabItem Header="Raw">
+                            <Grid Margin="8">
+                                <TextBox Style="{StaticResource RawValueTextBoxStyle}"
+                                         Text="{Binding SelectedRawText, Mode=OneWay}" />
+                            </Grid>
+                        </TabItem>
+
+                        <TabItem Header="Relations">
+                            <Grid Margin="8">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="5" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <DockPanel Grid.Row="0">
+                                    <TextBlock DockPanel.Dock="Top"
+                                               Style="{StaticResource SectionHeaderStyle}"
+                                               Text="Outbound" />
+                                    <DataGrid x:Name="OutboundRelationsDataGrid"
+                                              MouseDoubleClick="Relation_MouseDoubleClick"
+                                              ItemsSource="{Binding OutboundRelations}"
+                                              Style="{StaticResource InspectorGridStyle}">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Relation"
+                                                                Binding="{Binding KindText}"
+                                                                Width="120" />
+                                            <DataGridTextColumn Header="Target"
+                                                                Binding="{Binding TargetText}"
+                                                                Width="*" />
+                                            <DataGridTextColumn Header="Evidence"
+                                                                Binding="{Binding EvidenceText}"
+                                                                Width="90" />
+                                            <DataGridTextColumn Header="Status"
+                                                                Binding="{Binding StatusText}"
+                                                                Width="90" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </DockPanel>
+                                <GridSplitter Grid.Row="1"
+                                              Height="5"
+                                              HorizontalAlignment="Stretch"
+                                              Background="#EEF1F4" />
+                                <DockPanel Grid.Row="2">
+                                    <TextBlock DockPanel.Dock="Top"
+                                               Margin="0,8,0,6"
+                                               Style="{StaticResource SectionHeaderStyle}"
+                                               Text="Inbound" />
+                                    <DataGrid x:Name="InboundRelationsDataGrid"
+                                              MouseDoubleClick="Relation_MouseDoubleClick"
+                                              ItemsSource="{Binding InboundRelations}"
+                                              Style="{StaticResource InspectorGridStyle}">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Relation"
+                                                                Binding="{Binding KindText}"
+                                                                Width="120" />
+                                            <DataGridTextColumn Header="Source"
+                                                                Binding="{Binding TargetText}"
+                                                                Width="*" />
+                                            <DataGridTextColumn Header="Evidence"
+                                                                Binding="{Binding EvidenceText}"
+                                                                Width="90" />
+                                            <DataGridTextColumn Header="Status"
+                                                                Binding="{Binding StatusText}"
+                                                                Width="90" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </DockPanel>
+                            </Grid>
+                        </TabItem>
+
+                        <TabItem Header="Correlation">
+                            <DataGrid x:Name="CorrelationsDataGrid"
+                                      Margin="8"
+                                      MouseDoubleClick="Relation_MouseDoubleClick"
+                                      ItemsSource="{Binding Correlations}"
+                                      Style="{StaticResource InspectorGridStyle}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Kind"
+                                                        Binding="{Binding KindText}"
+                                                        Width="130" />
+                                    <DataGridTextColumn Header="Target"
+                                                        Binding="{Binding TargetText}"
+                                                        Width="*" />
+                                    <DataGridTextColumn Header="Evidence"
+                                                        Binding="{Binding EvidenceText}"
+                                                        Width="90" />
+                                    <DataGridTemplateColumn Header="Explanation" Width="220">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Margin="4,2"
+                                                           Text="{Binding Explanation}"
+                                                           TextWrapping="Wrap" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                    </TabControl>
+                </DockPanel>
+            </Grid>
+        </Grid>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

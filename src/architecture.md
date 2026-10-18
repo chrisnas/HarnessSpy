@@ -223,6 +223,46 @@ headers for older sessions remain visible. Complete raises those finite limits
 and hydrates all Cursor sessions. Oversized display fields are compacted only in
 Balanced mode while raw source remains available through provenance.
 
+## CursorDBNavigator reconstruction and physical inspection
+
+`CursorDBNavigator` is a separate, strictly read-only WPF application. Its
+default view explains how physical records become logical entities through the
+workspace → composer/session → ordered bubbles → turns/events pipeline. The
+physical SQLite hierarchy remains available in a separate tab: database, table,
+row locator, cells, and raw value. Unknown tables and columns are never hidden.
+
+```mermaid
+flowchart LR
+    CursorDb[Cursor state.vscdb] --> Schema[Read-only schema and row readers]
+    Schema --> PhysicalUi[Database / table / row panes]
+    Schema --> Classifier[Known Cursor record classifier]
+    Classifier --> Relations[Inbound and outbound row relations]
+    Manifest[workspace.json] --> Correlation[Cross-store correlation]
+    Transcript[Cursor transcript JSONL] --> Correlation
+    Relations --> Reconstruction[Reconstruction pipeline and logical tree]
+    Correlation --> Reconstruction
+    SessionProjection[Existing Cursor session projection] --> Reconstruction
+    Reconstruction --> Inspector[Rule / evidence / raw source inspector]
+```
+
+The SQLite connection policy, schema capability probing, and bounded row reads
+are shared with Cursor's SessionViewer source. Semantic interpretation is a
+sidecar: known `ItemTable`, `composerHeaders`, `composerData:*`, and
+`bubbleId:*` records receive typed links, but the original table/key/value is
+always visible. Links carry explicit evidence and resolution states, including
+unresolved and ambiguous targets.
+
+Each reconstructed workspace, session, composer record, bubble, turn, and event
+keeps its applied rule and physical provenance. Selecting a pipeline stage or
+tree node shows that rule beside its SQLite/JSONL evidence; **Go to physical
+row** navigates back to the exact table and key without losing the logical view.
+
+Workspace manifests and `.cursor/projects` transcripts enrich this relation
+index without mutating it. Exact composer/session identifiers are preferred;
+workspace corroboration and heuristic placement remain visibly distinct. The
+application never exposes arbitrary SQL, never opens a writable connection,
+and stores only UI preferences outside Cursor's data directories.
+
 ## Transcript source (implemented)
 
 Provider-owned agent transcript JSONL is ingested as a secondary source
