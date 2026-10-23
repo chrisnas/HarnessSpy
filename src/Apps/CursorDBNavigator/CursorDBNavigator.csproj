@@ -11,10 +11,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <ApplicationIcon>..\CursorSpy.App\CursorSpy.ico</ApplicationIcon>
+    <ApplicationIcon>CursorDBNavigator.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
+    <Resource Include="CursorDBNavigator.png"
+              Link="Assets\CursorDBNavigator.png" />
     <Resource Include="..\..\Shared\Assets\CursorSpy.png">
       <Link>Assets/Cursor.png</Link>
     </Resource>
