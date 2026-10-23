@@ -158,6 +158,16 @@ public sealed class SessionTreeProjector
             BuildPlanContext(plans ?? []),
             lazy: true);
 
+    public SessionTreeNodeViewModel ProjectSession(
+        SessionCatalogEntry session,
+        IReadOnlySet<string> expandedNodeIds,
+        IReadOnlyList<SessionPlanArtifact>? plans = null) =>
+        BuildSessionNode(
+            session,
+            expandedNodeIds,
+            BuildPlanContext(plans ?? []),
+            lazy: true);
+
     public IReadOnlyList<SessionTreeNodeViewModel> ProjectTurnChildren(
         SessionCatalogEntry session,
         SessionTurn turn,

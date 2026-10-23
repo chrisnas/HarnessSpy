@@ -9,7 +9,9 @@ namespace HarnessSpy.Core.Sessions.Cursor;
 /// Cursor Desktop catalog. Entries that share a native Composer id use the
 /// stable <c>cursor:&lt;nativeId&gt;</c> catalog identity.
 /// </summary>
-public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
+public sealed class CursorSessionCatalogSource :
+    IStreamingSessionCatalogSource,
+    ISessionDetailHydrator
 {
     private readonly CursorTranscriptSessionCatalogSource _transcripts;
     private readonly CursorDesktopSessionCatalogSource _desktop;
@@ -82,7 +84,7 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
             _transcripts.ScanAsync(cancellationToken);
         Task<SessionCatalogScanResult> desktopScan =
             _desktop.ScanAsync(
-                readBubbles: true,
+                readBubbles: false,
                 cursorProgress,
                 cancellationToken);
         Task<SessionPlanScanResult> planScan =
@@ -197,6 +199,59 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
         };
     }
 
+    public bool CanHydrate(SessionCatalogEntry session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return session.Provider == HookProvider.Cursor &&
+            session.Metadata.TryGetValue(
+                "cursor.desktopDetailsLoaded",
+                out string? loaded) &&
+            !string.Equals(
+                loaded,
+                bool.TrueString,
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    public async Task<SessionDetailHydrationResult> HydrateAsync(
+        SessionCatalogEntry session,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        if (!CanHydrate(session))
+        {
+            return new SessionDetailHydrationResult(session, []);
+        }
+
+        SessionCatalogScanResult desktop =
+            await _desktop.HydrateSessionAsync(
+                session.NativeSessionId,
+                cancellationToken).ConfigureAwait(false);
+        SessionCatalogEntry? detail = desktop.Sessions.FirstOrDefault(item =>
+            string.Equals(
+                item.NativeSessionId,
+                session.NativeSessionId,
+                StringComparison.Ordinal));
+        if (detail is null)
+        {
+            return new SessionDetailHydrationResult(
+                session,
+                desktop.Warnings
+                    .Append(
+                        $"Cursor details for '{session.NativeSessionId}' " +
+                        "were not found.")
+                    .ToArray());
+        }
+
+        SessionCatalogEntry merged = _merger.Merge([session, detail]).Single();
+        CursorSideChatRelationship? relationship = SideChatRelationship(merged);
+        SessionCatalogEntry hydrated = ReconcileTurns(
+            merged,
+            relationship is null ? [] : [relationship]);
+        return new SessionDetailHydrationResult(
+            hydrated,
+            desktop.Warnings);
+    }
+
     private static void ReportTranscriptSessions(
         IReadOnlyList<SessionCatalogEntry> sessions,
         IProgress<SessionCatalogEntry> progress)
@@ -219,10 +274,10 @@ public sealed class CursorSessionCatalogSource : IStreamingSessionCatalogSource
         session.Turns.Count == 0 &&
         session.Workspace.Kind != WorkspaceContextKind.Normal;
 
-    // Receives genuinely enriched Composer sessions from the SQLite reader as
-    // soon as each session's bubbles have been parsed. Small growing batches
-    // replace their skeleton counterparts in place; the final source result
-    // still performs cross-source/side-chat reconciliation authoritatively.
+    // Receives lightweight Composer sessions from the SQLite reader as they
+    // are discovered. Bubble bodies remain deferred until a session is
+    // expanded; small growing batches still let the workspace tree appear
+    // without waiting for the final cross-source reconciliation.
     private sealed class ProgressiveCursorReporter
         : IProgress<SessionCatalogEntry>
     {

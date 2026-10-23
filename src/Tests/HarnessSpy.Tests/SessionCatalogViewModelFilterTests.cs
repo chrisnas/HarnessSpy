@@ -252,6 +252,88 @@ public sealed class SessionCatalogViewModelFilterTests
         Assert.True(eventLoaded);
     }
 
+    [Fact]
+    public void CursorDetailsHydrateOnlyWhenSessionIsExpanded()
+    {
+        SessionCatalogEntry skeleton = Session(
+            "cursor:s1",
+            "s1",
+            HookProvider.Cursor,
+            @"C:\repoCursor") with
+        {
+            Metadata = new Dictionary<string, string?>
+            {
+                ["cursor.desktopDetailsLoaded"] = bool.FalseString
+            }
+        };
+        SessionTurn turn = new(
+            "turn-1",
+            1,
+            "inspect",
+            null,
+            null,
+            InferenceEvidence.Observed,
+            []);
+
+        (int beforeExpand, int afterExpand, int afterReopen, int turnCount) =
+            RunWithDispatcher(async dispatcher =>
+            {
+                FakeDetailHydrator hydrator = new(
+                    skeleton with
+                    {
+                        Turns = [turn],
+                        Metadata = new Dictionary<string, string?>
+                        {
+                            ["cursor.desktopDetailsLoaded"] = bool.TrueString
+                        }
+                    });
+                SessionCatalogCoordinator coordinator = new(
+                [
+                    new FakeSource(
+                        "cursor",
+                        HookProvider.Cursor,
+                        [skeleton])
+                ]);
+                SessionCatalogViewModel viewModel = new(
+                    coordinator,
+                    new NoopSessionOpener(),
+                    dispatcher,
+                    detailHydrators: [hydrator],
+                    initialEnabledProviders: [HookProvider.Cursor]);
+
+                await viewModel.InitializeAsync();
+                SessionTreeNodeViewModel sessionNode =
+                    SessionTreeNodeViewModel
+                        .EnumerateDepthFirst(viewModel.Roots)
+                        .Single(static node => node.IsSession);
+                int initialCalls = hydrator.CallCount;
+
+                sessionNode.IsExpanded = true;
+                await WaitUntilAsync(
+                    () => sessionNode.AreChildrenLoaded,
+                    TimeSpan.FromSeconds(5));
+                int hydratedCalls = hydrator.CallCount;
+                int turns = sessionNode.Children.Count(
+                    static node => node.IsTurn);
+
+                sessionNode.IsExpanded = false;
+                sessionNode.IsExpanded = true;
+                await WaitUntilAsync(
+                    () => sessionNode.AreChildrenLoaded,
+                    TimeSpan.FromSeconds(5));
+                return (
+                    initialCalls,
+                    hydratedCalls,
+                    hydrator.CallCount,
+                    turns);
+            });
+
+        Assert.Equal(0, beforeExpand);
+        Assert.Equal(1, afterExpand);
+        Assert.Equal(1, afterReopen);
+        Assert.Equal(1, turnCount);
+    }
+
     private static bool OnlyClaude(SessionCatalogViewModel viewModel)
     {
         List<HookProvider> providers = SessionProviders(viewModel);
@@ -388,5 +470,31 @@ public sealed class SessionCatalogViewModelFilterTests
             SessionCatalogEntry session,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new SessionOpenResult(false, "unsupported"));
+    }
+
+    private sealed class FakeDetailHydrator(
+        SessionCatalogEntry hydratedSession) : ISessionDetailHydrator
+    {
+        private int _callCount;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public bool CanHydrate(SessionCatalogEntry session) =>
+            session.Metadata.TryGetValue(
+                "cursor.desktopDetailsLoaded",
+                out string? loaded) &&
+            !string.Equals(
+                loaded,
+                bool.TrueString,
+                StringComparison.OrdinalIgnoreCase);
+
+        public Task<SessionDetailHydrationResult> HydrateAsync(
+            SessionCatalogEntry session,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _callCount);
+            return Task.FromResult(
+                new SessionDetailHydrationResult(hydratedSession, []));
+        }
     }
 }

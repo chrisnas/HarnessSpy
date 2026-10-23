@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Shared\HarnessSpy.Core\HarnessSpy.Core.csproj" />
+    <ProjectReference Include="..\..\Shared\HarnessSpy.Wpf\HarnessSpy.Wpf.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <ApplicationIcon>CursorDBNavigator.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="CursorDBNavigator.png"
+              Link="Assets\CursorDBNavigator.png" />
+    <Resource Include="..\..\Shared\Assets\CursorSpy.png">
+      <Link>Assets/Cursor.png</Link>
+    </Resource>
+    <Resource Include="..\..\Shared\Assets\Folder32.png">
+      <Link>Assets/Folder32.png</Link>
+    </Resource>
+  </ItemGroup>
+
+</Project>

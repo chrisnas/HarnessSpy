@@ -6,6 +6,13 @@ using HarnessSpy.Wpf.ViewModels;
 
 namespace HarnessSpy.Wpf.Input;
 
+public interface IInspectorFieldRow
+{
+    string Name { get; }
+
+    string? Value { get; }
+}
+
 public sealed class InspectorFieldTableCopySupport
 {
     private readonly DataGrid _grid;
@@ -92,6 +99,10 @@ public sealed class InspectorFieldTableCopySupport
             case SessionDetailRow row:
                 key = row.Name;
                 value = row.Value;
+                return true;
+            case IInspectorFieldRow fieldRow:
+                key = fieldRow.Name;
+                value = fieldRow.Value;
                 return true;
             default:
                 key = string.Empty;

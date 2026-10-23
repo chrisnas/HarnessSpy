@@ -72,6 +72,28 @@ public sealed class CursorDesktopSessionCatalogSource : ISessionCatalogSource
             progress: null,
             cancellationToken);
 
+    public Task<SessionCatalogScanResult> ScanHeadersAsync(
+        CancellationToken cancellationToken = default) =>
+        ScanAsync(
+            readBubbles: false,
+            progress: null,
+            cancellationToken);
+
+    internal Task<SessionCatalogScanResult> HydrateSessionAsync(
+        string composerId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(composerId);
+        return ScanAsync(
+            readBubbles: true,
+            progress: null,
+            cancellationToken,
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                composerId
+            });
+    }
+
     // When <paramref name="readBubbles"/> is false the per-message blobs are
     // skipped, producing a fast "skeleton" scan (composer id, title, workspace,
     // lifecycle) with the same catalog identities as the full scan, so the two
@@ -79,20 +101,58 @@ public sealed class CursorDesktopSessionCatalogSource : ISessionCatalogSource
     internal async Task<SessionCatalogScanResult> ScanAsync(
         bool readBubbles,
         IProgress<SessionCatalogEntry>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlySet<string>? hydrationComposerIds = null)
     {
         CursorDiscoveryGuard guard = new(_context.Limits);
         CursorWarningCollector warnings = new();
-        IReadOnlyList<SessionCatalogEntry> sessions = await _reader.ReadAsync(
-            guard,
-            warnings,
-            cancellationToken,
-            readBubbles,
-            progress).ConfigureAwait(false);
+        IProgress<SessionCatalogEntry>? effectiveProgress =
+            progress is null
+                ? null
+                : new HydrationStateProgress(progress, readBubbles);
+        IReadOnlyList<SessionCatalogEntry> rawSessions =
+            await _reader.ReadAsync(
+                guard,
+                warnings,
+                cancellationToken,
+                readBubbles,
+                effectiveProgress,
+                hydrationComposerIds).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
+        SessionCatalogEntry[] sessions = SessionsWithHydrationState(
+            rawSessions,
+            readBubbles);
         return new SessionCatalogScanResult(
             sessions,
             guard.IsComplete,
             warnings.Snapshot());
+    }
+
+    private SessionCatalogEntry[] SessionsWithHydrationState(
+        IReadOnlyList<SessionCatalogEntry> sessions,
+        bool detailsLoaded) =>
+        sessions
+            .Select(session => WithHydrationState(session, detailsLoaded))
+            .ToArray();
+
+    private static SessionCatalogEntry WithHydrationState(
+        SessionCatalogEntry session,
+        bool detailsLoaded)
+    {
+        Dictionary<string, string?> metadata = new(
+            session.Metadata,
+            StringComparer.Ordinal)
+        {
+            ["cursor.desktopDetailsLoaded"] = detailsLoaded.ToString()
+        };
+        return session with { Metadata = metadata };
+    }
+
+    private sealed class HydrationStateProgress(
+        IProgress<SessionCatalogEntry> inner,
+        bool detailsLoaded) : IProgress<SessionCatalogEntry>
+    {
+        public void Report(SessionCatalogEntry value) =>
+            inner.Report(WithHydrationState(value, detailsLoaded));
     }
 }

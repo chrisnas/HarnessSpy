@@ -16,7 +16,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="CursorSpy.png" />
+    <Resource Include="..\..\Shared\Assets\CursorSpy.png">
+      <Link>CursorSpy.png</Link>
+    </Resource>
   </ItemGroup>
 
 </Project>

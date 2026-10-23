@@ -91,7 +91,12 @@ public sealed class SessionCatalogSourceTests
             SessionCatalogEntry session = Assert.Single(result.Sessions);
             AssertUsesLazyRawSources(session);
             Assert.Equal("Desktop session", session.Title);
-            SessionTurn turn = Assert.Single(session.Turns);
+            Assert.Empty(session.Turns);
+            Assert.True(source.CanHydrate(session));
+
+            SessionDetailHydrationResult hydration =
+                await source.HydrateAsync(session);
+            SessionTurn turn = Assert.Single(hydration.Session.Turns);
             Assert.Equal("inspect desktop", turn.Prompt);
             Assert.Contains(
                 turn.Events,
@@ -151,18 +156,20 @@ public sealed class SessionCatalogSourceTests
                 result.Sessions.Select(
                     static session => session.NativeSessionId));
 
-            // Skeletons (no turns) are published first, then the same sessions
-            // are rehydrated with their turns. Snapshots are time-coalesced, so
-            // assert the skeleton-then-hydrate progression rather than exact
-            // per-session batch sizes.
-            Assert.Contains(
-                progress.Values,
-                static batch => batch.Any(session => session.Turns.Count == 0));
-            Assert.Contains(
-                progress.Values,
-                static batch =>
-                    batch.Count == 4 &&
-                    batch.All(session => session.Turns.Count > 0));
+            Assert.All(
+                progress.Values.SelectMany(static batch => batch),
+                static session => Assert.Empty(session.Turns));
+            Assert.All(
+                result.Sessions,
+                static session => Assert.Empty(session.Turns));
+
+            SessionCatalogEntry selected = result.Sessions[2];
+            SessionDetailHydrationResult hydration =
+                await source.HydrateAsync(selected);
+            Assert.Single(hydration.Session.Turns);
+            Assert.Equal(
+                selected.NativeSessionId,
+                hydration.Session.NativeSessionId);
         }
         finally
         {
@@ -660,7 +667,7 @@ public sealed class SessionCatalogSourceTests
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
             """
-            CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB);
+            CREATE TABLE cursorDiskKV (key TEXT NOT NULL, value BLOB);
             INSERT INTO cursorDiskKV(key, value) VALUES
             (
                 'composerData:desktop-session',
@@ -687,7 +694,7 @@ public sealed class SessionCatalogSourceTests
         await using (SqliteCommand create = connection.CreateCommand())
         {
             create.CommandText =
-                "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB);";
+                "CREATE TABLE cursorDiskKV (key TEXT NOT NULL, value BLOB);";
             await create.ExecuteNonQueryAsync();
         }
 

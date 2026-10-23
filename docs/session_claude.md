@@ -1,6 +1,6 @@
 # SessionViewer: Claude Code sessions
 
-Implementation snapshot: 2026-09-27 (`c72bd09`).
+Implementation reviewed: 2026-10-20 (`826ff98`).
 
 This document describes the current file-backed Claude Code catalog used by
 `SessionViewer`. It does not describe Claude Desktop, Cowork, claude.ai chat,
@@ -17,13 +17,9 @@ hook/transcript enrichment pipeline documented in
 
 SessionViewer reconstructs one Claude catalog entry from:
 
-- a project-level `sessions-index.json` entry, when available;
-- provider `.session_cache.json` entries, including retained metadata for
-  transcripts that have been deleted;
 - global `history.jsonl` prompt records, which provide session identity,
   project path, title fallback, and activity time;
 - the normal main session JSONL;
-- recoverable orphaned/superseded main JSONL;
 - recursively discovered subagent JSONL;
 - subagent `.meta.json` relationship metadata;
 - plan artifacts from `plans\*.md` plus plan activity found in transcripts.
@@ -33,19 +29,13 @@ flowchart LR
     Config["CLAUDE_CONFIG_DIR or %USERPROFILE%\\.claude"] --> Projects["projects\\&lt;encoded-project&gt;"]
     Config --> Plans["plans\\*.md"]
     Config --> History["history.jsonl"]
-    Projects --> Index["sessions-index.json"]
-    Projects --> Cache[".session_cache.json"]
     Projects --> Main["&lt;session-id&gt;.jsonl"]
-    Projects --> Recovery["&lt;session-id&gt;.orphaned-*.jsonl<br/>&lt;session-id&gt;.jsonl.superseded-*"]
     Projects --> SessionDir["&lt;session-id&gt;\\subagents\\..."]
     SessionDir --> AgentLog["agent-&lt;id&gt;.jsonl"]
     SessionDir --> AgentMeta["agent-&lt;id&gt;.meta.json"]
 
-    Index --> Accumulator["ClaudeSessionAccumulator<br/>keyed by session ID"]
-    Cache --> Accumulator
     History --> Accumulator
     Main --> Accumulator
-    Recovery --> Accumulator
     AgentLog --> Accumulator
     AgentMeta --> Accumulator
     Plans --> PlanFragment["plan artifacts"]
@@ -68,27 +58,28 @@ expands Windows environment variables and supports `~`, `~/...`, and `~\...`.
 
 | Source | Path below the root | What SessionViewer uses |
 |---|---|---|
-| Session index | `projects\<encoded-project>\sessions-index.json` | Session identity, title/summary, first prompt, times, branch, project path, transcript path, arbitrary index metadata |
-| Session cache | `projects\<encoded-project>\.session_cache.json` | Cached identity, summary, entrypoint, message counts, times, and missing transcript paths |
 | Prompt history | `history.jsonl` | Session identity, exact project path, user prompt/title fallback, activity time |
 | Main transcript | `projects\<encoded-project>\<session-id>.jsonl` | Prompts, assistant content, tools/results, usage, mode, model, titles, cost state, compaction, provenance |
-| Orphan recovery | `projects\<encoded-project>\<session-id>.orphaned-*.jsonl` | Recoverable main-session history |
-| Superseded recovery | `projects\<encoded-project>\<session-id>.jsonl.superseded-*` | Recoverable earlier main-session history |
 | Subagent transcript | `projects\<encoded-project>\<session-id>\subagents\...\*.jsonl` | Child-agent content, IDs, turns, tools, usage |
 | Subagent metadata | `projects\<encoded-project>\<session-id>\subagents\...\*.meta.json` | Agent metadata and parent `toolUseId` provenance |
 | Plan artifact | `plans\*.md` | Current plan body plus binding/revision activity extracted from transcripts |
 
 SessionViewer does **not** currently read `stats-cache.json`, file history,
-tasks, debug logs, or Agent SDK session APIs. History and session-cache entries
-are metadata sources only: they do not fabricate assistant messages, tools, or
-turns when the detailed transcript is gone.
+tasks, debug logs, or Agent SDK session APIs. History entries are metadata
+sources only: they do not fabricate assistant messages, tools, or turns when
+the detailed transcript is gone.
 
-The project and plan roots plus `history.jsonl` are watched/snapshotted.
-Changes to `.jsonl`, `.session_cache.json`, `sessions-index.json`, and plan
-`.md` files invalidate the provider cache. Other files, including subagent
-`.meta.json`, are picked up by the recovery scan that runs every 60 seconds by
-default. The harness filter is applied after discovery, so hiding Claude does
-not disable its scanner.
+SessionViewer scans at startup and after **Refresh**, **Force full refresh**,
+or enabling Claude in the provider selector. It does not run a file watcher or
+a periodic background scan. A normal refresh compares snapshots of `.jsonl` and
+plan `.md` files with the cached Claude catalog. An unchanged snapshot can
+reuse a complete cached result. **Force full refresh** bypasses that check.
+
+Subagent `.meta.json` files are read during a scan but are not snapshot keys.
+A change confined to one of those files therefore requires **Force full
+refresh**. Changing from **Balanced** to **Complete** also requires a forced
+scan when the source snapshot has not changed. Disabling Claude prevents its
+source scanner from running.
 
 ### Tips for reliable discovery
 
@@ -101,70 +92,25 @@ not disable its scanner.
   the mechanism for preserving files that Claude deletes before a later scan.
 - Reparse-point project/session directories are skipped. This prevents
   unbounded traversal but means a symlinked `projects` tree is unsupported.
-- `sessions-index.json` is an accelerator and metadata source, not the detail
-  authority. A session can still be built from JSONL when the index is absent.
-- Recovery files are read in addition to the normal file and merged by stable
-  event/turn IDs. They are not assumed to be complete or newer.
 
 ## Effective safety limits
 
-SessionViewer disables the directory-count, file-count, and overall
-scan-duration limits. It retains bounded parsing:
+Both catalog profiles have finite limits:
 
-| Limit | Effective value | Claude behavior |
-|---|---:|---|
-| Records per parent session | 250,000 across main, recovery, and subagents | Further records are not read; result is incomplete |
-| JSONL line size | 16 MiB | Oversized row is skipped |
-| JSONL file prefix | 2 GiB | Only the prefix is inspected |
-| JSON/metadata file | 2 GiB and `int.MaxValue` | Oversized index/meta file is skipped |
-| JSON nesting depth | 128 | Deeper/malformed rows are skipped |
+| Limit | Balanced | Complete | Claude behavior |
+|---|---:|---:|---|
+| Scan duration | 30 seconds | 5 minutes | Discovery stops and the result is incomplete |
+| Directories | 10,000 | 100,000 | Further directories are not scanned |
+| Project files / plan artifacts | 25,000 each | 250,000 each | Further files in that scan component are not read |
+| Records per parent session | 100,000 | 250,000 | The count is shared across main and subagent JSONL |
+| JSONL line size | 4 MiB | 16 MiB | An oversized row is skipped |
+| JSONL file prefix | 512 MiB | 2 GiB | Only the bounded prefix is inspected |
+| Plan file | 512 MiB | 2 GiB | An oversized plan is skipped |
+| Companion JSON file | 512 MiB | `int.MaxValue` bytes | An oversized file is skipped |
+| JSON nesting depth | 128 | 128 | A deeper or malformed row is skipped |
 
 Malformed rows do not abort the whole catalog. Warnings and `IsComplete=false`
 make data loss visible.
-
-## `sessions-index.json` format
-
-The index root must be an object:
-
-```json
-{
-  "version": 1,
-  "originalPath": "C:\\repo",
-  "entries": [
-    {
-      "sessionId": "session-uuid",
-      "fullPath": "C:\\Users\\me\\.claude\\projects\\C--repo\\session-uuid.jsonl",
-      "firstPrompt": "run the tests",
-      "summary": "Run test suite",
-      "messageCount": 12,
-      "created": "2026-09-05T08:00:00Z",
-      "modified": "2026-09-05T08:05:00Z",
-      "gitBranch": "main",
-      "projectPath": "C:\\repo",
-      "isSidechain": false
-    }
-  ]
-}
-```
-
-| Field | Accepted aliases/shapes | Extraction |
-|---|---|---|
-| `version` | string, number, or Boolean scalar | Provenance contract version and metadata |
-| `originalPath` | `original_path` | Preferred workspace candidate |
-| `entries[]` | array of objects | Session metadata |
-| `sessionId` | `session_id`; required | Accumulator/catalog identity |
-| `fullPath` | `full_path` | Verifies that index metadata belongs to the discovered main file |
-| `firstPrompt` | `first_prompt` | Title/prompt fallback |
-| `summary` | `title` | Preferred index title |
-| `messageCount` | `message_count`; number or numeric string | Preserved metadata |
-| `created` | `createdAt`, `created_at`; ISO or epoch | Start candidate |
-| `modified` | `updatedAt`, `updated_at`; ISO or epoch | Last-activity candidate |
-| `fileMtime` | `file_mtime`, `mtime`; seconds or milliseconds | Last-activity fallback |
-| `gitBranch` | `git_branch` | Preserved metadata |
-| `projectPath` | `project_path`, `cwd` | Workspace candidate |
-| `isSidechain` | `is_sidechain`; Boolean/string | Sidechain index entries are skipped |
-
-All entry properties are also preserved under `claude.index.<name>`.
 
 ## Transcript JSONL format
 
@@ -203,7 +149,7 @@ trailing commas, comments, and a valid final line without `\n`.
 | other `attachment` | arbitrary | Raw session metadata/provenance |
 | `mode`, `permission-mode` | current mode | Session mode; permission mode wins |
 | `ai-title`, `custom-title`, `agent-name`, `last-prompt` | title/prompt values | Session title and metadata |
-| `cost-state` | cumulative totals and `modelUsage` | Newest main/recovery snapshot by timestamp; normal main wins ties |
+| `cost-state` | cumulative totals and `modelUsage` | Newest valid snapshot from the normal main transcript |
 | `fork-context-ref` | parent session/UUID/agent | Subagent lineage metadata |
 | any other type | arbitrary | Preserved as `claude.raw...` metadata and source provenance |
 
@@ -232,10 +178,9 @@ does not provide useful result text.
 
 ```mermaid
 erDiagram
-    PROJECT ||--o{ SESSION_INDEX_ENTRY : lists
     PROJECT ||--o{ MAIN_TRANSCRIPT : contains
-    SESSION_INDEX_ENTRY }o--|| SESSION : "sessionId"
     MAIN_TRANSCRIPT }o--|| SESSION : "sessionId / filename"
+    HISTORY_RECORD }o--|| SESSION : "sessionId"
     SESSION ||--o{ SUBAGENT_TRANSCRIPT : "parentSessionId"
     SUBAGENT_TRANSCRIPT ||--o{ EVENT : "agentId"
     SESSION ||--o{ TURN : "promptId"
@@ -251,32 +196,32 @@ identifies the tool operation within that model step.
 
 ### Session identity
 
-1. Index entries are keyed by `sessionId`; sidechain index entries are ignored.
-2. A main filename supplies a fallback identity.
-3. If all rows expose one consistent `sessionId`, that ID replaces the
+1. A main filename supplies a fallback identity.
+2. If all rows expose one consistent `sessionId`, that ID replaces the
    filename fallback.
-4. Conflicting row IDs retain the filename identity and produce metadata/
+3. Conflicting row IDs retain the filename identity and produce metadata/
    warnings rather than joining potentially unrelated sessions.
+4. A `history.jsonl` row uses its `sessionId` and can create a metadata-only
+   session when no detailed transcript survives.
 5. A subagent row uses `parentSessionId`, then `sessionId`, then its containing
    session directory as the parent. Agent identity comes from row `agentId` or
    the `agent-<id>` filename.
 6. Catalog identity is
    `ClaudeCode:ClaudeCode:<native-session-id>`.
 
-Index, main, recovery, subagent, and metadata evidence for that identity enter
-one `ClaudeSessionAccumulator`.
+History, main, subagent, and companion metadata evidence for that identity
+enter one `ClaudeSessionAccumulator`.
 
 ### Workspace resolution
 
-Workspace is selected in this order:
+For the sources documented here, workspace candidates are selected in this
+order:
 
-1. an index `originalPath`, then index `projectPath`, but only when the index
-   `fullPath` is compatible with the discovered main transcript;
-2. CWD from a main transcript, with the normal file outranking recovery;
-3. the unique project path retained in `history.jsonl`;
-4. a successfully decoded `<encoded-project>` path whose directories exist;
-5. subagent CWD;
-6. `Unknown workspace`.
+1. CWD from the normal main transcript;
+2. the unique project path retained in `history.jsonl`;
+3. a successfully decoded `<encoded-project>` path whose directories exist;
+4. subagent CWD;
+5. `Unknown workspace`.
 
 This gives explicit provider CWD/project evidence precedence over the lossy
 encoded directory while preventing a subagent that changes directory from
@@ -284,20 +229,20 @@ redefining its parent session's workspace.
 
 ### Title, model, mode, and time
 
-Title candidates have explicit priority:
+Among the sources documented here, title candidates have this priority:
 
 ```text
-custom-title > ai-title > agent-name > index summary >
-index firstPrompt > transcript first prompt > session ID
+custom-title > ai-title > agent-name >
+meaningful history display > transcript first prompt > session ID
 ```
 
-Normal main JSONL outranks recovery JSONL, which outranks subagent content for
-first-prompt, model, mode, and permission-mode candidates. `permissionMode`
-becomes the displayed mode when available.
+Normal main JSONL outranks subagent content for first-prompt, model, mode, and
+permission-mode candidates. `permissionMode` becomes the displayed mode when
+available.
 
-Session start/last activity use transcript timestamps plus index timestamps.
-Turn timestamps are used when session-level values are absent; file
-modification time is the final last-activity fallback.
+For the sources documented here, session start/last activity use transcript
+and history timestamps. Turn timestamps are used when session-level values are
+absent; file modification time is the final last-activity fallback.
 
 ### Turn construction
 
@@ -392,11 +337,10 @@ Repeated usage is deduplicated by assistant message ID plus the raw usage
 object. Measurements are attached to the first projected content block in that
 assistant row, or to a synthetic hidden usage event when no content exists.
 
-Only the newest valid main or recovery `cost-state` is projected. Timestamp
-wins first; a normal-main snapshot wins a tie with recovery. It can add
-session-final snapshots for API/tool/total duration, lines added/removed,
-`totalCostUSD` converted to integer `micro-usd`, and per-model token/cache/web
-search values.
+For the normal main transcript covered here, only the newest valid
+`cost-state` is projected. It can add session-final snapshots for
+API/tool/total duration, lines added/removed, `totalCostUSD` converted to
+integer `micro-usd`, and per-model token/cache/web search values.
 
 For each token family, the dashboard uses the maximum non-delta snapshot when
 one exists; only when no snapshot exists does it sum deltas. It therefore does
@@ -471,8 +415,9 @@ high confidence.
   active session and prompt, which binds the plan file to that session and turn
   as `Observed`. `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` into a
   `plans` directory contribute update activity. Only `Write` and
-  `ExitPlanMode` (whose input carries the full plan body) materialize revision
-  content; the edit variants remain opaque. An exact path plus session id is
+  `ExitPlanMode` inputs that carry a full plan body materialize revision
+  content; an empty `ExitPlanMode` input and the edit variants remain opaque.
+  An exact path plus session id is
   `Observed`. The prompt id can be carried from the last unambiguous transcript
   row when it is absent from the attachment; the current plan activity still
   records `Observed` evidence because the plan path itself is explicit.
@@ -493,27 +438,49 @@ high confidence.
   path-less `ExitPlanMode` body is attached only when its session owns exactly one
   plan, so it is never guessed onto the wrong plan.
 
+### Observed Claude Code 2.1.304 sequence
+
+A local Claude Code 2.1.304 session inspected on 2026-10-20 contains this
+provider-native sequence:
+
+1. `plan_mode` names `planFilePath` and reports `planExists:false`.
+2. One assistant step emits `Write` with a complete Markdown body and
+   `ExitPlanMode` with an empty input object.
+3. Later matching `tool_result` rows report successful file creation and plan
+   approval. The empty `ExitPlanMode` input supplies no revision body.
+4. `plan_mode_exit` names the same path and reports `planExists:true`.
+5. The session later re-enters plan mode. Another assistant step emits `Write`
+   with a complete body and `ExitPlanMode` with a complete `plan` input.
+6. Matching results report success, and a later `plan_mode_exit` again reports
+   `planExists:true`.
+
+The path, existence flags, tool inputs, and tool outcomes are Claude-native
+evidence. Ownership, revision, and partial-history labels are HarnessSpy
+concepts. The inspected plan still existed on disk. Deleted-plan reconstruction
+is an implementation capability covered by
+`ClaudeRecoversMissingPlanAndRejectsFailedExitRevision`; it was not inferred
+from a deleted local 2.1.304 plan.
+
+The inspected session did not have subagent files. The subagent sections
+describe file patterns and merge behavior supported by SessionViewer rather
+than artifacts observed in that session.
+
 ## Limitations and troubleshooting
 
 - Claude's per-row JSON schema is internal and version-sensitive. Unknown rows
   are retained in metadata/provenance but may not become visible events.
-- `.session_cache.json` and `history.jsonl` can outlive detailed transcripts;
-  such sessions intentionally contain metadata but no fabricated turns.
+- `history.jsonl` can outlive detailed transcripts; those sessions
+  intentionally contain metadata but no fabricated turns.
 - The project directory encoding is not lossless. Decoding requires existing
-  path segments; index and CWD evidence are safer.
-- Main and recovery histories can overlap. Stable IDs deduplicate exact rows,
-  but records without UUIDs use content hashes and can remain ambiguous.
+  path segments; provider CWD evidence is safer.
 - Subagent files may disappear before a passive scan.
 - `parentUuid` is chronological lineage, not a tool/subagent parent relation.
-- Index `isSidechain` entries are skipped; actual subagent files are attached
-  through the filesystem layout instead.
 - Usage snapshots must not be naively summed. SessionViewer stores scope and
   accumulation behavior to avoid this.
 - `total_cost_usd` is provider-reported transcript data, not independent
   billing verification.
-- System-prompt and skill-tool projection have focused fixtures, but recovery
-  overlap, index conflicts, and Claude plan binding do not yet have equivalent
-  end-to-end coverage.
+- System-prompt and skill-tool projection have focused fixtures. Deleted-plan
+  recovery also has a focused integration test.
 - Raw source rows can contain prompts, source files, tool results, credentials,
   and absolute paths.
 
@@ -521,12 +488,12 @@ Useful checks:
 
 1. Inspect `CLAUDE_CONFIG_DIR` in the environment that starts SessionViewer.
 2. Verify the main transcript's row `sessionId` agrees with its filename.
-3. Compare the inspector's `claude.index.fullPath` and actual main path when
-   workspace grouping is unexpected.
+3. Compare main-transcript `cwd`, the unique history project, and the decoded
+   project directory when workspace grouping is unexpected.
 4. Inspect warnings for disappearing subagent files, record limits, oversized
-   lines, and malformed recovery JSONL.
-5. Use **Provenance** to distinguish index, main, recovery, subagent, and
-   `.meta.json` evidence before treating a field as authoritative.
+   lines, and malformed JSONL.
+5. Use **Provenance** to distinguish history, main, subagent, and `.meta.json`
+   evidence before treating a field as authoritative.
 
 ## Implementation references
 
@@ -536,15 +503,16 @@ Useful checks:
 - `src/Shared/HarnessSpy.Core/Sessions/Claude/ClaudeTranscriptPlanArtifactBuilder.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Plans/SessionPlanCatalogAssembler.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Claude/ClaudeTranscriptFileReader.cs`
-- `src/Shared/HarnessSpy.Core/Sessions/Claude/ClaudeSessionIndexReader.cs`
 - `src/Shared/HarnessSpy.Core/Sessions/Claude/ClaudeSessionCatalogBuilder.cs`
 - `src/Shared/HarnessSpy.Core/Runtimes/Claude/ClaudeTranscriptSemantics.cs`
 - `src/Shared/HarnessSpy.Core/Runtimes/SystemPromptTextNormalizer.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionCatalogCoordinator.cs`
+- `src/Shared/HarnessSpy.Core/Services/SessionSourceSnapshotter.cs`
 - `src/Shared/HarnessSpy.Core/Services/SessionViewerSettingsService.cs`
 - `src/Shared/HarnessSpy.Wpf/SessionViewerApplicationHost.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionCatalogViewModel.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionTreeProjector.cs`
 - `src/Shared/HarnessSpy.Wpf/ViewModels/SessionNodeSummaryBuilder.cs`
 - `src/Tests/HarnessSpy.Tests/SessionCatalogSourceTests.cs`
+- `src/Tests/HarnessSpy.Tests/ProviderSessionRecoveryTests.cs`
 - `src/Tests/HarnessSpy.Tests/SessionTreeProjectorTests.cs`
