@@ -15,7 +15,8 @@ public partial class App : Application
         _host = new SpyApplicationHost(new SpyAppProfile(
             ProviderProfile.Cursor,
             new UnavailableAgentProvider(ProviderProfile.Cursor.Provider),
-            new Uri("pack://application:,,,/CursorSpy.App;component/CursorSpy.png")));
+            new Uri("pack://application:,,,/CursorSpy.App;component/CursorSpy.png"),
+            EnableHookBehaviorPane: true));
         _host.Start(this);
     }
 

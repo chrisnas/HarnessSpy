@@ -217,13 +217,20 @@ in [architecture.md](architecture.md).
 
 ## Passive safety contract
 
-- Cursor and Copilot hooks write exactly `{}` and exit `0`.
+- Cursor and Copilot hooks write exactly `{}` and exit `0` by default.
 - Claude hooks write no stdout and exit `0`.
 - Successful hooks write no stderr.
 - Parsing, persistence, diagnostics, timeout, and missing-viewer failures are
   swallowed so observation cannot deny or mutate host behavior.
 - Hook output never contains permission, continuation, context, or rewritten
   input fields.
+
+The explicit `HARNESS_SPY_CURSOR_DEMO=cat-boss` demonstration mode is the only
+exception. It intentionally returns permission, continuation, context, rewritten
+tool input, and follow-up fields to show how hooks can control Cursor. Do not
+enable it during normal observation. See the
+[Cat Boss Cursor demo](../docs/demo_cat_boss_cursor.md) for setup, behavior,
+protocol details, and teardown.
 
 ## Native identity architecture
 

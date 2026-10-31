@@ -39,6 +39,8 @@ public sealed class MainWindowViewModel : ObservableObject
     // by both startup replay and live tailing (or re-captured across runs)
     // creates at most one node regardless of which path reached it first.
     private readonly HashSet<string> _appliedTranscriptProvenance = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<Guid> _loggedHarnessOutcomeEventIds = [];
+    private readonly List<HookBehaviorLogEntryViewModel> _allHookBehaviorLogEntries = [];
 
     // In-flight subagent nodes keyed by subagent_id.
     private readonly Dictionary<string, TreeNodeViewModel> _inFlightSubagents = new(StringComparer.Ordinal);
@@ -56,16 +58,32 @@ public sealed class MainWindowViewModel : ObservableObject
     private NodeSearchMatch? _currentSearchMatch;
 
     public MainWindowViewModel()
-        : this(new ReplayLoader())
+        : this(new ReplayLoader(), showHookBehaviorPane: false)
     {
     }
 
-    public MainWindowViewModel(ReplayLoader replayLoader)
+    public MainWindowViewModel(
+        ReplayLoader replayLoader,
+        bool showHookBehaviorPane = false)
     {
         _replayLoader = replayLoader;
+        IsHookBehaviorPaneVisible = showHookBehaviorPane;
     }
 
     public ObservableCollection<TreeNodeViewModel> Roots { get; } = [];
+
+    public ObservableCollection<HookBehaviorLogEntryViewModel> HookBehaviorLogEntries { get; } = [];
+
+    public bool IsHookBehaviorPaneVisible { get; }
+
+    public bool HasHookBehaviorLogEntries => HookBehaviorLogEntries.Count > 0;
+
+    public void ClearHookBehaviorLog()
+    {
+        _allHookBehaviorLogEntries.Clear();
+        HookBehaviorLogEntries.Clear();
+        OnPropertyChanged(nameof(HasHookBehaviorLogEntries));
+    }
 
     public string SelectedPayloadText
     {
@@ -1791,6 +1809,7 @@ public sealed class MainWindowViewModel : ObservableObject
     public void SelectNode(TreeNodeViewModel? node, bool preserveSearch = false)
     {
         SelectedNode = node;
+        RefreshHookBehaviorLog(node);
         if (HasSelectedDashboard)
         {
             SelectedPayloadText = EmptySelectionText;
@@ -2566,6 +2585,8 @@ public sealed class MainWindowViewModel : ObservableObject
             return;
         }
 
+        TryAppendHarnessOutcome(change.Observation);
+
         switch (change.Kind)
         {
             case ObservationChangeKind.AttachEvidence when change.TargetEventId is Guid target &&
@@ -2673,6 +2694,73 @@ public sealed class MainWindowViewModel : ObservableObject
                 AddObservation(change.Observation);
                 break;
         }
+    }
+
+    private void TryAppendHarnessOutcome(HookObservation observation)
+    {
+        if (!IsHookBehaviorPaneVisible ||
+            observation.HarnessOutcome is not { } outcome ||
+            !_loggedHarnessOutcomeEventIds.Add(observation.EventId))
+        {
+            return;
+        }
+
+        _allHookBehaviorLogEntries.Add(
+            new HookBehaviorLogEntryViewModel(observation, outcome));
+        RefreshHookBehaviorLog(SelectedNode);
+    }
+
+    private void RefreshHookBehaviorLog(TreeNodeViewModel? selectedNode)
+    {
+        string? selectedSessionId = ResolveSelectedSessionId(selectedNode);
+        HookBehaviorLogEntries.Clear();
+        if (selectedSessionId is not null)
+        {
+            foreach (HookBehaviorLogEntryViewModel entry in _allHookBehaviorLogEntries
+                         .Where(entry => string.Equals(
+                             entry.ProviderScopedSessionId,
+                             selectedSessionId,
+                             StringComparison.Ordinal)))
+            {
+                HookBehaviorLogEntries.Add(entry);
+            }
+        }
+
+        OnPropertyChanged(nameof(HasHookBehaviorLogEntries));
+    }
+
+    private string? ResolveSelectedSessionId(TreeNodeViewModel? selectedNode)
+    {
+        if (selectedNode is null)
+        {
+            return null;
+        }
+
+        if (selectedNode.Observation is HookObservation observation)
+        {
+            return observation.ProviderScopedSessionId;
+        }
+
+        List<TreeNodeViewModel>? path =
+            TreeNodeViewModel.FindAncestorPath(Roots, selectedNode);
+        TreeNodeViewModel? session = path?.FirstOrDefault(node => node.IsSession);
+        if (session is null)
+        {
+            return null;
+        }
+
+        string? sessionKey = _sessionNodes
+            .FirstOrDefault(pair => ReferenceEquals(pair.Value, session))
+            .Key;
+        if (!string.IsNullOrEmpty(sessionKey) &&
+            !sessionKey.Contains('\0'))
+        {
+            return sessionKey;
+        }
+
+        return DescendantObservations(session)
+            .Select(observation => observation.ProviderScopedSessionId)
+            .FirstOrDefault();
     }
 
     private void BindCursorTranscriptTurn(

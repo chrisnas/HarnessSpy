@@ -17,7 +17,8 @@ public sealed record ObservationEnvelope(
     string ParseStatus,
     JsonElement Payload,
     int? SpawningProcessId = null,
-    string? SpawningProcessName = null)
+    string? SpawningProcessName = null,
+    HarnessOutcome? HarnessOutcome = null)
 {
-    public const int CurrentIngressVersion = 2;
+    public const int CurrentIngressVersion = 3;
 }

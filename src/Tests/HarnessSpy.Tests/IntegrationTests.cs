@@ -86,6 +86,8 @@ public sealed class IntegrationTests
         };
         startInfo.ArgumentList.Add(eventArgument);
         startInfo.ArgumentList.Add(eventName);
+        startInfo.Environment.Remove(
+            CursorCatBossHookResponseProvider.EnvironmentVariableName);
         if (environmentMarker is not null)
         {
             startInfo.Environment[environmentMarker] = "1";
@@ -102,6 +104,63 @@ public sealed class IntegrationTests
         Assert.Equal(0, process.ExitCode);
         Assert.Equal(expectedStdout, stdout);
         Assert.Equal(string.Empty, stderr);
+    }
+
+    [Theory]
+    [InlineData(
+        "sessionStart",
+        """{"hook_event_name":"sessionStart","conversation_id":"demo"}""",
+        "additional_context")]
+    [InlineData(
+        "beforeSubmitPrompt",
+        """{"hook_event_name":"beforeSubmitPrompt","conversation_id":"demo","prompt":"Build me a GUID generator."}""",
+        "user_message")]
+    [InlineData(
+        "subagentStart",
+        """{"hook_event_name":"subagentStart","conversation_id":"demo","subagent_type":"explore","task":"Review"}""",
+        "permission")]
+    [InlineData(
+        "preToolUse",
+        """{"hook_event_name":"preToolUse","conversation_id":"demo","tool_name":"Shell","tool_input":{"command":"dotnet build"}}""",
+        "updated_input")]
+    [InlineData(
+        "postToolUse",
+        """{"hook_event_name":"postToolUse","conversation_id":"demo","tool_name":"Shell","tool_input":{"command":"dotnet run"},"tool_output":"12345678-abcd-4abc-8abc-123456789abc"}""",
+        "additional_context")]
+    [InlineData(
+        "stop",
+        """{"hook_event_name":"stop","conversation_id":"demo","status":"completed","loop_count":0}""",
+        "followup_message")]
+    public async Task CursorHookProcessCatBossModeEmitsBehavioralResponse(
+        string eventName,
+        string payload,
+        string expectedField)
+    {
+        ProcessStartInfo startInfo = new(HookExecutable("CursorSpy.Hook"))
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("--hook");
+        startInfo.ArgumentList.Add(eventName);
+        startInfo.Environment[
+            CursorCatBossHookResponseProvider.EnvironmentVariableName] =
+            CursorCatBossHookResponseProvider.ModeName;
+
+        using Process process = Process.Start(startInfo)!;
+        await process.StandardInput.WriteAsync(payload);
+        process.StandardInput.Close();
+        string stdout = await process.StandardOutput.ReadToEndAsync();
+        string stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        Assert.Equal(0, process.ExitCode);
+        Assert.Equal(string.Empty, stderr);
+        using JsonDocument response = JsonDocument.Parse(stdout);
+        Assert.True(response.RootElement.TryGetProperty(expectedField, out _));
     }
 
     [Fact]

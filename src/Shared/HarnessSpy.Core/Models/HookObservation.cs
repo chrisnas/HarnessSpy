@@ -29,6 +29,7 @@ public sealed class HookObservation
         ObservationInterpretation interpretation,
         int? spawningProcessId,
         string? spawningProcessName,
+        HarnessOutcome? harnessOutcome,
         ObservationProvenance? provenance = null)
     {
         EventId = eventId;
@@ -47,6 +48,7 @@ public sealed class HookObservation
         Interpretation = interpretation;
         SpawningProcessId = spawningProcessId;
         SpawningProcessName = spawningProcessName;
+        HarnessOutcome = harnessOutcome;
         Provenance = provenance;
     }
 
@@ -83,6 +85,7 @@ public sealed class HookObservation
             interpretation,
             spawningProcessId: null,
             spawningProcessName: null,
+            harnessOutcome: null,
             provenance);
     }
 
@@ -155,6 +158,10 @@ public sealed class HookObservation
     public int? SpawningProcessId { get; }
 
     public string? SpawningProcessName { get; }
+
+    // Optional HarnessSpy response metadata. This is intentionally separate
+    // from Payload so the provider-native hook input remains untouched.
+    public HarnessOutcome? HarnessOutcome { get; }
 
     // File coordinates for a transcript-sourced observation; null for hooks.
     public ObservationProvenance? Provenance { get; }
@@ -886,6 +893,7 @@ public sealed class HookObservation
                 configuredEventName: ReadString(root, "configuredEventName"),
                 spawningProcessId: ReadInt(root, "spawningProcessId"),
                 spawningProcessName: ReadString(root, "spawningProcessName"),
+                harnessOutcome: ReadHarnessOutcome(root),
                 out observation);
         }
         catch (JsonException)
@@ -937,6 +945,7 @@ public sealed class HookObservation
                     ReadString(root, "configuredEventName"),
                     spawningProcessId: ReadInt(root, "spawningProcessId"),
                     spawningProcessName: ReadString(root, "spawningProcessName"),
+                    harnessOutcome: ReadHarnessOutcome(root),
                     out observation);
             }
 
@@ -959,6 +968,7 @@ public sealed class HookObservation
                 configuredEventName: null,
                 spawningProcessId: null,
                 spawningProcessName: null,
+                harnessOutcome: null,
                 out observation);
         }
         catch (JsonException)
@@ -982,6 +992,7 @@ public sealed class HookObservation
         string? configuredEventName,
         int? spawningProcessId,
         string? spawningProcessName,
+        HarnessOutcome? harnessOutcome,
         out HookObservation? observation)
     {
         observation = null;
@@ -1022,9 +1033,67 @@ public sealed class HookObservation
             sourceFilePath,
             interpretation,
             spawningProcessId,
-            spawningProcessName);
+            spawningProcessName,
+            harnessOutcome);
 
         return true;
+    }
+
+    private static HarnessOutcome? ReadHarnessOutcome(JsonElement root)
+    {
+        if (!root.TryGetProperty("harnessOutcome", out JsonElement outcome) ||
+            outcome.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        try
+        {
+            string? mode = ReadString(outcome, "mode");
+            string? effectKind = ReadString(outcome, "effectKind");
+            string? summary = ReadString(outcome, "summary");
+            if (mode is null ||
+                effectKind is null ||
+                summary is null ||
+                !outcome.TryGetProperty("response", out JsonElement response) ||
+                response.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            bool requiresUserAction =
+                outcome.TryGetProperty("requiresUserAction", out JsonElement required) &&
+                required.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                required.GetBoolean();
+            List<HarnessOutcomeChange> changes = [];
+            if (outcome.TryGetProperty("changes", out JsonElement changeArray) &&
+                changeArray.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement change in changeArray.EnumerateArray())
+                {
+                    string? target = ReadString(change, "target");
+                    if (target is not null)
+                    {
+                        changes.Add(new HarnessOutcomeChange(
+                            target,
+                            ReadString(change, "before"),
+                            ReadString(change, "after")));
+                    }
+                }
+            }
+
+            return new HarnessOutcome(
+                mode,
+                effectKind,
+                response.Clone(),
+                summary,
+                requiresUserAction,
+                changes);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     // Cursor supplies workspace_roots directly. Other providers report a single

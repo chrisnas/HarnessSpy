@@ -26,10 +26,21 @@ using StreamReader input = new(
     new UTF8Encoding(false),
     detectEncodingFromByteOrderMarks: true);
 
+string? demoMode = Environment.GetEnvironmentVariable(
+    CursorCatBossHookResponseProvider.EnvironmentVariableName);
+IHookResponseProvider? responseProvider =
+    string.Equals(
+        demoMode,
+        CursorCatBossHookResponseProvider.ModeName,
+        StringComparison.OrdinalIgnoreCase)
+        ? new CursorCatBossHookResponseProvider(new CursorCatBossText())
+        : null;
+
 HookForwarder forwarder = new(
     new NamedPipePayloadSink(profile.PipeName),
     new HookProcessOptions(profile),
-    new FileHookDiagnostics(FileHookDiagnostics.GetDefaultDirectory(profile)));
+    new FileHookDiagnostics(FileHookDiagnostics.GetDefaultDirectory(profile)),
+    responseProvider: responseProvider);
 
 return await forwarder
     .RunAsync(args, input, Console.Out)

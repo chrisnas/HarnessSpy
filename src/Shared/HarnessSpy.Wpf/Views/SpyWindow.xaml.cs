@@ -1,4 +1,5 @@
 using System.IO;
+using System.Collections.Specialized;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -25,6 +26,7 @@ public partial class SpyWindow : Window
 
     private readonly DispatcherTimer _dashboardOpenTimer;
     private Popup? _pendingDashboardPopup;
+    private MainWindowViewModel? _subscribedHookBehaviorViewModel;
 
     public SpyWindow()
         : this(new SettingsService(), lastReplayFolder: null, "HarnessSpy")
@@ -43,6 +45,8 @@ public partial class SpyWindow : Window
         InspectorFieldTableCopySupport.Enable(FieldsDataGrid);
         Title = $"{productName} Hook Spy";
         Loaded += SpyWindow_Loaded;
+        DataContextChanged += SpyWindow_DataContextChanged;
+        Closed += SpyWindow_Closed;
 
         _dashboardOpenTimer = new DispatcherTimer
         {
@@ -50,6 +54,49 @@ public partial class SpyWindow : Window
         };
         _dashboardOpenTimer.Tick += DashboardOpenTimer_Tick;
     }
+
+    private void SpyWindow_DataContextChanged(
+        object sender,
+        DependencyPropertyChangedEventArgs e)
+    {
+        if (_subscribedHookBehaviorViewModel is not null)
+        {
+            _subscribedHookBehaviorViewModel.HookBehaviorLogEntries.CollectionChanged -=
+                HookBehaviorLogEntries_CollectionChanged;
+        }
+
+        _subscribedHookBehaviorViewModel = e.NewValue as MainWindowViewModel;
+        if (_subscribedHookBehaviorViewModel is not null)
+        {
+            _subscribedHookBehaviorViewModel.HookBehaviorLogEntries.CollectionChanged +=
+                HookBehaviorLogEntries_CollectionChanged;
+        }
+    }
+
+    private void SpyWindow_Closed(object? sender, EventArgs e)
+    {
+        if (_subscribedHookBehaviorViewModel is not null)
+        {
+            _subscribedHookBehaviorViewModel.HookBehaviorLogEntries.CollectionChanged -=
+                HookBehaviorLogEntries_CollectionChanged;
+        }
+    }
+
+    private void HookBehaviorLogEntries_CollectionChanged(
+        object? sender,
+        NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action != NotifyCollectionChangedAction.Add ||
+            ViewModel?.HookBehaviorLogEntries.LastOrDefault() is not { } last)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() => HookBehaviorListBox.ScrollIntoView(last));
+    }
+
+    private void ClearHookBehaviorLog_Click(object sender, RoutedEventArgs e) =>
+        ViewModel?.ClearHookBehaviorLog();
 
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
 

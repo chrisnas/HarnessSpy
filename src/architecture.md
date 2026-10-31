@@ -125,6 +125,29 @@ chronological order.
   resolved via `NtQueryInformationProcess`), alongside the environment
   allowlist above.
 
+### Hook outcome sidecar
+
+Ingress envelope version 3 adds an optional `harnessOutcome` sibling beside the
+provider-native `payload`. The existing `HarnessSpy.<Provider>.Ingest.v1` pipe
+names and newline-framed transport remain unchanged; transport and envelope
+versions are independent.
+
+`harnessOutcome.response` is the exact JSON returned to the harness on stdout.
+Its mode, effect kind, summary, user-attention flag, and structured before/after
+changes explain behavioral hooks without rewriting provider evidence. One hook
+invocation produces one envelope, so input and outcome share the same event id,
+ordering, persistence, and replay lifecycle without timing correlation.
+
+The native `payload` remains untouched and is still the only input to runtime
+interpretation, search, detail fields, and the raw inspector. New readers accept
+v1/v2 envelopes without the sidecar. Older readers ignore the unknown v3 field.
+Malformed sidecar data is discarded independently rather than rejecting the
+native observation.
+
+User-attention sound is a live WPF concern. CursorSpy plays it only for a live
+outcome marked `requiresUserAction`; replay repopulates the outcome pane without
+replaying sounds. Short-lived hook executables never play audio.
+
 ## SessionViewer file-backed catalog
 
 `SessionViewer` is a separate WPF application for passive local history. It

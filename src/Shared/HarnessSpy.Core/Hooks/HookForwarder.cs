@@ -1,5 +1,6 @@
 using System.IO.Pipes;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HarnessSpy.Core.Models;
 
 namespace HarnessSpy.Core.Hooks;
@@ -64,6 +65,7 @@ public sealed class HookForwarder
     private readonly IHookRuntimeDetector _runtimeDetector;
     private readonly IReadOnlyDictionary<string, string?> _environment;
     private readonly ISpawningProcessResolver _spawningProcessResolver;
+    private readonly IHookResponseProvider? _responseProvider;
 
     public HookForwarder(
         IHookPayloadSink sink,
@@ -83,7 +85,8 @@ public sealed class HookForwarder
         IHookDiagnostics? diagnostics = null,
         IHookRuntimeDetector? runtimeDetector = null,
         IReadOnlyDictionary<string, string?>? environment = null,
-        ISpawningProcessResolver? spawningProcessResolver = null)
+        ISpawningProcessResolver? spawningProcessResolver = null,
+        IHookResponseProvider? responseProvider = null)
     {
         _sink = sink;
         _options = options;
@@ -91,6 +94,7 @@ public sealed class HookForwarder
         _runtimeDetector = runtimeDetector ?? new HookRuntimeDetector();
         _environment = environment ?? HookEnvironment.Capture();
         _spawningProcessResolver = spawningProcessResolver ?? new SpawningProcessResolver();
+        _responseProvider = responseProvider;
     }
 
     public async Task<int> RunAsync(
@@ -105,6 +109,7 @@ public sealed class HookForwarder
         string sessionId = "unknownSession";
         string? sourceFilePath = null;
         SpawningProcessInfo spawningProcess = _spawningProcessResolver.Resolve();
+        JsonObject response = [];
 
         try
         {
@@ -132,6 +137,42 @@ public sealed class HookForwarder
 
             if (_runtimeDetector.IsAccepted(effectiveOptions.Profile, detectedSurface))
             {
+                HookBehaviorEffect? effect = null;
+                if (_responseProvider is not null)
+                {
+                    try
+                    {
+                        HookResponseDecision decision =
+                            _responseProvider.Create(rawEventName, payload);
+                        response = decision.Response;
+                        effect = decision.Effect;
+                    }
+                    catch (Exception responseException)
+                    {
+                        await SafeLogAsync(
+                            $"Failed to compose the response for '{rawEventName}'.",
+                            responseException,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                }
+
+                JsonElement responseElement =
+                    JsonSerializer.SerializeToElement(response, JsonOptions);
+                HarnessOutcome? outcome = effect is null
+                    ? null
+                    : new HarnessOutcome(
+                        effect.Mode,
+                        effect.EffectKind,
+                        responseElement,
+                        effect.Summary,
+                        effect.RequiresUserAction,
+                        effect.Changes
+                            .Select(change => new HarnessOutcomeChange(
+                                change.Target,
+                                change.Before,
+                                change.After))
+                            .ToArray());
+
                 ObservationEnvelope envelope = new(
                     ObservationEnvelope.CurrentIngressVersion,
                     Guid.NewGuid(),
@@ -147,7 +188,8 @@ public sealed class HookForwarder
                     ParseStatus: "valid",
                     Payload: payload,
                     SpawningProcessId: spawningProcess.ProcessId,
-                    SpawningProcessName: spawningProcess.ProcessName);
+                    SpawningProcessName: spawningProcess.ProcessName,
+                    HarnessOutcome: outcome);
 
                 sourceFilePath = await _diagnostics
                     .SaveObservationAsync(
@@ -207,7 +249,7 @@ public sealed class HookForwarder
         {
             if (effectiveOptions.Profile.NoOpResponse == HookNoOpResponse.EmptyJsonObject)
             {
-                await output.WriteAsync("{}").ConfigureAwait(false);
+                await output.WriteAsync(response.ToJsonString(JsonOptions)).ConfigureAwait(false);
                 await output.FlushAsync().ConfigureAwait(false);
             }
         }

@@ -7,6 +7,7 @@ using HarnessSpy.Core.Models;
 using HarnessSpy.Core.Services;
 using HarnessSpy.Wpf.ViewModels;
 using HarnessSpy.Wpf.Views;
+using HarnessSpy.Wpf.Services;
 
 namespace HarnessSpy.Wpf;
 
@@ -18,7 +19,8 @@ public sealed record SpyAppProfile(
     ProviderProfile Provider,
     IAgentProvider AgentProvider,
     Uri? WindowIconUri = null,
-    bool EnableTranscripts = true);
+    bool EnableTranscripts = true,
+    bool EnableHookBehaviorPane = false);
 
 public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
 {
@@ -32,7 +34,12 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
     {
         SettingsService settingsService = new(profile.Provider);
         AppSettings settings = settingsService.Load();
-        MainWindowViewModel viewModel = new();
+        MainWindowViewModel viewModel = new(
+            new ReplayLoader(),
+            profile.EnableHookBehaviorPane);
+        HookAttentionNotifier? attentionNotifier = profile.EnableHookBehaviorPane
+            ? new HookAttentionNotifier(new WindowsAttentionSoundPlayer())
+            : null;
 
         bool enableTranscripts = profile.EnableTranscripts && settings.EnableTranscriptIngestion;
         string payloadsDirectory = Path.Combine(
@@ -48,7 +55,11 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
             bindingJournal,
             (change, cancellationToken) =>
             {
-                application.Dispatcher.InvokeAsync(() => viewModel.ApplyObservationChange(change));
+                application.Dispatcher.InvokeAsync(() =>
+                {
+                    viewModel.ApplyObservationChange(change);
+                    attentionNotifier?.NotifyIfNeeded(change.Observation);
+                });
                 return Task.CompletedTask;
             },
             enableTranscripts);
