@@ -20,7 +20,7 @@ public partial class SpyWindow : Window
     private readonly SettingsService _settingsService;
     private readonly string _productName;
     private string? _lastReplayFolder;
-    private TreeNodeViewModel? _contextMenuSessionNode;
+    private TreeNodeViewModel? _contextMenuNode;
     private bool _startupReplayHandled;
     private bool _isApplyingSearchMatch;
 
@@ -300,12 +300,22 @@ public partial class SpyWindow : Window
     private void TreeView_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
         TreeViewItem? item = FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject);
-        _contextMenuSessionNode = item?.DataContext as TreeNodeViewModel;
+        _contextMenuNode = item?.DataContext as TreeNodeViewModel;
 
-        bool canDelete = ViewModel?.CanDeleteSessionFiles(_contextMenuSessionNode) == true;
-        DeleteSessionFilesMenuItem.IsEnabled = canDelete;
+        bool isSession = _contextMenuNode?.Kind == TreeNodeKind.Session;
+        bool isWorkspace = _contextMenuNode?.Kind == TreeNodeKind.Workspace;
+        DeleteSessionFilesMenuItem.Visibility =
+            isSession ? Visibility.Visible : Visibility.Collapsed;
+        DeleteSessionFilesMenuItem.IsEnabled =
+            isSession &&
+            ViewModel?.CanDeleteSessionFiles(_contextMenuNode) == true;
+        DeleteWorkspaceSessionsMenuItem.Visibility =
+            isWorkspace ? Visibility.Visible : Visibility.Collapsed;
+        DeleteWorkspaceSessionsMenuItem.IsEnabled =
+            isWorkspace &&
+            ViewModel?.CanDeleteWorkspaceSessions(_contextMenuNode) == true;
 
-        if (_contextMenuSessionNode is null)
+        if (!isSession && !isWorkspace)
         {
             e.Handled = true;
         }
@@ -357,7 +367,7 @@ public partial class SpyWindow : Window
 
     private void DeleteSessionFiles_Click(object sender, RoutedEventArgs e)
     {
-        if (_contextMenuSessionNode is not { } sessionNode ||
+        if (_contextMenuNode is not { Kind: TreeNodeKind.Session } sessionNode ||
             ViewModel is null ||
             !ViewModel.CanDeleteSessionFiles(sessionNode))
         {
@@ -366,7 +376,7 @@ public partial class SpyWindow : Window
 
         MessageBoxResult confirmation = MessageBox.Show(
             this,
-            $"Delete replay JSON files for session \"{sessionNode.Header}\"?\n\nThis cannot be undone.",
+            $"Delete replay JSON and captured transcript files for session \"{sessionNode.Header}\"?\n\nThis cannot be undone.",
             _productName,
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
@@ -382,6 +392,48 @@ public partial class SpyWindow : Window
             MessageBox.Show(
                 this,
                 error ?? $"{_productName} could not delete the selected session files.",
+                _productName,
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private void DeleteWorkspaceSessions_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_contextMenuNode is not { Kind: TreeNodeKind.Workspace } workspaceNode ||
+            ViewModel is null ||
+            !ViewModel.CanDeleteWorkspaceSessions(workspaceNode))
+        {
+            return;
+        }
+
+        int sessionCount = workspaceNode.Children.Count(
+            child => child.Kind == TreeNodeKind.Session);
+        MessageBoxResult confirmation = MessageBox.Show(
+            this,
+            $"Delete replay JSON and captured transcript files for all {sessionCount} session(s) under workspace \"{workspaceNode.Header}\"?\n\nThis cannot be undone.",
+            _productName,
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+
+        if (confirmation != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        if (!ViewModel.TryDeleteWorkspaceSessions(
+                workspaceNode,
+                out _,
+                out _,
+                out string? error))
+        {
+            MessageBox.Show(
+                this,
+                error ??
+                    $"{_productName} could not delete all sessions in the selected workspace.",
                 _productName,
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);

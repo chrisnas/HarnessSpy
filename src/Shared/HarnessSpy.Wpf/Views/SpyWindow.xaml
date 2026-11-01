@@ -574,6 +574,9 @@
                             <MenuItem x:Name="DeleteSessionFilesMenuItem"
                                       Header="Delete session files..."
                                       Click="DeleteSessionFiles_Click" />
+                            <MenuItem x:Name="DeleteWorkspaceSessionsMenuItem"
+                                      Header="Delete all sessions..."
+                                      Click="DeleteWorkspaceSessions_Click" />
                         </ContextMenu>
                     </TreeView.ContextMenu>
                 </TreeView>
@@ -1060,6 +1063,7 @@
                                  BorderBrush="#D0D7DE"
                                  BorderThickness="1"
                                  HorizontalContentAlignment="Stretch"
+                                 ScrollViewer.CanContentScroll="False"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
                                  Visibility="{Binding HasHookBehaviorLogEntries, Converter={StaticResource BooleanToVisibilityConverter}}">

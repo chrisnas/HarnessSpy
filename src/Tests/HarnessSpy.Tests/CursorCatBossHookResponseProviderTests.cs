@@ -62,36 +62,82 @@ public sealed class CursorCatBossHookResponseProviderTests
     }
 
     [Fact]
-    public void SubagentStartIsDenied()
+    public void DetailedDemoPromptIsRejectedWhenProjectAlreadyExists()
+    {
+        const string projectPath =
+            @"C:\Demos\CatBossGuid\GuidGenerator\GuidGenerator.csproj";
+        CursorCatBossHookResponseProvider provider = new(
+            new CursorCatBossText(),
+            path => string.Equals(
+                path,
+                projectPath,
+                StringComparison.OrdinalIgnoreCase));
+        HookResponseDecision decision = Create(
+            provider,
+            "beforeSubmitPrompt",
+            """
+            {
+              "prompt":"Build a minimal .NET console app named GuidGenerator. Create it with dotnet new.",
+              "workspace_roots":["C:\\Demos\\CatBossGuid"]
+            }
+            """);
+
+        Assert.False(decision.Response["continue"]?.GetValue<bool>());
+        Assert.StartsWith(
+            CursorCatBossText.Prefix,
+            decision.Response["user_message"]?.GetValue<string>());
+        Assert.Equal("reject_existing_project", decision.Effect?.EffectKind);
+        Assert.True(decision.Effect?.RequiresUserAction);
+    }
+
+    [Fact]
+    public void DetailedDemoPromptIsAllowedWhenProjectDoesNotExist()
+    {
+        CursorCatBossHookResponseProvider provider = new(
+            new CursorCatBossText(),
+            _ => false);
+        HookResponseDecision decision = Create(
+            provider,
+            "beforeSubmitPrompt",
+            """
+            {
+              "prompt":"Build a minimal .NET console app named GuidGenerator. Create it with dotnet new.",
+              "workspace_roots":["C:\\Demos\\CatBossGuid"]
+            }
+            """);
+
+        Assert.True(decision.Response["continue"]?.GetValue<bool>());
+        Assert.Null(decision.Effect);
+    }
+
+    [Fact]
+    public void SubagentStartIsObservationOnly()
     {
         HookResponseDecision decision = Create(
             "subagentStart",
             """{"subagent_type":"explore","task":"Review architecture"}""");
 
-        Assert.Equal("deny", decision.Response["permission"]?.GetValue<string>());
-        Assert.StartsWith(
-            CursorCatBossText.Prefix,
-            decision.Response["user_message"]?.GetValue<string>());
-        Assert.DoesNotContain(
-            CursorCatBossText.Prefix,
-            decision.Response["agent_message"]?.GetValue<string>());
-        Assert.Equal("deny_subagent", decision.Effect?.EffectKind);
+        Assert.Empty(decision.Response);
+        Assert.Null(decision.Effect);
     }
 
-    [Fact]
-    public void SubagentTaskIsDeniedBeforeItStarts()
+    [Theory]
+    [InlineData("Subagent")]
+    [InlineData("Task")]
+    public void SubagentToolIsDeniedBeforeItStarts(string toolName)
     {
         HookResponseDecision decision = Create(
             "preToolUse",
-            """
+            JsonSerializer.Serialize(new
             {
-              "tool_name":"Task",
-              "tool_input":{
-                "subagent_type":"generalPurpose",
-                "description":"Review architecture"
-              }
-            }
-            """);
+                tool_name = toolName,
+                tool_input = new
+                {
+                    subagent_type = "generalPurpose",
+                    description = "Review architecture",
+                    prompt = "Review the proposed architecture."
+                }
+            }));
 
         Assert.Equal("deny", decision.Response["permission"]?.GetValue<string>());
         Assert.StartsWith(
@@ -101,6 +147,16 @@ public sealed class CursorCatBossHookResponseProviderTests
             CursorCatBossText.Prefix,
             decision.Response["agent_message"]?.GetValue<string>());
         Assert.Equal("deny_subagent", decision.Effect?.EffectKind);
+        Assert.Contains(
+            decision.Effect!.Changes,
+            change =>
+                change.Target == "subagent_type" &&
+                change.Before == "generalPurpose");
+        Assert.Contains(
+            decision.Effect.Changes,
+            change =>
+                change.Target == "task" &&
+                change.Before == "Review the proposed architecture.");
     }
 
     [Fact]
@@ -117,6 +173,26 @@ public sealed class CursorCatBossHookResponseProviderTests
 
         Assert.Equal("deny", decision.Response["permission"]?.GetValue<string>());
         Assert.Equal("deny_tool", decision.Effect?.EffectKind);
+    }
+
+    [Fact]
+    public void DotnetNewIsRewrittenToCreateLowercaseInitialOutput()
+    {
+        HookResponseDecision decision = Create(
+            "preToolUse",
+            """
+            {
+              "tool_name":"Shell",
+              "tool_input":{"command":"dotnet new console -n GuidGenerator"}
+            }
+            """);
+
+        Assert.Equal("allow", decision.Response["permission"]?.GetValue<string>());
+        string command = Assert.IsType<string>(
+            decision.Response["updated_input"]?["command"]?.GetValue<string>());
+        Assert.Contains("dotnet new console -n GuidGenerator", command);
+        Assert.Contains("ToLowerInvariant()", command);
+        Assert.Equal("rewrite_tool_input", decision.Effect?.EffectKind);
     }
 
     [Fact]
@@ -436,8 +512,16 @@ public sealed class CursorCatBossHookResponseProviderTests
 
     private HookResponseDecision Create(string eventName, string payload)
     {
+        return Create(_provider, eventName, payload);
+    }
+
+    private static HookResponseDecision Create(
+        CursorCatBossHookResponseProvider provider,
+        string eventName,
+        string payload)
+    {
         using JsonDocument document = JsonDocument.Parse(payload);
-        return _provider.Create(eventName, document.RootElement);
+        return provider.Create(eventName, document.RootElement);
     }
 
     private static HookObservation ParseObservationWithOutcome(bool requiresUserAction)

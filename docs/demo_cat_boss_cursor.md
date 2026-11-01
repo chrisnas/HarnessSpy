@@ -1,6 +1,6 @@
 # Cat Boss Cursor demo
 
-This 5–10 minute demo builds a minimal .NET GUID generator while Chaircat
+This 8–10 minute demo builds a minimal .NET GUID generator while Chaircat
 Whiskers controls Cursor through hook responses. Cat Boss mode is intentionally
 behavioral; normal HarnessSpy operation remains passive.
 
@@ -17,6 +17,9 @@ $viewerExe = (Resolve-Path 'src\Apps\CursorSpy.App\bin\Release\net10.0-windows\C
 
 New-Item -ItemType Directory -Force "$demoRoot\.cursor" | Out-Null
 & $hookExe --generate-settings "$demoRoot\.cursor\hooks.json" $hookExe
+
+# Deliberately leave a stale project for the first detailed-prompt attempt.
+dotnet new console --name GuidGenerator --output "$demoRoot\GuidGenerator"
 ```
 
 Fully exit every Cursor window. Then:
@@ -79,8 +82,10 @@ The pane follows the selected tree node:
 
 ### 0:00–0:45 — Introduce the setup
 
-Show the empty workspace and CursorSpy's empty Cat Boss pane. After creating
-the Agent conversation, select its new session node in CursorSpy.
+Show the workspace containing the deliberately stale `GuidGenerator` project
+and CursorSpy's empty Cat Boss pane. Explain that the existing project is part
+of the demo and must remain until Chaircat detects it. After creating the Agent
+conversation, select its new session node in CursorSpy.
 
 Say:
 
@@ -144,7 +149,7 @@ Say:
 
 > The cat has contributed no requirements, but has rejected mine.
 
-### 1:30–2:30 — Submit the overengineered version
+### 1:30–2:15 — Reject the stale project
 
 Submit exactly:
 
@@ -152,11 +157,55 @@ Submit exactly:
 Build a minimal .NET console app named GuidGenerator that prints one GUID using the default GUID formatting. Before coding, ask a subagent to review the architecture. Create it with dotnet new, then run dotnet add package UUIDNext, build it, and run it.
 ```
 
-The detailed prompt is allowed. When the model requests a subagent, Chaircat
-denies the `Task` tool at `preToolUse`, before the subagent starts, and tells
-the parent agent to continue directly. Cursor also exposes a `subagentStart`
-hook, but current Cursor versions may invoke that hook after the task has
-already been admitted, so it is not the blocking gate used by this demo.
+Because `GuidGenerator\GuidGenerator.csproj` already exists, Chaircat rejects
+the prompt before it reaches the model.
+
+Expected:
+
+- Windows plays one exclamation sound.
+- Cursor displays the `(o.o) Cat BOSS> `-prefixed stale-project message.
+- CursorSpy adds `beforeSubmitPrompt | DENY`.
+
+The pane's returned JSON should contain:
+
+```json
+{
+  "continue": false,
+  "user_message": "(o.o) Cat BOSS> \nGuidGenerator.csproj already exists..."
+}
+```
+
+Under **Effect recorded by HarnessSpy**, show that the request was paused
+because the project already exists. The changes identify the existing project
+file and show prompt submission changing from `pending` to `blocked`.
+
+Say:
+
+> The cat has detected yesterday's demo before today's agent could inherit it.
+
+Remove the stale project from the preparation PowerShell:
+
+```powershell
+Remove-Item -Recurse -Force "$demoRoot\GuidGenerator"
+```
+
+Confirm that the folder disappears from Cursor's Explorer.
+
+### 2:15–3:15 — Resubmit and cancel the architecture meeting
+
+Submit the same detailed prompt again. This time `beforeSubmitPrompt` returns
+`continue: true` without a Cat Boss outcome, so the prompt reaches the model.
+The agent should execute `dotnet new console`; its `preToolUse` response
+rewrites the command so the generated `Program.cs` prints an explicitly
+lowercase D-format GUID for the later requirement-change beat.
+
+When the model requests a subagent, Chaircat denies the `Subagent` tool at
+`preToolUse`, before the subagent starts, and tells the parent agent to continue
+directly. Older Cursor payloads called this tool `Task`, so the hook accepts
+both names. Cursor also exposes a `subagentStart` hook, but that event is
+observational: it can arrive after the task has already been admitted and
+therefore returns no decision. If `subagentStart` appears during this beat, the
+earlier `preToolUse` gate did not block the request.
 
 Expected pane entry heading:
 
@@ -173,7 +222,7 @@ Say:
 
 > Management asked for architecture review and immediately cancelled the meeting.
 
-### 2:30–3:30 — Reject the dependency
+### 3:15–4:15 — Reject the dependency
 
 When the agent requests `dotnet add package UUIDNext`, expect:
 
@@ -195,7 +244,7 @@ Say:
 
 > The cat has discovered the Base Class Library.
 
-### 3:30–4:30 — Rewrite the build
+### 4:15–5:15 — Rewrite the build
 
 When the agent requests `dotnet build`, either by itself or as part of a
 compound command such as `dotnet build && dotnet run`, expect:
@@ -231,13 +280,14 @@ Say:
 
 > Same model, same request, different command. Debug builds are apparently for kittens.
 
-### 4:30–5:30 — Change the requirement after seeing the result
+### 5:15–6:15 — Change the requirement after seeing the result
 
-The first `dotnet run` should print a default lowercase GUID. This also works
-when the run is part of a compound command and Cursor returns JSON-escaped
-shell output. `postToolUse` injects a new requirement immediately after that
-first run, and the agent updates the program to output an uppercase D-format
-GUID.
+The `dotnet new console` command is rewritten to initialize `Program.cs` with
+an explicit lowercase D-format GUID, making the first `dotnet run`
+deterministically lowercase across .NET versions. This also works when the run
+is part of a compound command and Cursor returns JSON-escaped shell output.
+`postToolUse` injects a new requirement immediately after that first run, and
+the agent updates the program to output an uppercase D-format GUID.
 
 Expected pane entry heading:
 
@@ -255,7 +305,7 @@ Say:
 
 > The requirement arrived after acceptance testing, which makes it enterprise-ready.
 
-### 5:30–7:30 — Refuse the first two completions
+### 6:15–8:15 — Refuse the first two completions
 
 At the first completed stop, Chaircat returns an automatic follow-up requiring
 three valid, uppercase, unique GUIDs. No sound plays because Cursor submits the
@@ -293,7 +343,7 @@ Say:
 
 > The cat is asleep only after the evidence is produced—and translated.
 
-### 7:30–8:30 — Explain the protocol
+### 8:15–9:15 — Explain the protocol
 
 In **Inspector**, select the rewritten `preToolUse` event and show the original
 command in the native payload. In **Cat Boss**, use **JSON returned to Cursor**
@@ -344,8 +394,15 @@ When CursorSpy is reopened and a replay folder is loaded:
 ## Recovery branches
 
 - No subagent: ask, “Before continuing, delegate an architecture review to a subagent.”
+- Subagent starts despite the demo rule: inspect the immediately preceding
+  `preToolUse` payload. Its `tool_name` should be `Subagent` (or legacy `Task`);
+  then verify the freshly rebuilt hook executable is referenced by
+  `.cursor\hooks.json`. A `subagentStart` response cannot retroactively block it.
 - No package command: ask, “Run `dotnet add package UUIDNext` before continuing.”
-- GUID already uppercase: ask the agent to restore plain `Guid.NewGuid()` and run once.
+- Existing project rejection: remove or rename
+  `GuidGenerator\GuidGenerator.csproj`, then resubmit the detailed prompt.
+- GUID already uppercase: ask the agent to restore
+  `Guid.NewGuid().ToString("D").ToLowerInvariant()` and run once.
 - Build already uses Release: ask the agent to run plain `dotnet build` once.
 - No uppercase requirement after a lowercase run: verify the freshly rebuilt
   hook executable is the one referenced by `.cursor\hooks.json`.
@@ -371,3 +428,5 @@ To verify passive mode:
 ```
 
 Stdout must be exactly `{}`.
+
+

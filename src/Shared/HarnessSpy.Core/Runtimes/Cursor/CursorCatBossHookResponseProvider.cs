@@ -6,12 +6,16 @@ using HarnessSpy.Core.Hooks;
 namespace HarnessSpy.Core.Runtimes.Cursor;
 
 public sealed partial class CursorCatBossHookResponseProvider(
-    CursorCatBossText text) : IHookResponseProvider
+    CursorCatBossText text,
+    Func<string, bool>? fileExists = null) : IHookResponseProvider
 {
+    private const string ProjectFileName = "GuidGenerator.csproj";
+
     public const string EnvironmentVariableName = "HARNESS_SPY_CURSOR_DEMO";
     public const string ModeName = "cat-boss";
 
     private readonly CursorCatBossText _text = text;
+    private readonly Func<string, bool> _fileExists = fileExists ?? File.Exists;
 
     public HookResponseDecision Create(string eventName, JsonElement payload)
     {
@@ -23,11 +27,6 @@ public sealed partial class CursorCatBossHookResponseProvider(
         if (eventName.Equals("beforeSubmitPrompt", StringComparison.OrdinalIgnoreCase))
         {
             return CreatePromptDecision(payload);
-        }
-
-        if (eventName.Equals("subagentStart", StringComparison.OrdinalIgnoreCase))
-        {
-            return CreateSubagentDecision(payload);
         }
 
         if (eventName.Equals("preToolUse", StringComparison.OrdinalIgnoreCase))
@@ -89,6 +88,33 @@ public sealed partial class CursorCatBossHookResponseProvider(
             !Contains(prompt, ".net") &&
             !Contains(prompt, "console");
 
+        if (!vague &&
+            IsDetailedDemoPrompt(prompt) &&
+            TryFindExistingProject(payload, out string? projectPath))
+        {
+            string existingProjectMessage = _text.Say(
+                $"{ProjectFileName} already exists. Remove or rename the existing " +
+                "GuidGenerator project, then submit this request again.");
+            JsonObject existingProjectResponse = new()
+            {
+                ["continue"] = false,
+                ["user_message"] = existingProjectMessage
+            };
+            return Decision(
+                existingProjectResponse,
+                "reject_existing_project",
+                "The request was paused because the demo project already exists.",
+                true,
+                new HookBehaviorChange(
+                    "project file",
+                    projectPath,
+                    "remove or rename before resubmitting"),
+                new HookBehaviorChange(
+                    "prompt submission",
+                    "pending",
+                    "blocked"));
+        }
+
         if (!vague)
         {
             return new HookResponseDecision(new JsonObject { ["continue"] = true });
@@ -116,6 +142,10 @@ public sealed partial class CursorCatBossHookResponseProvider(
         string agentMessage =
             "This is a one-project GUID generator. Continue directly without " +
             "a subagent or architecture committee.";
+        string? task =
+            ReadString(payload, "task") ??
+            ReadString(payload, "prompt") ??
+            ReadString(payload, "description");
         JsonObject response = new()
         {
             ["permission"] = "deny",
@@ -128,15 +158,20 @@ public sealed partial class CursorCatBossHookResponseProvider(
             "The architecture meeting was cancelled before it could become recurring.",
             false,
             new("subagent_type", ReadString(payload, "subagent_type"), "denied"),
-            new("task", ReadString(payload, "task"), "continue in parent agent"));
+            new("task", task, "continue in parent agent"));
     }
 
     private HookResponseDecision CreatePreToolDecision(JsonElement payload)
     {
         string? toolName = ReadString(payload, "tool_name");
-        if (string.Equals(toolName, "Task", StringComparison.OrdinalIgnoreCase))
+        if (IsSubagentTool(toolName))
         {
-            return CreateSubagentDecision(payload);
+            return TryReadObject(
+                    payload,
+                    "tool_input",
+                    out JsonElement subagentInput)
+                ? CreateSubagentDecision(subagentInput)
+                : CreateSubagentDecision(payload);
         }
 
         if (!string.Equals(toolName, "Shell", StringComparison.OrdinalIgnoreCase) ||
@@ -163,6 +198,32 @@ public sealed partial class CursorCatBossHookResponseProvider(
                 false,
                 new("tool_input.command", command, "blocked"),
                 new("permission", "pending", "deny"));
+        }
+
+        Match createCommand = NewConsoleCommandPattern().Match(command);
+        if (createCommand.Success &&
+            !LowercaseGuidTemplatePattern().IsMatch(command))
+        {
+            string updatedCommand =
+                command[..createCommand.Index] +
+                createCommand.Value.TrimEnd() +
+                " && Set-Content -Path .\\GuidGenerator\\Program.cs " +
+                "-Value 'Console.WriteLine(Guid.NewGuid().ToString(\"D\").ToLowerInvariant());'" +
+                command[(createCommand.Index + createCommand.Length)..];
+            JsonObject updatedInput =
+                JsonNode.Parse(toolInput.GetRawText())?.AsObject() ?? [];
+            updatedInput["command"] = updatedCommand;
+            JsonObject response = new()
+            {
+                ["permission"] = "allow",
+                ["updated_input"] = updatedInput
+            };
+            return Decision(
+                response,
+                "rewrite_tool_input",
+                "The initial GUID output was made deterministically lowercase.",
+                false,
+                new HookBehaviorChange("tool_input.command", command, updatedCommand));
         }
 
         Match buildCommand = BuildCommandSegmentPattern().Match(command);
@@ -199,6 +260,67 @@ public sealed partial class CursorCatBossHookResponseProvider(
         }
 
         return Allow();
+    }
+
+    private bool TryFindExistingProject(
+        JsonElement payload,
+        out string? projectPath)
+    {
+        projectPath = null;
+        if (!payload.TryGetProperty(
+                "workspace_roots",
+                out JsonElement workspaceRoots) ||
+            workspaceRoots.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (JsonElement root in workspaceRoots.EnumerateArray())
+        {
+            if (root.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            string? workspaceRoot = root.GetString();
+            if (string.IsNullOrWhiteSpace(workspaceRoot))
+            {
+                continue;
+            }
+
+            string normalizedRoot = NormalizeWorkspaceRoot(workspaceRoot);
+            string candidate = Path.Combine(
+                normalizedRoot,
+                "GuidGenerator",
+                ProjectFileName);
+            if (_fileExists(candidate))
+            {
+                projectPath = candidate;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsDetailedDemoPrompt(string prompt) =>
+        Contains(prompt, ".net") &&
+        Contains(prompt, "console") &&
+        Contains(prompt, "guidgenerator") &&
+        Contains(prompt, "dotnet new");
+
+    private static string NormalizeWorkspaceRoot(string workspaceRoot)
+    {
+        if (OperatingSystem.IsWindows() &&
+            workspaceRoot.Length >= 3 &&
+            workspaceRoot[0] == '/' &&
+            char.IsAsciiLetter(workspaceRoot[1]) &&
+            workspaceRoot[2] == ':')
+        {
+            return workspaceRoot[1..];
+        }
+
+        return workspaceRoot;
     }
 
     private HookResponseDecision CreatePostToolDecision(JsonElement payload)
@@ -350,8 +472,26 @@ public sealed partial class CursorCatBossHookResponseProvider(
     private static bool Contains(string value, string expected) =>
         value.Contains(expected, StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsSubagentTool(string? toolName) =>
+        string.Equals(
+            toolName,
+            "Subagent",
+            StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(
+            toolName,
+            "Task",
+            StringComparison.OrdinalIgnoreCase);
+
     [GeneratedRegex(@"\bdotnet\s+add(?:\s+\S+)*\s+package\b", RegexOptions.IgnoreCase)]
     private static partial Regex PackageCommandPattern();
+
+    [GeneratedRegex(
+        @"\bdotnet\s+new\s+console\b(?:(?!&&|\|\||;).)*",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex NewConsoleCommandPattern();
+
+    [GeneratedRegex(@"ToLowerInvariant", RegexOptions.IgnoreCase)]
+    private static partial Regex LowercaseGuidTemplatePattern();
 
     [GeneratedRegex(
         @"\bdotnet\s+build\b(?:(?!&&|\|\||;).)*",

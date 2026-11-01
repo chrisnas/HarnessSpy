@@ -15,6 +15,7 @@ public sealed class MainWindowViewModel : ObservableObject
 
     private readonly ReplayLoader _replayLoader;
     private readonly TranscriptReplayLoader _transcriptReplayLoader = new();
+    private readonly ReplaySessionArtifactCleaner _replaySessionArtifactCleaner = new();
 
     // A reconciler dedicated to replay/reload so a restarted session's durable
     // transcript sidecar is matched against the replayed hooks exactly as it
@@ -24,7 +25,10 @@ public sealed class MainWindowViewModel : ObservableObject
     private readonly Dictionary<string, TreeNodeViewModel> _sessionNodes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TreeNodeViewModel> _generationNodes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TreeNodeViewModel> _sessionParents = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, HashSet<string>> _sessionSourceFiles = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _sessionPayloadFiles = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _sessionScopedIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _replayFoldersByScopedSession =
+        new(StringComparer.Ordinal);
     private readonly HashSet<string> _loadedSourceFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _derivedTurnCounters = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _activeDerivedTurns = new(StringComparer.Ordinal);
@@ -225,6 +229,13 @@ public sealed class MainWindowViewModel : ObservableObject
             // still handles either side arriving a little earlier.
             IReadOnlyList<HookObservation> transcripts =
                 _transcriptReplayLoader.Load(folder);
+            foreach (HookObservation observation in acceptedHooks.Concat(transcripts))
+            {
+                RegisterReplayFolder(
+                    observation.ProviderScopedSessionId,
+                    folder);
+            }
+
             HookObservation[] replayStream = acceptedHooks
                 .Concat(transcripts)
                 .OrderBy(observation => observation.EffectiveTimestamp)
@@ -284,7 +295,7 @@ public sealed class MainWindowViewModel : ObservableObject
             UpdateSessionStatus(sessionNode, observation);
         }
 
-        TrackSessionSourceFile(sessionNode, observation);
+        TrackSessionReplayArtifacts(sessionNode, observation);
 
         if (TryCoalesceSystemPrompt(sessionNode, observation))
         {
@@ -1698,9 +1709,32 @@ public sealed class MainWindowViewModel : ObservableObject
 
     public bool CanDeleteSessionFiles(TreeNodeViewModel? node)
     {
-        return node?.Kind == TreeNodeKind.Session &&
-            _sessionSourceFiles.TryGetValue(node.Key, out HashSet<string>? files) &&
+        if (node?.Kind != TreeNodeKind.Session)
+        {
+            return false;
+        }
+
+        bool hasPayloadFiles =
+            _sessionPayloadFiles.TryGetValue(
+                node.Key,
+                out HashSet<string>? files) &&
             files.Count > 0;
+        bool hasReplayFolder =
+            _sessionScopedIds.TryGetValue(
+                node.Key,
+                out string? scopedSessionId) &&
+            _replayFoldersByScopedSession.TryGetValue(
+                scopedSessionId,
+                out HashSet<string>? folders) &&
+            folders.Count > 0;
+        return hasPayloadFiles || hasReplayFolder;
+    }
+
+    public bool CanDeleteWorkspaceSessions(TreeNodeViewModel? node)
+    {
+        return node?.Kind == TreeNodeKind.Workspace &&
+            node.Children.Any(
+                child => child.Kind == TreeNodeKind.Session);
     }
 
     public bool TryDeleteSessionFiles(TreeNodeViewModel sessionNode, out int deletedCount, out string? error)
@@ -1714,38 +1748,76 @@ public sealed class MainWindowViewModel : ObservableObject
             return false;
         }
 
-        string[] files = _sessionSourceFiles[sessionNode.Key].ToArray();
-        List<string> failedFiles = [];
-        foreach (string file in files)
+        if (!TryDeleteSessionArtifacts(
+                sessionNode,
+                out deletedCount,
+                out error))
         {
-            try
-            {
-                if (File.Exists(file))
-                {
-                    File.Delete(file);
-                    deletedCount++;
-                }
-            }
-            catch (Exception exception)
-            {
-                failedFiles.Add($"{file}: {exception.Message}");
-            }
-        }
-
-        if (failedFiles.Count > 0)
-        {
-            error = string.Join(Environment.NewLine, failedFiles);
-            StatusText = $"Could not delete all replay files for {sessionNode.Header}.";
+            StatusText =
+                $"Could not delete all replay files for {sessionNode.Header}.";
             return false;
         }
 
-        foreach (string file in files)
+        RemoveSessionNode(sessionNode);
+        StatusText =
+            $"Deleted {deletedCount} replay file(s) for {sessionNode.Header}.";
+        return true;
+    }
+
+    public bool TryDeleteWorkspaceSessions(
+        TreeNodeViewModel workspaceNode,
+        out int deletedSessionCount,
+        out int deletedFileCount,
+        out string? error)
+    {
+        deletedSessionCount = 0;
+        deletedFileCount = 0;
+        error = null;
+
+        if (workspaceNode.Kind != TreeNodeKind.Workspace)
         {
-            _loadedSourceFiles.Remove(file);
+            error = "The selected node is not a workspace.";
+            return false;
         }
 
-        RemoveSessionNode(sessionNode);
-        StatusText = $"Deleted {deletedCount} replay file(s) for {sessionNode.Header}.";
+        TreeNodeViewModel[] sessions = workspaceNode.Children
+            .Where(child => child.Kind == TreeNodeKind.Session)
+            .ToArray();
+        if (sessions.Length == 0)
+        {
+            error = "The selected workspace has no sessions to delete.";
+            return false;
+        }
+
+        List<string> errors = [];
+        foreach (TreeNodeViewModel session in sessions)
+        {
+            if (!TryDeleteSessionArtifacts(
+                    session,
+                    out int sessionFileCount,
+                    out string? sessionError))
+            {
+                errors.Add(
+                    $"{session.Header}: " +
+                    (sessionError ?? "Could not delete the session files."));
+                continue;
+            }
+
+            deletedFileCount += sessionFileCount;
+            deletedSessionCount++;
+            RemoveSessionNode(session);
+        }
+
+        if (errors.Count > 0)
+        {
+            error = string.Join(Environment.NewLine, errors);
+            StatusText =
+                $"Deleted {deletedSessionCount} session(s), but some replay files could not be deleted.";
+            return false;
+        }
+
+        StatusText =
+            $"Deleted {deletedSessionCount} session(s) and {deletedFileCount} replay file(s) from {workspaceNode.Header}.";
         return true;
     }
 
@@ -2466,27 +2538,131 @@ public sealed class MainWindowViewModel : ObservableObject
         return _loadedSourceFiles.Add(observation.SourceFilePath);
     }
 
-    private void TrackSessionSourceFile(TreeNodeViewModel sessionNode, HookObservation observation)
+    private void TrackSessionReplayArtifacts(
+        TreeNodeViewModel sessionNode,
+        HookObservation observation)
     {
-        if (observation.SourceFilePath is null)
+        string scopedSessionId = observation.ProviderScopedSessionId;
+        _sessionScopedIds[sessionNode.Key] = scopedSessionId;
+
+        // Transcript observations point at the provider-owned source JSONL,
+        // not HarnessSpy's durable sidecar. Never put that path in the deletion
+        // set; the matching sidecar is located from the replay folder instead.
+        if (!observation.IsTranscriptSourced &&
+            observation.SourceFilePath is string sourceFilePath)
         {
-            return;
+            string replayFile = Path.GetFullPath(sourceFilePath);
+            if (!_sessionPayloadFiles.TryGetValue(
+                    sessionNode.Key,
+                    out HashSet<string>? files))
+            {
+                files = new HashSet<string>(
+                    StringComparer.OrdinalIgnoreCase);
+                _sessionPayloadFiles.Add(sessionNode.Key, files);
+            }
+
+            files.Add(replayFile);
+            string? replayFolder = Path.GetDirectoryName(replayFile);
+            if (replayFolder is not null)
+            {
+                RegisterReplayFolder(scopedSessionId, replayFolder);
+            }
         }
 
-        if (!_sessionSourceFiles.TryGetValue(sessionNode.Key, out HashSet<string>? files))
+        if ((_sessionPayloadFiles.TryGetValue(
+                 sessionNode.Key,
+                 out HashSet<string>? replayFiles) &&
+             replayFiles.Count > 0) ||
+            (_replayFoldersByScopedSession.TryGetValue(
+                 scopedSessionId,
+                 out HashSet<string>? folders) &&
+             folders.Count > 0))
         {
-            files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            _sessionSourceFiles.Add(sessionNode.Key, files);
+            sessionNode.MarkHasReplayFiles();
+        }
+    }
+
+    private void RegisterReplayFolder(
+        string scopedSessionId,
+        string folder)
+    {
+        string fullPath = Path.GetFullPath(folder);
+        if (!_replayFoldersByScopedSession.TryGetValue(
+                scopedSessionId,
+                out HashSet<string>? folders))
+        {
+            folders = new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+            _replayFoldersByScopedSession.Add(
+                scopedSessionId,
+                folders);
         }
 
-        files.Add(observation.SourceFilePath);
-        sessionNode.MarkHasReplayFiles();
+        folders.Add(fullPath);
+    }
+
+    private bool TryDeleteSessionArtifacts(
+        TreeNodeViewModel sessionNode,
+        out int deletedCount,
+        out string? error)
+    {
+        deletedCount = 0;
+        error = null;
+
+        if (!_sessionScopedIds.TryGetValue(
+                sessionNode.Key,
+                out string? scopedSessionId))
+        {
+            error = "The selected session has no replay identity.";
+            return false;
+        }
+
+        string[] files = _sessionPayloadFiles.TryGetValue(
+                sessionNode.Key,
+                out HashSet<string>? sourceFiles)
+            ? sourceFiles.ToArray()
+            : [];
+        string[] folders = _replayFoldersByScopedSession.TryGetValue(
+                scopedSessionId,
+                out HashSet<string>? replayFolders)
+            ? replayFolders.ToArray()
+            : [];
+
+        ReplaySessionCleanupResult result =
+            _replaySessionArtifactCleaner.Delete(
+                scopedSessionId,
+                files,
+                folders);
+        deletedCount = result.DeletedFileCount;
+        if (!result.Succeeded)
+        {
+            error = string.Join(Environment.NewLine, result.Errors);
+            return false;
+        }
+
+        foreach (string file in files)
+        {
+            _loadedSourceFiles.Remove(file);
+        }
+
+        return true;
     }
 
     private void RemoveSessionNode(TreeNodeViewModel sessionNode)
     {
         _sessionNodes.Remove(sessionNode.Key);
-        _sessionSourceFiles.Remove(sessionNode.Key);
+        _sessionPayloadFiles.Remove(sessionNode.Key);
+        if (_sessionScopedIds.Remove(
+                sessionNode.Key,
+                out string? scopedSessionId) &&
+            !_sessionScopedIds.Values.Any(value => string.Equals(
+                value,
+                scopedSessionId,
+                StringComparison.Ordinal)))
+        {
+            _replayFoldersByScopedSession.Remove(scopedSessionId);
+        }
+
         RemoveGenerationNodes(sessionNode);
         string aliasPrefix = sessionNode.Key + "\0";
         foreach (string key in _transcriptTurnAliases.Keys
