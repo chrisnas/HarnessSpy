@@ -260,6 +260,18 @@ public sealed class MainWindowViewModel : ObservableObject
         if (observation.IsWorkspaceOpen)
         {
             TreeNodeViewModel workspaceOnlyNode = GetOrCreateWorkspaceNode(observation.Workspace);
+            TreeNodeViewModel? previousWorkspaceOpen = workspaceOnlyNode.Children
+                .FirstOrDefault(child => child.Observation?.IsWorkspaceOpen == true);
+            if (previousWorkspaceOpen is not null)
+            {
+                previousWorkspaceOpen.AddEvidence(
+                    observation,
+                    TranscriptRelationshipKind.EvidenceOf);
+                int occurrences = previousWorkspaceOpen.Evidence.Count + 1;
+                previousWorkspaceOpen.Summary = $"seen {occurrences} times";
+                return;
+            }
+
             workspaceOnlyNode.Children.Add(CreateObservationNode(observation));
             workspaceOnlyNode.IsExpanded = true;
             return;

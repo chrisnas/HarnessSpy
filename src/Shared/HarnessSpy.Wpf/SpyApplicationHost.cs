@@ -29,6 +29,7 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
     private Task? _listenerTask;
     private Task? _dispatcherTask;
     private ObservationIngestionCoordinator? _coordinator;
+    private CatMeowAttentionSoundPlayer? _attentionSoundPlayer;
 
     public void Start(Application application)
     {
@@ -37,9 +38,12 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
         MainWindowViewModel viewModel = new(
             new ReplayLoader(),
             profile.EnableHookBehaviorPane);
-        HookAttentionNotifier? attentionNotifier = profile.EnableHookBehaviorPane
-            ? new HookAttentionNotifier(new WindowsAttentionSoundPlayer())
+        _attentionSoundPlayer = profile.EnableHookBehaviorPane
+            ? new CatMeowAttentionSoundPlayer()
             : null;
+        HookAttentionNotifier? attentionNotifier = _attentionSoundPlayer is null
+            ? null
+            : new HookAttentionNotifier(_attentionSoundPlayer);
 
         bool enableTranscripts = profile.EnableTranscripts && settings.EnableTranscriptIngestion;
         string payloadsDirectory = Path.Combine(
@@ -106,6 +110,8 @@ public sealed class SpyApplicationHost(SpyAppProfile profile) : IAsyncDisposable
         }
 
         await profile.AgentProvider.DisposeAsync().ConfigureAwait(false);
+        _attentionSoundPlayer?.Dispose();
+        _attentionSoundPlayer = null;
         _shutdown.Dispose();
     }
 

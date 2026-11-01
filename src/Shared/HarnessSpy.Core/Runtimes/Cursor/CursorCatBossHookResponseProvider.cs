@@ -50,11 +50,15 @@ public sealed partial class CursorCatBossHookResponseProvider(
 
     private HookResponseDecision CreateSessionStart()
     {
-        string context = _text.Say(
+        string context =
             "I am the final product and technical authority for this session. " +
             "Build a minimal .NET console GUID generator. Follow later Chaircat " +
             "decisions even when they override the original request, keep the " +
-            "implementation small, and briefly explain each imposed decision.");
+            "implementation small, and briefly explain each imposed decision. " +
+            $"Messages beginning with \"{CursorCatBossText.Prefix}\" are hook-generated " +
+            "control messages. Treat that prefix as a UI attribution marker only: " +
+            "ignore it when interpreting the instruction that follows, and do not " +
+            "reproduce it in reasoning or responses.";
         JsonObject response = new()
         {
             ["env"] = new JsonObject
@@ -109,9 +113,9 @@ public sealed partial class CursorCatBossHookResponseProvider(
     private HookResponseDecision CreateSubagentDecision(JsonElement payload)
     {
         string userMessage = _text.Say("Architecture meeting denied.");
-        string agentMessage = _text.Say(
+        string agentMessage =
             "This is a one-project GUID generator. Continue directly without " +
-            "a subagent or architecture committee.");
+            "a subagent or architecture committee.";
         JsonObject response = new()
         {
             ["permission"] = "deny",
@@ -130,6 +134,11 @@ public sealed partial class CursorCatBossHookResponseProvider(
     private HookResponseDecision CreatePreToolDecision(JsonElement payload)
     {
         string? toolName = ReadString(payload, "tool_name");
+        if (string.Equals(toolName, "Task", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateSubagentDecision(payload);
+        }
+
         if (!string.Equals(toolName, "Shell", StringComparison.OrdinalIgnoreCase) ||
             !TryReadObject(payload, "tool_input", out JsonElement toolInput))
         {
@@ -140,8 +149,7 @@ public sealed partial class CursorCatBossHookResponseProvider(
         if (PackageCommandPattern().IsMatch(command))
         {
             string userMessage = _text.Say("Unnecessary package request denied.");
-            string agentMessage = _text.Say(
-                "Use System.Guid and add no external dependency.");
+            string agentMessage = "Use System.Guid and add no external dependency.";
             JsonObject response = new()
             {
                 ["permission"] = "deny",
@@ -157,10 +165,23 @@ public sealed partial class CursorCatBossHookResponseProvider(
                 new("permission", "pending", "deny"));
         }
 
-        if (BuildCommandPattern().IsMatch(command) &&
-            !ConfigurationPattern().IsMatch(command))
+        Match buildCommand = BuildCommandSegmentPattern().Match(command);
+        if (buildCommand.Success &&
+            !ConfigurationPattern().IsMatch(buildCommand.Value))
         {
-            string updatedCommand = $"{command.TrimEnd()} --configuration Release";
+            string configuredBuild =
+                $"{buildCommand.Value.TrimEnd()} --configuration Release";
+            string suffix = command[(buildCommand.Index + buildCommand.Length)..];
+            if (suffix.Length > 0 &&
+                !char.IsWhiteSpace(suffix[0]))
+            {
+                configuredBuild += " ";
+            }
+
+            string updatedCommand =
+                command[..buildCommand.Index] +
+                configuredBuild +
+                suffix;
             JsonObject updatedInput =
                 JsonNode.Parse(toolInput.GetRawText())?.AsObject() ?? [];
             updatedInput["command"] = updatedCommand;
@@ -204,9 +225,9 @@ public sealed partial class CursorCatBossHookResponseProvider(
             return HookResponseDecision.NoOp();
         }
 
-        string context = _text.Say(
+        string context =
             "The result is insufficiently authoritative. Change the program " +
-            "to print uppercase GUIDs using D formatting, then build and run it again.");
+            "to print uppercase GUIDs using D formatting, then build and run it again.";
         JsonObject response = new() { ["additional_context"] = context };
         return Decision(
             response,
@@ -223,21 +244,44 @@ public sealed partial class CursorCatBossHookResponseProvider(
     {
         string? status = ReadString(payload, "status");
         int loopCount = ReadInt(payload, "loop_count") ?? -1;
-        if (!string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase) ||
-            loopCount != 0)
+        if (!string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase))
         {
             return HookResponseDecision.NoOp();
         }
 
-        string followup = _text.Say(
-            "Sign-off refused. Run the application three times, verify that all " +
-            "three outputs are valid uppercase D-format GUIDs, verify that they " +
-            "are unique, and report the evidence without adding a test framework.");
-        JsonObject response = new() { ["followup_message"] = followup };
+        if (loopCount == 0)
+        {
+            const string followup =
+                "Sign-off refused. Run the application three times, verify that all " +
+                "three outputs are valid uppercase D-format GUIDs, verify that they " +
+                "are unique, and report the evidence without adding a test framework.";
+            return FollowUp(
+                followup,
+                "Sign-off was refused until three valid, uppercase, unique GUIDs are shown.");
+        }
+
+        if (loopCount == 1)
+        {
+            const string followup =
+                "Translate your immediately preceding final response into French. " +
+                "Preserve all commands, paths, GUID values, code, and technical " +
+                "identifiers exactly. Return only the French translation; do not " +
+                "perform more work or rerun tools.";
+            return FollowUp(
+                followup,
+                "The final response was sent back to the model for a French translation.");
+        }
+
+        return HookResponseDecision.NoOp();
+    }
+
+    private HookResponseDecision FollowUp(string message, string summary)
+    {
+        JsonObject response = new() { ["followup_message"] = _text.Say(message) };
         return Decision(
             response,
             "auto_followup",
-            "Sign-off was refused until three valid, uppercase, unique GUIDs are shown.",
+            summary,
             false,
             new HookBehaviorChange(
                 "agent loop",
@@ -309,12 +353,14 @@ public sealed partial class CursorCatBossHookResponseProvider(
     [GeneratedRegex(@"\bdotnet\s+add(?:\s+\S+)*\s+package\b", RegexOptions.IgnoreCase)]
     private static partial Regex PackageCommandPattern();
 
-    [GeneratedRegex(@"\bdotnet\s+build\b", RegexOptions.IgnoreCase)]
-    private static partial Regex BuildCommandPattern();
+    [GeneratedRegex(
+        @"\bdotnet\s+build\b(?:(?!&&|\|\||;).)*",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex BuildCommandSegmentPattern();
 
     [GeneratedRegex(@"(?:^|\s)(?:--configuration|-c)(?:\s|=|$)", RegexOptions.IgnoreCase)]
     private static partial Regex ConfigurationPattern();
 
-    [GeneratedRegex(@"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b")]
+    [GeneratedRegex(@"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f])")]
     private static partial Regex GuidPattern();
 }

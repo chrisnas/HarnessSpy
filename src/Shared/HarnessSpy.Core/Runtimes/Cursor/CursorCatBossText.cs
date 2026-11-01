@@ -3,10 +3,11 @@ namespace HarnessSpy.Core.Runtimes.Cursor;
 public sealed class CursorCatBossText
 {
     public const string Prefix =
-        " /\\_/\\\n" +
-        "( o.o )\n" +
-        " > ^ <\n" +
-        "Chaircat Whiskers:";
+        "(o.o) Cat BOSS> ";
+        //" /|_/|\\n" +
+        //"( o.o )\n" +
+        //" -----\n" +
+        //"Chaircat Whiskers:";
 
     public string Say(string message)
     {

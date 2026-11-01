@@ -296,6 +296,28 @@ public sealed class ProjectionTests
     }
 
     [Fact]
+    public void RepeatedWorkspaceOpenEventsCollapseIntoOneNode()
+    {
+        MainWindowViewModel viewModel = new();
+
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"workspaceOpen","workspace_roots":["C:\\Repo"],"cursor_version":"1"}"""));
+        viewModel.AddObservation(ParsePayload(
+            """{"hook_event_name":"workspaceOpen","workspace_roots":["C:\\Repo"],"cursor_version":"2"}"""));
+
+        TreeNodeViewModel workspace = Assert.Single(viewModel.Roots);
+        TreeNodeViewModel workspaceOpen = Assert.Single(workspace.Children);
+        Assert.StartsWith("workspaceOpen", workspaceOpen.Header, StringComparison.Ordinal);
+        Assert.Equal("seen 2 times", workspaceOpen.Summary);
+        Assert.Single(workspaceOpen.Evidence);
+        Assert.Equal(
+            "2",
+            workspaceOpen.Evidence[0].Observation.Payload
+                .GetProperty("cursor_version")
+                .GetString());
+    }
+
+    [Fact]
     public void SessionIdFallbackAndRepeatedHookNamesRemainDistinct()
     {
         MainWindowViewModel viewModel = new();

@@ -20,8 +20,15 @@ public sealed class CursorCatBossHookResponseProviderTests
         HookResponseDecision decision = Create("sessionStart", """{}""");
 
         Assert.Equal("Chaircat Whiskers", decision.Response["env"]?["CAT_BOSS"]?.GetValue<string>());
-        Assert.StartsWith(
+        Assert.DoesNotContain(
             CursorCatBossText.Prefix,
+            decision.Response["additional_context"]?.GetValue<string>()?
+                .Replace(
+                    $"\"{CursorCatBossText.Prefix}\"",
+                    string.Empty,
+                    StringComparison.Ordinal));
+        Assert.Contains(
+            "UI attribution marker",
             decision.Response["additional_context"]?.GetValue<string>());
         Assert.Equal("inject_context", decision.Effect?.EffectKind);
         Assert.DoesNotContain(
@@ -63,6 +70,34 @@ public sealed class CursorCatBossHookResponseProviderTests
 
         Assert.Equal("deny", decision.Response["permission"]?.GetValue<string>());
         Assert.StartsWith(
+            CursorCatBossText.Prefix,
+            decision.Response["user_message"]?.GetValue<string>());
+        Assert.DoesNotContain(
+            CursorCatBossText.Prefix,
+            decision.Response["agent_message"]?.GetValue<string>());
+        Assert.Equal("deny_subagent", decision.Effect?.EffectKind);
+    }
+
+    [Fact]
+    public void SubagentTaskIsDeniedBeforeItStarts()
+    {
+        HookResponseDecision decision = Create(
+            "preToolUse",
+            """
+            {
+              "tool_name":"Task",
+              "tool_input":{
+                "subagent_type":"generalPurpose",
+                "description":"Review architecture"
+              }
+            }
+            """);
+
+        Assert.Equal("deny", decision.Response["permission"]?.GetValue<string>());
+        Assert.StartsWith(
+            CursorCatBossText.Prefix,
+            decision.Response["user_message"]?.GetValue<string>());
+        Assert.DoesNotContain(
             CursorCatBossText.Prefix,
             decision.Response["agent_message"]?.GetValue<string>());
         Assert.Equal("deny_subagent", decision.Effect?.EffectKind);
@@ -108,6 +143,24 @@ public sealed class CursorCatBossHookResponseProviderTests
         Assert.Equal("rewrite_tool_input", decision.Effect?.EffectKind);
     }
 
+    [Fact]
+    public void BuildSegmentInCompoundCommandIsRewritten()
+    {
+        HookResponseDecision decision = Create(
+            "preToolUse",
+            """
+            {
+              "tool_name":"Shell",
+              "tool_input":{"command":"dotnet build && dotnet run"}
+            }
+            """);
+
+        Assert.Equal(
+            "dotnet build --configuration Release && dotnet run",
+            decision.Response["updated_input"]?["command"]?.GetValue<string>());
+        Assert.Equal("rewrite_tool_input", decision.Effect?.EffectKind);
+    }
+
     [Theory]
     [InlineData("dotnet build -c Release")]
     [InlineData("dotnet build --configuration=Release")]
@@ -139,10 +192,29 @@ public sealed class CursorCatBossHookResponseProviderTests
             }
             """);
 
-        Assert.StartsWith(
+        Assert.DoesNotContain(
             CursorCatBossText.Prefix,
             decision.Response["additional_context"]?.GetValue<string>());
         Assert.Equal("inject_context", decision.Effect?.EffectKind);
+    }
+
+    [Fact]
+    public void LowercaseGuidInEscapedShellOutputInjectsUppercaseRequirement()
+    {
+        HookResponseDecision decision = Create(
+            "postToolUse",
+            """
+            {
+              "tool_name":"Shell",
+              "tool_input":{"command":"dotnet build && dotnet run"},
+              "tool_output":"{\"output\":\"Build succeeded.\\r\\n1794cb56-3377-43f0-a1eb-e85febe1159b\\r\\n\",\"exitCode\":0}"
+            }
+            """);
+
+        Assert.Equal("inject_context", decision.Effect?.EffectKind);
+        Assert.Equal(
+            "1794CB56-3377-43F0-A1EB-E85FEBE1159B",
+            decision.Effect?.Changes.Single().After);
     }
 
     [Fact]
@@ -175,8 +247,23 @@ public sealed class CursorCatBossHookResponseProviderTests
         Assert.Equal("auto_followup", decision.Effect?.EffectKind);
     }
 
+    [Fact]
+    public void SecondCompletedStopRequestsFrenchTranslation()
+    {
+        HookResponseDecision decision = Create(
+            "stop",
+            """{"status":"completed","loop_count":1}""");
+
+        string followup = Assert.IsType<string>(
+            decision.Response["followup_message"]?.GetValue<string>());
+        Assert.Contains("Translate", followup, StringComparison.Ordinal);
+        Assert.Contains("French", followup, StringComparison.Ordinal);
+        Assert.StartsWith(CursorCatBossText.Prefix, followup, StringComparison.Ordinal);
+        Assert.Equal("auto_followup", decision.Effect?.EffectKind);
+    }
+
     [Theory]
-    [InlineData("completed", 1)]
+    [InlineData("completed", 2)]
     [InlineData("error", 0)]
     public void LaterOrFailedStopDoesNotContinue(string status, int loopCount)
     {
